@@ -194,8 +194,8 @@ def main(args):
   t1=sniff_dhcp()
   t1.start()
 
-  #t2=send_dhcp()
-  #t2.start()
+  t2=send_dhcp()
+  t2.start()
 
   while dhcpsip==None:
    time.sleep(1)
