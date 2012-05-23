@@ -29,9 +29,11 @@ offline.  Linux systems will not give up IP even when another system on LAN is d
 
 
 example:
+...
 
 ./piy.py eth1
 
+...
 
 LICENSE:
 --------
