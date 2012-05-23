@@ -1,6 +1,6 @@
+DHCPig initiates an advanced DHCP exhaustion attack. It will consume all IPs on the LAN, stop new users from obtaining IPs, release any IPs in use, then for good measure send gratuitous ARP and knock all windows hosts offline.
 
-
-This script is a proof of concept DHCP exhaustion attack.  It requires scapy network library and admin privileges to execute. It has been tested on multiple Linux distributions and multiple DHCP servers, however do feel free to send feedback if DHCP server is not supported.
+It requires scapy >=2.1 library and admin privileges to execute. No configuration necessary, just pass the interface as a parameter. It has been tested on multiple Linux distributions and multiple DHCP servers (ISC,Windows 2k3/2k8,..).
 
 
 When executed the script will perform the following actions:
@@ -21,6 +21,10 @@ Finally the script will then wait for DHCP exhaustion, (that is no received DHCP
 4.  Knock all Windows systems offline
 	gratuitous ARP the LAN, and since no additional DHCP addresses are available these windows systems should stay offline.  Linux systems will not give up IP even when another system on LAN is detected with same IP.
 
+
+example:
+
+./piy.py eth1
 
 
 License:
