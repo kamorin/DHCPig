@@ -28,12 +28,24 @@ Finally the script will then wait for DHCP exhaustion, (that is no received DHCP
 offline.  Linux systems will not give up IP even when another system on LAN is detected with same IP.
 
 
-example:
+USAGE
+-----
+DHCP exhaustion attack plus.
+
+Usage:
+  pig.py [-d -h] <interface>
+        -h                this help display
+        -d                enable debug
+
+
+EXAMPLE
+-------
 ...
 
 ./piy.py eth1
 
 ...
+
 
 LICENSE:
 --------
