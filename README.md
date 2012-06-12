@@ -63,14 +63,17 @@ the given IP.  Any DHCP server messages originating from untrusted ports are fil
 enable the following to defend against pool exhaustion, IP hijacking, and DHCP sever spoofing:
 
 * enable snooping 
+
     ip dhcp snooping 
     
 * specify which port your DHCP is associated with.  Most likely this is your uplink.  Doing the following will 
 limit DHCP server responses to only the specified port, so use after testing in lab environment.
+
     int fa0/1  (or correct interface)
     ip dhcp snooping trust
 
 * show status
+
     show ip dhcp snopping
     show ip dhcp snopping binding
 
