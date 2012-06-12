@@ -260,7 +260,6 @@ def usage():
     
 if __name__ == '__main__':
   sys.exit(not main(sys.argv))
-  #main(sys.argv)
 
 
 
