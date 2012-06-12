@@ -64,18 +64,20 @@ enable the following to defend against pool exhaustion, IP hijacking, and DHCP s
 
 * enable snooping 
 
-    ip dhcp snooping 
+    `ip dhcp snooping`
     
 * specify which port your DHCP is associated with.  Most likely this is your uplink.  Doing the following will 
 limit DHCP server responses to only the specified port, so use after testing in lab environment.
 
-    int fa0/1  (or correct interface)
-    ip dhcp snooping trust
+    `int fa0/1`  (or correct interface)
+
+    `ip dhcp snooping trust`
 
 * show status
 
-    show ip dhcp snopping
-    show ip dhcp snopping binding
+    `show ip dhcp snopping`
+
+    `show ip dhcp snopping binding`
 
 
 * additional info:
