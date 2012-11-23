@@ -221,7 +221,7 @@ class sniff_dhcp(threading.Thread):
 #
 # MAIN()
 #
-def main(args):
+def main():
     checkArgs()
     signal.signal(signal.SIGINT, signal_handler)
     global t1,t2,t3,dhcpdos,dhcpsip,dhcpmac,subnet,nodes,timer
@@ -258,7 +258,7 @@ def usage():
     print __doc__
     
 if __name__ == '__main__':
-    sys.exit(not main(sys.argv))
+    main()
 
 
 
