@@ -10,9 +10,9 @@ Options:
     -d, --debug            ... enable scapy verbose output
     -h, --help             <- you are here :)
     
-    -a, --show-arp         ... detect/print arp who_has
-    -i, --show-icmp        ... detect/print icmps requests
-    -o, --show-options     ... print lease infos
+    -a, --show-arp         ... detect/print arp who_has (off)
+    -i, --show-icmp        ... detect/print icmps requests (off)
+    -o, --show-options     ... print lease infos (off)
     
     -x, --timeout-threads  ... thread spawn timer (0.4)
     -y, --timeout-dos      ... DOS timeout (8) (wait time to mass grat.arp)
