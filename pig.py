@@ -4,11 +4,12 @@
 DHCP exhaustion attack plus.
 
 Usage:
-    pig.py [-d -h -a -i -o] <interface>
+    pig.py [-d -h -a -i -o -x -y -z] <interface>
   
 Options:
     -d, --debug            ... enable scapy verbose output
     -h, --help             <- you are here :)
+    
     -a, --show-arp         ... detect/print arp who_has
     -i, --show-icmp        ... detect/print icmps requests
     -o, --show-options     ... print lease infos
