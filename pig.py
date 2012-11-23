@@ -15,10 +15,13 @@ Defaults
 conf.checkIPaddr = False
 conf.iface = "lo"
 conf.verb = False
+show_arp = False
+show_icmp = False
+show_options = False
 
 def checkArgs():
     try:
-        opts, args = getopt.getopt(sys.argv[1:], "hd")
+        opts, args = getopt.getopt(sys.argv[1:], "hdaio")
     except getopt.GetoptError, err:
         # print help information and exit:
         print str(err) # will print something like "option -a not recognized"
@@ -30,6 +33,12 @@ def checkArgs():
         elif o in ("-h", "--help"):
             usage()
             sys.exit()
+        elif o in ("-a", "--show-arp"):
+            show_arp = True
+        elif o in ("-i", "--show-icmp"):
+            show_icmp = True
+        elif o in ("-o", "--show-options"):
+            show_options=True
         else:
             assert False, "unhandled option"
     if len(args)==1:
@@ -169,7 +178,7 @@ class send_dhcp(threading.Thread):
 class sniff_dhcp(threading.Thread):
     def __init__ (self):
         threading.Thread.__init__(self)
-        self.filter = "icmp or (udp and src port 67 and dst port 68)"
+        self.filter = "arp or icmp or (udp and src port 67 and dst port 68)"
         self.kill_received = False
         self.dhcpcount=0
 
@@ -199,6 +208,22 @@ class sniff_dhcp(threading.Thread):
                 localm=unpackMAC(pkt[BOOTP].chaddr)
                 myhostname=''.join(random.choice(string.ascii_uppercase + string.digits) for x in range(8))
                 
+                if show_options:
+                    b = pkt[BOOTP]
+                    print "\t* xid=%s"%repr(b.xid)
+                    print "\t* CIaddr=%s"%repr(b.ciaddr)        
+                    print "\t* YIaddr=%s"%repr(b.yiaddr)
+                    print "\t* SIaddr=%s"%repr(b.siaddr)
+                    print "\t* GIaddr=%s"%repr(b.giaddr)
+                    print "\t* CHaddr=%s"%repr(b.chaddr)
+                    print "\t* Sname=%s"%repr(b.sname)
+                    for o in pkt[DHCP].options:
+                        if isinstance(o,str):
+                            if o=="end": break        #supress spam paddings :)
+                            print "\t\t* ",repr(o)
+                        else:
+                            print "\t\t* ",o[0],o[1:]    
+                
                 print("DHCPOFFER handing out IP: "+myip)
                 if conf.verb: print("DHCPOFFER detected from " + pkt[Ether].src,sip + " on " + conf.iface + ", handing out IP: "+myip)
                 
@@ -209,12 +234,19 @@ class sniff_dhcp(threading.Thread):
                 if pkt[ICMP].type==8:
                     myip=pkt[IP].dst
                     mydst=pkt[IP].src
-                    print "ICMP request from " + mydst + " for " + myip + " on " + conf.iface
+                    if show_icmp: print "ICMP request from " + mydst + " for " + myip + " on " + conf.iface
                     icmp_req=Ether(src=randomMAC(),dst=pkt.src)/IP(src=myip,dst=mydst)/ICMP(type=0,id=pkt[ICMP].id,seq=pkt[ICMP].seq)/"12345678912345678912"
-                    if conf.verb: 
+                    if show_: 
                         print "%r"%icmp_req 
                         #sendp(icmp_req)
                         #print "ICMP response from "+myip+" to "+mydst 
+
+            elif ARP in pkt:
+                if pkt[ARP].op ==1:        #op=1 who has, 2 is at
+                    myip=pkt[ARP].pdst
+                    mydst=pkt[ARP].psrc
+                    if show_arp: print "[ <- ] ARP_Request " + myip+" from "+mydst
+                    #todo(tintinweb):answer arps?
 
 
 #
