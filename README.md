@@ -67,38 +67,43 @@ PROTOCOL
 
 USAGE
 -----
-DHCP exhaustion attack plus.   
-
+enhanced DHCP exhaustion attack plus.   
 
 	Usage:
-	    pig.py [-d -h -6 -f -a -i -o -x -y -z] <interface>
+	    pig.py [-d -h -6 -f -a -i -o -x -y -z -g -r -n] <interface>
 	  
 	Options:
-	    -d, --debug            ... enable scapy verbose output
-	    -h, --help             <- you are here :)
+	    -d, --debug                    ... enable scapy verbose output
+	    -h, --help                     <-- you are here :)
 	    
-	    -6, --ipv6             ... DHCPv6 (off, DHCPv4 by default)
+	    -6, --ipv6                     ... DHCPv6 (off, DHCPv4 by default)
 	    
-	    -f, --fuzz             ... randomly fuzz packets (off)
+	    -f, --fuzz                     ... randomly fuzz packets (off)
 	    
-	    -a, --show-arp         ... detect/print arp who_has (off)
-	    -i, --show-icmp        ... detect/print icmps requests (off)
-	    -o, --show-options     ... print lease infos (off)
+	    -a, --show-arp                 ... detect/print arp who_has (off)
+	    -i, --show-icmp                ... detect/print icmps requests (off)
+	    -o, --show-options             ... print lease infos (off)
 	    
-	    -x, --timeout-threads  ... thread spawn timer (0.4)
-	    -y, --timeout-dos      ... DOS timeout (8) (wait time to mass grat.arp)
-	    -z, --timeout-dhcpequest.. dhcp request timeout (2)
+	    -g, --neighbors-attack-garp    ... knock off network segment using gratious arps (off)
+	    -r, --neighbors-attack-release ... release all neighbor ips (off)
+	    -n, --neighbors-scan-arp       ... arp neighbor scan (off)
+	    
+	    -x, --timeout-threads          ... thread spawn timer (0.4)
+	    -y, --timeout-dos              ... DOS timeout (8) (wait time to mass grat.arp)
+	    -z, --timeout-dhcpequest       ... dhcp request timeout (2)
 
 
 EXAMPLE
 -------
 
-    ./piy.py eth1
-    ./piy.py --show-options eth1
-    ./piy.py -x1 --show-options eth1
+    ./pig.py eth1
+    ./pig.py --show-options eth1
+    ./pig.py -x1 --show-options eth1
     
-    ./piy.py -6 eth1
-    ./piy.py -6 --fuzz eth1
+    ./pig.py -6 eth1
+    ./pig.py -6 --fuzz eth1
+    
+    ./pig.py --neighbors-scan-arp -r -g --show-options eth1
 
 
 
