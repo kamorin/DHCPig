@@ -1,6 +1,14 @@
 DHCPig
 ======
 
+Note: I am too lazy to write my own README - most of the work was done by kamorin with more info added by me
+
+CHANGES
+-------
+* more options, double the fun: scapy fuzzing, ipv6 support
+* more options, more fun: show options/show icmp/show arp
+* fixed indents, beautify __doc__, eyefriendly one-line-logging
+* __FORKED__ from __kamorin/DHCPig__ - Thanks for your work!
 
 SUMMARY
 -------
@@ -30,6 +38,29 @@ Finally the script will then wait for DHCP exhaustion, (that is no received DHCP
 * Knock all Windows systems offline   
 	gratuitous ARP the LAN, and since no additional DHCP addresses are available these windows systems should stay 
 offline.  Linux systems will not give up IP even when another system on LAN is detected with same IP.
+
+
+PROTOCOL
+--------
+* __IPv4__
+	 * SEQUENCE
+		  1. ----> DHCP_DISCOVER 
+		  2. <---- DHCP_OFFER    
+		  3. ----> DHCP_REQUEST  
+		  4. <---- DHCP_REPLY (ACK/NACK)	- not implemented
+	 * DHCPd snoop detection (DHCPd often checks if IP is in use)
+		  * Check for ARP_Snoops 
+		  * Check for ICMP Snoops 
+
+* __IPv6__
+	* SEQUENCE
+		1. ----> DHCP6_SOLICIT  
+		2. <---- DHCP6_ADVERTISE 
+		3. ----> DHCP6_REQUEST   
+		4. <---- DHCP6_REPLY - not implemented    
+	 * DHCPd snoop detection (DHCPd often checks if IP is in use)
+	  	* Check for ICMPv6 Snoops 
+
 
 
 USAGE
