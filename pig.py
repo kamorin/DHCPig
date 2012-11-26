@@ -44,7 +44,7 @@ timeout['timer']=0.4
 def checkArgs():
     global show_arp ,show_icmp, show_options, timeouts, MODE_IPv6, MODE_FUZZ
     try:
-        opts, args = getopt.getopt(sys.argv[1:], "hdaiox:y:z:6")
+        opts, args = getopt.getopt(sys.argv[1:], "hdaiox:y:z:6f")
     except getopt.GetoptError, err:
         # print help information and exit:
         print str(err) # will print something like "option -a not recognized"
