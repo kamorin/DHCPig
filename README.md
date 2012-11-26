@@ -1,7 +1,9 @@
 DHCPig
 ======
 
-Note: I am too lazy to write my own README - most of the work was done by kamorin with more info added by me
+Note: *I am too lazy to write my own README - most of the work was done by kamorin with more info added by me*
+
+Note2: *I hate global vars and I hate threading... and using global vars in combination with threading is like opening hells gates :) anyway as I forked this code I've adopted the style and will stick to it until I really have time to make this pep8 and rock solid. Please check my other repos for other DHCPv4/v6 implementations using a proper class layout or a statemachine.*
 
 CHANGES
 -------
