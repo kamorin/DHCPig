@@ -38,7 +38,7 @@ DHCP exhaustion attack plus.
 
 
 	Usage:
-	    pig.py [-d -h -a -i -o -x -y -z] <interface>
+	    pig.py [-d -h -6 -f -a -i -o -x -y -z] <interface>
 	  
 	Options:
 	    -d, --debug            ... enable scapy verbose output
