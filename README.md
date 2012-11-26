@@ -36,16 +36,28 @@ USAGE
 -----
 DHCP exhaustion attack plus.   
 
-    Usage:   
-      pig.py [-d -h] <interface>   
-        -h                this help display   
-        -d                enable debug   
+	Usage:
+	    pig.py [-d -h -a -i -o -x -y -z] <interface>
+	  
+	Options:
+	    -d, --debug            ... enable scapy verbose output
+	    -h, --help             <- you are here :)
+	    
+	    -a, --show-arp         ... detect/print arp who_has (off)
+	    -i, --show-icmp        ... detect/print icmps requests (off)
+	    -o, --show-options     ... print lease infos (off)
+	    
+	    -x, --timeout-threads  ... thread spawn timer (0.4)
+	    -y, --timeout-dos      ... DOS timeout (8) (wait time to mass grat.arp)
+	    -z, --timeout-dhcpequest.. dhcp request timeout (2)
 
 
 EXAMPLE
 -------
 
     ./piy.py eth1
+    ./piy.py --show-options eth1
+    ./piy.py -x1 --show-options eth1
 
 
 
