@@ -189,7 +189,7 @@ def sendPacket(pkt):
 #  ARP and create map of LAN neighbors
 #
 def neighbors():
-    global dhcpsip,subnet,nodes
+    global dhcpsip,subnet,nodes,MODE_IPv6
     nodes={}
     if MODE_IPv6:
         print "[ !! ] IPv6 - neighbors() not supported at this point "
@@ -206,7 +206,7 @@ def neighbors():
 # send release for our neighbors
 #
 def release():
-    global dhcpsmac,dhcpsip,nodes
+    global dhcpsmac,dhcpsip,nodes,MODE_IPv6
     if MODE_IPv6:
         print "[ !! ] IPv6 - release() not supported at this point "
     else:
@@ -224,7 +224,7 @@ def release():
 #now knock everyone offline
 #
 def garp():
-    global dhcpsip,subnet
+    global dhcpsip,subnet,MODE_IPv6
     if MODE_IPv6:
         print "[ !! ] IPv6 - gratious_arp() not supported at this point "
     else:
@@ -245,7 +245,7 @@ class send_dhcp(threading.Thread):
         self.kill_received = False
 
     def run(self):
-        global timer,dhcpdos
+        global timer,dhcpdos,MODE_IPv6
         while not self.kill_received and not dhcpdos:
             m=randomMAC()
             myxid=random.randint(1, 900000000)
@@ -265,6 +265,7 @@ class send_dhcp(threading.Thread):
 #
 class sniff_dhcp(threading.Thread):
     def __init__ (self):
+        global MODE_IPv6
         threading.Thread.__init__(self)
         if MODE_IPv6:
             self.filter ="icmp6 or (udp and src port 547 and dst port 546)"
@@ -282,7 +283,7 @@ class sniff_dhcp(threading.Thread):
             if self.dhcpcount==2: dhcpdos=True
           
     def detect_dhcp(self,pkt):
-        global dhcpsmac,dhcpsip,subnet,show_arp,show_options,show_icmp
+        global dhcpsmac,dhcpsip,subnet,show_arp,show_options,show_icmp,MODE_IPv6
         if MODE_IPv6:
             if DHCP6_Advertise in pkt:
                 if DHCP6OptIAAddress in pkt and DHCP6OptServerId in pkt:
