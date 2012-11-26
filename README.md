@@ -36,12 +36,17 @@ USAGE
 -----
 DHCP exhaustion attack plus.   
 
+
 	Usage:
 	    pig.py [-d -h -a -i -o -x -y -z] <interface>
 	  
 	Options:
 	    -d, --debug            ... enable scapy verbose output
 	    -h, --help             <- you are here :)
+	    
+	    -6, --ipv6             ... DHCPv6 (off, DHCPv4 by default)
+	    
+	    -f, --fuzz             ... randomly fuzz packets (off)
 	    
 	    -a, --show-arp         ... detect/print arp who_has (off)
 	    -i, --show-icmp        ... detect/print icmps requests (off)
@@ -58,6 +63,9 @@ EXAMPLE
     ./piy.py eth1
     ./piy.py --show-options eth1
     ./piy.py -x1 --show-options eth1
+    
+    ./piy.py -6 eth1
+    ./piy.py -6 --fuzz eth1
 
 
 
