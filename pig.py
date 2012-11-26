@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-DHCP exhaustion attack plus.
+enhanced DHCP exhaustion attack plus.
 
 Usage:
     pig.py [-d -h -6 -f -a -i -o -x -y -z -g -r -n] <interface>
