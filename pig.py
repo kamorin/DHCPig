@@ -24,7 +24,7 @@ Options:
     
     -x, --timeout-threads          ... thread spawn timer (0.4)
     -y, --timeout-dos              ... DOS timeout (8) (wait time to mass grat.arp)
-    -z, --timeout-dhcpequest       ... dhcp request timeout (2)
+    -z, --timeout-dhcprequest      ... dhcp request timeout (2)
 """
 from scapy.all import *
 import string,binascii,signal,sys,threading,socket,struct,getopt
@@ -51,7 +51,11 @@ timeout['timer']=0.4
 def checkArgs():
     global show_arp ,show_icmp, show_options, timeouts, MODE_IPv6, MODE_FUZZ, DO_ARP, DO_GARP, DO_RELEASE
     try:
-        opts, args = getopt.getopt(sys.argv[1:], "hdaiox:y:z:6fgrn")
+        opts, args = getopt.getopt(sys.argv[1:], "hdaiox:y:z:6fgrn",    ["debug","help","show-arp","show-icmp",
+                                                                         "show-options","timeout-thread=","timeout-dos=",
+                                                                         "timeout-dhcprequest=", "neighbors-scan-arp",
+                                                                         "neighbors-attack-release", "neighbors-attack-garp",
+                                                                         "fuzz","ipv6",])
     except getopt.GetoptError, err:
         # print help information and exit:
         print str(err) # will print something like "option -a not recognized"
@@ -73,7 +77,7 @@ def checkArgs():
             timeout['timer']=float(a)
         elif o in ("-y", "--timeout-dos"):
             timeout['dos']=float(a)
-        elif o in ("-z", "--timeout-dhcpequest"):
+        elif o in ("-z", "--timeout-dhcprequest"):
             timeout['dhcpip']=float(a)
         elif o in ("-6", "--ipv6"):
             MODE_IPv6=True
