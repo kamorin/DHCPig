@@ -109,7 +109,8 @@ EXAMPLE
 ACTION-SHOTS
 -------------
 
-* IPv4
+IPv4
+
 	x@y:/src/DHCPig# python pig.py eth2
 	WARNING: No route found for IPv6 destination :: (no default route?)
 	[INFO] - using interface eth2
@@ -126,7 +127,8 @@ ACTION-SHOTS
 	[--->] DHCP_Request 172.20.168.84
 	......
 
-* IPv6
+IPv6
+
 	x@y:/src/DHCPig# python pig.py -6 eth2
 	WARNING: No route found for IPv6 destination :: (no default route?)
 	[INFO] - using interface eth2
