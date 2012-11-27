@@ -105,7 +105,7 @@ def checkArgs():
 
         SHOW_ARP                        %s
         SHOW_ICMP                       %s
-        SHOW_DHCPOPTIONS                    %s
+        SHOW_DHCPOPTIONS                %s
 
         timeout-threads                 %s
         timeout-dos                     %s
