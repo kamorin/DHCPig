@@ -269,7 +269,7 @@ def garp():
     if MODE_IPv6:
         print "[ !! ] IPv6 - gratious_arp() not supported at this point "
         return
-        pool=Net6(dhcpsip+"/"calcCIDR(subnet))
+        pool=Net6(dhcpsip+"/"+calcCIDR(subnet))
         for ip in pool:
             m=randomMAC()
             # craft packet  Ether/IPv6/ICMPv6_ND_NA/ICMPv6NDOptDstLLAddr
