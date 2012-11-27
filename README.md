@@ -90,7 +90,7 @@ enhanced DHCP exhaustion attack plus.
 	    
 	    -x, --timeout-threads          ... thread spawn timer (0.4)
 	    -y, --timeout-dos              ... DOS timeout (8) (wait time to mass grat.arp)
-	    -z, --timeout-dhcpequest       ... dhcp request timeout (2)
+	    -z, --timeout-dhcprequest       ... dhcp request timeout (2)
 
 
 EXAMPLE
@@ -104,6 +104,40 @@ EXAMPLE
     ./pig.py -6 --fuzz eth1
     
     ./pig.py --neighbors-scan-arp -r -g --show-options eth1
+
+
+ACTION-SHOTS
+-------------
+
+* IPv4
+	x@y:/src/DHCPig# python pig.py eth2
+	WARNING: No route found for IPv6 destination :: (no default route?)
+	[INFO] - using interface eth2
+	[--->] DHCP_Discover
+	[--->] DHCP_Discover
+	[--->] DHCP_Discover
+	[<---] DHCP_Offer   00:0c:29:4f:0e:35 0.0.0.0 IP: 172.20.168.82 for MAC=[00:0c:29:59:65:70]
+	[--->] DHCP_Request 172.20.168.82
+	[--->] DHCP_Discover
+	[<---] DHCP_Offer   00:0c:29:4f:0e:35 0.0.0.0 IP: 172.20.168.83 for MAC=[00:0c:29:65:f1:66]
+	[--->] DHCP_Request 172.20.168.83
+	[--->] DHCP_Discover
+	[<---] DHCP_Offer   00:0c:29:4f:0e:35 0.0.0.0 IP: 172.20.168.84 for MAC=[00:0c:29:61:58:26]
+	[--->] DHCP_Request 172.20.168.84
+	......
+
+* IPv6
+	x@y:/src/DHCPig# python pig.py -6 eth2
+	WARNING: No route found for IPv6 destination :: (no default route?)
+	[INFO] - using interface eth2
+	[--->] v6_DHCP_Discover [cid:'\x00\x01\x00\x01P\xb4\xd2\x0b\x00\x0c)Y\xe3\xf1']
+	[--->] v6_DHCP_Discover [cid:'\x00\x01\x00\x01P\xb4\xd2\x0c\x00\x0c)A\xcd\xe9']
+	[--->] v6_DHCP_Discover [cid:'\x00\x01\x00\x01P\xb4\xd2\x0c\x00\x0c)L\x024']
+	[--->] v6_DHCP_Discover [cid:'\x00\x01\x00\x01P\xb4\xd2\r\x00\x0c)\x1c\x1a\xcf']
+	[--->] v6_DHCP_Discover [cid:'\x00\x01\x00\x01P\xb4\xd2\r\x00\x0c)s\xdcY']
+	[  ? ]          waiting for first DHCP Server response
+	[--->] v6_DHCP_Discover [cid:'\x00\x01\x00\x01P\xb4\xd2\r\x00\x0c)~)}']
+	[--->] v6_DHCP_Discover [cid:'\x00\x01\x00\x01P\xb4\xd2\x0e\x00\x0c)G\x0f9']
 
 
 
