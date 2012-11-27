@@ -44,7 +44,7 @@ DO_GARP = False
 DO_RELEASE = False
 DO_ARP = False
 TIMEOUT={}
-TIMEOUT['dos']=8        #todo(tintinweb): add these values to getopt
+TIMEOUT['dos']=8    
 TIMEOUT['dhcpip']=2
 TIMEOUT['timer']=0.4
 
