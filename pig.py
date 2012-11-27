@@ -35,9 +35,9 @@ Defaults
 conf.checkIPaddr = False
 conf.iface = "lo"
 conf.verb = False
-show_arp = False
-show_icmp = False
-show_options = False
+SHOW_ARP = False
+SHOW_ICMP = False
+SHOW_DHCPOPTIONS = False
 MODE_IPv6 = False
 MODE_FUZZ = False
 DO_GARP = False
@@ -49,10 +49,10 @@ timeout['dhcpip']=2
 timeout['timer']=0.4
 
 def checkArgs():
-    global show_arp ,show_icmp, show_options, timeouts, MODE_IPv6, MODE_FUZZ, DO_ARP, DO_GARP, DO_RELEASE
+    global SHOW_ARP ,SHOW_ICMP, SHOW_DHCPOPTIONS, timeouts, MODE_IPv6, MODE_FUZZ, DO_ARP, DO_GARP, DO_RELEASE
     try:
         opts, args = getopt.getopt(sys.argv[1:], "hdaiox:y:z:6fgrn", ["debug","help","show-arp","show-icmp",
-                                                                      "show-options","timeout-thread=","timeout-dos=",
+                                                                      "show-options","timeout-threads=","timeout-dos=",
                                                                       "timeout-dhcprequest=", "neighbors-scan-arp",
                                                                       "neighbors-attack-release", "neighbors-attack-garp",
                                                                       "fuzz","ipv6",])
@@ -68,11 +68,11 @@ def checkArgs():
             usage()
             sys.exit()
         elif o in ("-a", "--show-arp"):
-            show_arp = True
+            SHOW_ARP = True
         elif o in ("-i", "--show-icmp"):
-            show_icmp = True
+            SHOW_ICMP = True
         elif o in ("-o", "--show-options"):
-            show_options=True
+            SHOW_DHCPOPTIONS=True
         elif o in ("-x", "--timeout-threads"):
             timeout['timer']=float(a)
         elif o in ("-y", "--timeout-dos"):
@@ -97,6 +97,28 @@ def checkArgs():
     else:
         usage()
         sys.exit(2)
+        
+    if conf.verb:
+        print """---------------------[OPTIONS]-----------
+        IPv6                            %s
+        fuzz                            %s
+
+        SHOW_ARP                        %s
+        SHOW_ICMP                       %s
+        SHOW_DHCPOPTIONS                    %s
+
+        timeout-threads                 %s
+        timeout-dos                     %s
+        timeout-dhcprequest             %s
+
+        neighbors-attack-garp           %s
+        neighbors-attack-release        %s
+        neighbors-scan-arp              %s
+-----------------------------------------
+        """%(MODE_IPv6,MODE_FUZZ,SHOW_ARP,SHOW_ICMP,SHOW_DHCPOPTIONS,
+             timeout['timer'],timeout['dos'],timeout['dhcpip'],
+             DO_GARP,DO_RELEASE,DO_ARP)
+
 
 
 def signal_handler(signal, frame):
@@ -301,7 +323,7 @@ class sniff_dhcp(threading.Thread):
             if self.dhcpcount==2: dhcpdos=True
           
     def detect_dhcp(self,pkt):
-        global dhcpsmac,dhcpsip,subnet,show_arp,show_options,show_icmp
+        global dhcpsmac,dhcpsip,subnet,SHOW_ARP,SHOW_DHCPOPTIONS,SHOW_ICMP
         if MODE_IPv6:
             if DHCP6_Advertise in pkt:
                 if DHCP6OptIAAddress in pkt and DHCP6OptServerId in pkt:
@@ -340,7 +362,7 @@ class sniff_dhcp(threading.Thread):
                     myhostname=''.join(random.choice(string.ascii_uppercase + string.digits) for x in range(8))
                     print "[<---] DHCP_Offer   " + pkt[Ether].src,sip + " IP: "+myip+" for MAC=["+pkt[Ether].dst+"]"
     
-                    if show_options:
+                    if SHOW_DHCPOPTIONS:
                         b = pkt[BOOTP]
                         print "\t* xid=%s"%repr(b.xid)
                         print "\t* CIaddr=%s"%repr(b.ciaddr)        
@@ -363,7 +385,7 @@ class sniff_dhcp(threading.Thread):
                     if pkt[ICMP].type==8:
                         myip=pkt[IP].dst
                         mydst=pkt[IP].src
-                        if show_icmp: print "[ <- ] ICMP_Request "+mydst+" for "+myip 
+                        if SHOW_ICMP: print "[ <- ] ICMP_Request "+mydst+" for "+myip 
                         icmp_req=Ether(src=randomMAC(),dst=pkt.src)/IP(src=myip,dst=mydst)/ICMP(type=0,id=pkt[ICMP].id,seq=pkt[ICMP].seq)/"12345678912345678912"
                         if conf.verb: 
                             print "%r"%icmp_req 
@@ -374,7 +396,7 @@ class sniff_dhcp(threading.Thread):
                     if pkt[ARP].op ==1:        #op=1 who has, 2 is at
                         myip=pkt[ARP].pdst
                         mydst=pkt[ARP].psrc
-                        if show_arp: print "[ <- ] ARP_Request " + myip+" from "+mydst
+                        if SHOW_ARP: print "[ <- ] ARP_Request " + myip+" from "+mydst
                         #todo(tintinweb):answer arps?
 
 
