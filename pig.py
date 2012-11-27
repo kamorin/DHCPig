@@ -43,13 +43,13 @@ MODE_FUZZ = False
 DO_GARP = False
 DO_RELEASE = False
 DO_ARP = False
-timeout={}
-timeout['dos']=8        #todo(tintinweb): add these values to getopt
-timeout['dhcpip']=2
-timeout['timer']=0.4
+TIMEOUT={}
+TIMEOUT['dos']=8        #todo(tintinweb): add these values to getopt
+TIMEOUT['dhcpip']=2
+TIMEOUT['timer']=0.4
 
 def checkArgs():
-    global SHOW_ARP ,SHOW_ICMP, SHOW_DHCPOPTIONS, timeouts, MODE_IPv6, MODE_FUZZ, DO_ARP, DO_GARP, DO_RELEASE
+    global SHOW_ARP ,SHOW_ICMP, SHOW_DHCPOPTIONS, TIMEOUT, MODE_IPv6, MODE_FUZZ, DO_ARP, DO_GARP, DO_RELEASE
     try:
         opts, args = getopt.getopt(sys.argv[1:], "hdaiox:y:z:6fgrn", ["debug","help","show-arp","show-icmp",
                                                                       "show-options","timeout-threads=","timeout-dos=",
@@ -74,11 +74,11 @@ def checkArgs():
         elif o in ("-o", "--show-options"):
             SHOW_DHCPOPTIONS=True
         elif o in ("-x", "--timeout-threads"):
-            timeout['timer']=float(a)
+            TIMEOUT['timer']=float(a)
         elif o in ("-y", "--timeout-dos"):
-            timeout['dos']=float(a)
+            TIMEOUT['dos']=float(a)
         elif o in ("-z", "--timeout-dhcprequest"):
-            timeout['dhcpip']=float(a)
+            TIMEOUT['dhcpip']=float(a)
         elif o in ("-6", "--ipv6"):
             MODE_IPv6=True
         elif o in ("-f", "--fuzz"):
@@ -116,7 +116,7 @@ def checkArgs():
         neighbors-scan-arp              %s
 -----------------------------------------
         """%(MODE_IPv6,MODE_FUZZ,SHOW_ARP,SHOW_ICMP,SHOW_DHCPOPTIONS,
-             timeout['timer'],timeout['dos'],timeout['dhcpip'],
+             TIMEOUT['timer'],TIMEOUT['dos'],TIMEOUT['dhcpip'],
              DO_GARP,DO_RELEASE,DO_ARP)
 
 
@@ -414,7 +414,7 @@ def main():
     subnet=None
     nodes={}
     dhcpdos=False 
-    timer=timeout['timer']
+    timer=TIMEOUT['timer']
     
     t1=sniff_dhcp()
     t1.start()
@@ -423,19 +423,19 @@ def main():
     t2.start()
     
     while dhcpsip==None:
-        time.sleep(timeout['dhcpip'])
+        time.sleep(TIMEOUT['dhcpip'])
         print "[  ? ] \t\twaiting for first DHCP Server response"
     
     if DO_ARP: neighbors()
     if DO_RELEASE: release()
     
     while not dhcpdos:
-        time.sleep(timeout['dos'])
+        time.sleep(TIMEOUT['dos'])
         print "[  ? ] \t\twaiting for DHCP pool exhaustion..."
     
     if DO_GARP:   
-        print "[INFO] waiting %s to mass grat.arp!"%timeout['dos']
-        time.sleep(timeout['dos'])
+        print "[INFO] waiting %s to mass grat.arp!"%TIMEOUT['dos']
+        time.sleep(TIMEOUT['dos'])
         garp()
     print "[DONE] DHCP pool exhausted!"
   
