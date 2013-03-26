@@ -8,19 +8,19 @@ Usage:
   
 Options:
     -h, --help                     <-- you are here :)
-    -v, --verbosity                ...  0 ... no 
+    -v, --verbosity                ...  0 ... no         (3)
                                         1 ... minimal
                                        10 ... default
                                        99 ... debug
                                        
     -6, --ipv6                     ... DHCPv6 (off, DHCPv4 by default)
-    -1, --v6-rapid-commit          ... enable RapidCommit (2way ip assignment instead of 4way)
+    -1, --v6-rapid-commit          ... enable RapidCommit (2way ip assignment instead of 4way) (off)
     
     -c, --client-macs              ... a list of client macs 00:11:22:33:44:55,00:11:22:33:44:56 (Default: <random>)
     
     -f, --fuzz                     ... randomly fuzz packets (off)
 
-    -t, --threads                  ... number of sending threads
+    -t, --threads                  ... number of sending threads (1)
     
     -a, --show-arp                 ... detect/print arp who_has (off)
     -i, --show-icmp                ... detect/print icmps requests (off)
@@ -34,7 +34,7 @@ Options:
     -y, --timeout-dos              ... DOS timeout (8) (wait time to mass grat.arp)
     -z, --timeout-dhcprequest      ... dhcp request timeout (2)
     
-    -c, --color                    ... enable color output
+    -c, --color                    ... enable color output (off)
 """
 
 class Colors:
@@ -452,7 +452,9 @@ class send_dhcp(threading.Thread):
                 dhcp_discover =  Ether(src=m,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(m)],xid=myxid)/DHCP(options=[("message-type","discover"),("hostname",hostname),"end"])
                 LOG(type="-->", message= "DHCP_Discover")
             sendPacket(dhcp_discover)
-            if TIMEOUT['timer']: time.sleep(TIMEOUT['timer'])
+            if TIMEOUT['timer']>0: 
+                time.sleep(TIMEOUT['timer'])
+            
 
 #
 #
@@ -618,3 +620,6 @@ def usage():
 if __name__ == '__main__':
     main()
     print "\n"
+
+
+
