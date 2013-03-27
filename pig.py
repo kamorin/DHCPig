@@ -1,7 +1,12 @@
 #! /usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-enhanced DHCP exhaustion attack plus.
+enhanced DHCP exhaustion attack.
+
+Doc:
+    http://github.com/kamorin/DHCPig
+    http://github.com/tintinweb/DHCPig (forked from kamorin)
+
 
 Usage:
     pig.py [-h -v -6 -1 -s -f -t -a -i -o -l -x -y -z -g -r -n -c ] <interface>
