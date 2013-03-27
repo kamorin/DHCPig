@@ -52,7 +52,7 @@ PROTOCOL
 		  1. ----> DHCP_DISCOVER 
 		  2. <---- DHCP_OFFER    
 		  3. ----> DHCP_REQUEST  
-		  4. <---- DHCP_REPLY (ACK/NACK)	- not implemented
+		  4. <---- DHCP_REPLY (ACK/NACK)	
 	 * DHCPd snoop detection (DHCPd often checks if IP is in use)
 		  * Check for ARP_Snoops 
 		  * Check for ICMP Snoops 
@@ -62,7 +62,7 @@ PROTOCOL
 		1. ----> DHCP6_SOLICIT  
 		2. <---- DHCP6_ADVERTISE 
 		3. ----> DHCP6_REQUEST   
-		4. <---- DHCP6_REPLY - not implemented    
+		4. <---- DHCP6_REPLY    
 	 * DHCPd snoop detection (DHCPd often checks if IP is in use)
 	  	* Check for ICMPv6 Snoops 
 
