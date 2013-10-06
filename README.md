@@ -3,14 +3,6 @@ DHCPig
 
 Tags#: DHCP, IPv4, IPv6, exhaustion, pentest, fuzzing, security, scapy
 
-CHANGES
--------
-* more options, fixed v6 supoprt (LL src addr), color output, minimal and debug output
-* more options, double the fun: scapy fuzzing, ipv6 support
-* more options, more fun: show options/show icmp/show arp
-* fixed indents, beautify __doc__, eyefriendly one-line-logging
-* __FORKED__ from __kamorin/DHCPig__ - Thanks for your work!
-
 SUMMARY
 -------
 
@@ -264,6 +256,13 @@ limit DHCP server responses to only the specified port, so use after testing in 
 * additional info:
 http://www.cisco.com/en/US/docs/switches/lan/catalyst4500/12.1/12ew/configuration/guide/dhcp.pdf
 
+
+CHANGES:
+--------
+more options, fixed v6 supoprt (LL src addr), color output, minimal and debug output
+more options, double the fun: scapy fuzzing, ipv6 support
+more options, more fun: show options/show icmp/show arp
+fixed indents, beautify doc, eyefriendly one-line-logging
 
 
 LICENSE:
