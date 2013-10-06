@@ -1,8 +1,6 @@
 DHCPig
 ======
 
-Note: *I am too lazy to write my own README - most of the work was done by kamorin with more info added by me*
-
 Tags#: DHCP, IPv4, IPv6, exhaustion, pentest, fuzzing, security, scapy
 
 CHANGES
