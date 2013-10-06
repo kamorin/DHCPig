@@ -5,7 +5,6 @@ enhanced DHCP exhaustion attack.
 
 Doc:
     http://github.com/kamorin/DHCPig
-    http://github.com/tintinweb/DHCPig (forked from kamorin)
 
 
 Usage:
