@@ -661,12 +661,9 @@ def main():
     dhcpdos=False 
     p_dhcp_advertise = None # contains dhcp advertise pkt once it is received (base for creating release())
 
-    if DO_ARP: neighbors()
-    sys.exit()
-    
     LOG(type="DEBUG",message="Thread %d - (Sniffer) READY"%len(THREAD_POOL))
     t=sniff_dhcp()
-    #t.start()
+    t.start()
     THREAD_POOL.append(t)
     
     for i in range(THREAD_CNT):
@@ -678,7 +675,7 @@ def main():
     fail_cnt=100
     while dhcpsip==None and fail_cnt>0:
         time.sleep(TIMEOUT['dhcpip'])
-        #LOG(type="?", message= "\t\twaiting for first DHCP Server response")
+        LOG(type="?", message= "\t\twaiting for first DHCP Server response")
         fail_cnt-=1
     
     if fail_cnt==0:
