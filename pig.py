@@ -661,14 +661,14 @@ def main():
         THREAD_POOL.append(t)
         
     fail_cnt=5
-    while dhcpsip==None and fail_cnt<=0:
+    while dhcpsip==None and fail_cnt>0:
         time.sleep(TIMEOUT['dhcpip'])
         LOG(type="?", message= "\t\twaiting for first DHCP Server response")
         fail_cnt-=1
     
     if fail_cnt==0:
         LOG(type="NOTICE", message= "[FAIL] No DHCP offers detected - aborting")
-        return
+        signal_handler(signal.SIGINT,fail_cnt)
 
     if DO_ARP: neighbors()
     if DO_RELEASE: release()        
