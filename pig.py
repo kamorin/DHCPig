@@ -215,7 +215,10 @@ def checkArgs():
         else:
             assert False, "unhandled option"
     if len(args)==1:
-        conf.iface=args[0]
+        if WINDOWS:
+            conf.iface=IFACES.dev_from_name(args[0])
+        else:
+            conf.iface=args[0]
     else:
         usage()
         sys.exit(2)
@@ -284,7 +287,6 @@ def signal_handler(signal, frame):
 
 ######################################
 # Necessary Network functions not included in scapy
-#
 def randomMAC():
     global MAC_LIST
     if len(MAC_LIST)>0:
