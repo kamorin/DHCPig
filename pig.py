@@ -300,6 +300,28 @@ def randomMAC():
         random.randint(0x00, 0xff) ]
     return ':'.join(map(lambda x: "%02x" % x, mac))
 
+def toNum(ip):
+    "convert decimal dotted quad string to long integer"
+    return struct.unpack('L',socket.inet_aton(ip))[0]
+
+def get_if_net(iff):
+    for net, msk, gw, iface, addr in read_routes():
+        if (iff == iface and net != 0L):
+            return ltoa(net)
+    warning("No net address found for iface %s\n" % iff);
+
+def get_if_msk(iff):
+    for net, msk, gw, iface, addr in read_routes():
+        if (iff == iface and net != 0L):
+            return ltoa(msk)
+    warning("No net address found for iface %s\n" % iff);
+
+def get_if_ip(iff):
+    for net, msk, gw, iface, addr in read_routes():
+        if (iff == iface and net != 0L):
+            return addr
+    warning("No net address found for iface %s\n" % iff);
+
 def calcCIDR(mask):
     mask = mask.split('.')
     bits = []
@@ -411,11 +433,12 @@ def neighbors():
         
     else:
         m=randomMAC()
-        myip=get_ip_address(conf.iface)
-        pool=Net(myip+"/"+calcCIDR(subnet))
+        myip=get_if_ip(conf.iface)
+        #print("my net = %s my msk =%s  CIDR=%s"%(get_if_net(conf.iface),get_if_msk(conf.iface),calcCIDR(get_if_msk(conf.iface))))
+        pool = Net(myip + "/" + calcCIDR(get_if_msk(conf.iface)))
         for ip in pool:
-            LOG(type="<--", message=  "ARP: sending %15s - %s " % (ip, dhcpsip) )
-            ans,unans = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=ip,psrc=dhcpsip), timeout=8, filter="arp and arp[7] = 2")
+            LOG(type="<--", message=  "ARP: sending %15s - %s " % (ip, myip) )
+            ans,unans = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=ip,psrc=myip), timeout=0.1, filter="arp and arp[7] = 2")
             for request,reply in ans:
                 nodes[reply.hwsrc]=reply.psrc
                 LOG(type="<--", message=  "%15s - %s " % (reply.psrc, reply.hwsrc) )
