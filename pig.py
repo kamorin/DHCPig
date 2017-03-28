@@ -593,13 +593,13 @@ class sniff_dhcp(threading.Thread):
                         if opt[0] == 'subnet_mask':
                             subnet=opt[1]
                             break
-                    
+                    mymac = get_if_hwaddr(conf.iface)
                     myip=pkt[BOOTP].yiaddr
                     sip=pkt[BOOTP].siaddr
                     localxid=pkt[BOOTP].xid
                     localm=unpackMAC(pkt[BOOTP].chaddr)
                     myhostname=''.join(random.choice(string.ascii_uppercase + string.digits) for x in range(8))
-                    LOG(type="<--", message= "DHCP_Offer   " + pkt[Ether].src +"\t"+sip + " IP: "+myip+" for MAC=["+pkt[Ether].dst+"]")
+                    LOG(type="<--", message= "DHCP_Offer   " + pkt[Ether].src +"\t"+sip + " IP: "+myip+" for MAC=["+localm+"]")
     
                     if SHOW_DHCPOPTIONS:
                         b = pkt[BOOTP]
@@ -617,7 +617,7 @@ class sniff_dhcp(threading.Thread):
                             else:
                                 LOG(type="DEBUG", message=  "\t\t* %s\t%s"%(o[0],o[1:])  )    
                     
-                    dhcp_req = Ether(src=localm,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(localm)],xid=localxid)/DHCP(options=[("message-type","request"),("server_id",sip),("requested_addr",myip),("hostname",myhostname),("param_req_list","pad"),"end"])
+                    dhcp_req = Ether(src=mymac,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(localm)],xid=localxid,flags=0xFFFFFF)/DHCP(options=[("message-type","request"),("server_id",sip),("requested_addr",myip),("hostname",myhostname),("param_req_list","pad"),"end"])
                     LOG(type="-->", message= "DHCP_Request "+myip)
                     sendPacket(dhcp_req)
                 elif SHOW_LEASE_CONFIRM and pkt[DHCP] and pkt[DHCP].options[0][1] == 5:
