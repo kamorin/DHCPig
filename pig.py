@@ -434,7 +434,7 @@ def neighbors():
     else:
         m=randomMAC()
         myip=get_if_ip(conf.iface)
-        #print("my net = %s my msk =%s  CIDR=%s"%(get_if_net(conf.iface),get_if_msk(conf.iface),calcCIDR(get_if_msk(conf.iface))))
+        LOG(type="DEBUG",message="NEIGHBORS:  net = %s  : msk =%s  : CIDR=%s"%(get_if_net(conf.iface),get_if_msk(conf.iface),calcCIDR(get_if_msk(conf.iface))))
         pool = Net(myip + "/" + calcCIDR(get_if_msk(conf.iface)))
         for ip in pool:
             LOG(type="<--", message=  "ARP: sending %15s - %s " % (ip, myip) )
@@ -443,10 +443,11 @@ def neighbors():
                 nodes[reply.hwsrc]=reply.psrc
                 LOG(type="<--", message=  "%15s - %s " % (reply.psrc, reply.hwsrc) )
 
-#
-# send release for our neighbors
-#
+
 def release():
+    """
+        send release for our neighbors
+    """
     global dhcpsmac,dhcpsip,nodes,p_dhcp_advertise
     if MODE_IPv6 and p_dhcp_advertise and DHCP6OptServerId in p_dhcp_advertise:
         LOG(type="WARNING", message= " IPv6 - release() is not supported and supposed to be experimental - feel free to add code! ")
@@ -458,17 +459,18 @@ def release():
         LOG(type="NOTICE", message= "***  Sending DHCPRELEASE for neighbors ")
         myxid=random.randint(1, 900000000)
         #
-        #iterate over all ndoes and release their IP from DHCP server
+        #iterate over all nodes and release their IP from DHCP server
         for cmac,cip in nodes.iteritems():
             dhcp_release = Ether(src=cmac,dst=dhcpsmac)/IP(src=cip,dst=dhcpsip)/UDP(sport=68,dport=67)/BOOTP(ciaddr=cip,chaddr=[mac2str(cmac)],xid=myxid,)/DHCP(options=[("message-type","release"),("server_id",dhcpsip),("client_id",chr(1),mac2str(cmac)),"end"])
             LOG(type="-->", message= "Releasing %s - %s"%(cmac,cip))
             sendPacket(dhcp_release)
             if conf.verb: LOG(type="DEBUG", message= "%r"%dhcp_release )
 
-#
-#now knock everyone offline
-#
+
 def garp():
+    """ 
+        knock nodes offline
+    """
     global dhcpsip,subnet
     if MODE_IPv6:
         LOG(type="NOTICE", message= "IPv6 - gratious_arp() not supported at this point ")
@@ -559,8 +561,6 @@ class sniff_dhcp(threading.Thread):
                     myip=pkt[DHCP6OptIAAddress].addr
                     sip=repr(pkt[DHCP6OptServerId].duid.lladdr)
                     cip=repr(pkt[DHCP6OptClientId].duid.lladdr)
-                    #localxid=pkt[BOOTP].xid
-                    #localm=unpackMAC(pkt[BOOTP].chaddr)
                     myhostname=''.join(random.choice(string.ascii_uppercase + string.digits) for x in range(8))
             
                     LOG(type="<--", message=("v6 ADVERTISE FROM [%s] -> [%s] - LEASE: IPv6[%s]"%(sip,cip,myip)))
