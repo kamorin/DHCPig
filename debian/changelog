@@ -1,0 +1,5 @@
+dhcpig (1.0-1) unstable; urgency=low
+
+  * Initial release (Closes: #nnn)
+
+ -- Philippe Thierry <phil@reseau-libre.net>  Fri, 16 Jun 2017 15:38:12 +0200
