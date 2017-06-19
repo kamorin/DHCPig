@@ -1,4 +1,4 @@
 version=3
 
-opts=mode=git,filenamemangle=s/.+\/v?(\d\S*)\.tar\.gz/dhcpig-$1\.tar\.gz/ \
-  https://github.com/kamorin/DHCPig.git refs/heads/master debian uupdate
+#opts=mode=git,filenamemangle=s/.+\/v?(\d\S*)\.tar\.gz/dhcpig-$1\.tar\.gz/ \
+#  https://github.com/kamorin/DHCPig.git refs/heads/master debian uupdate
