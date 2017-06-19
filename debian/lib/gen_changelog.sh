@@ -6,7 +6,7 @@
 ## Login   <phil@reseau-libre.net>
 ##
 ## Started on  Tue 23 May 2017 10:01:40 AM CEST phil
-## Last update Fri 16 Jun 2017 02:20:10 PM CEST pret
+## Last update Mon 19 Jun 2017 02:45:16 PM CEST pret
 ##
 
 set -e
@@ -15,11 +15,16 @@ set -e
 num_tags=`git tag|grep -E "^[0-9\.]+"|wc -l`
 
 # current_tag is the one set in debian/changelog
-current_tag=`dpkg-parsechangelog -S version|cut -d'-' -f 1|sed -re 's/.dfsg//'`
+current_tag=`dpkg-parsechangelog -S version|sed -re 's/^.*://'|cut -d'-' -f 1|sed -re 's/.dfsg//'`
 
 # current_tag may not be the last upstream tag. previous one should be
 # detected depending on the current tag, not the last upstream tag
-if [ $num_tags -eq 1 ]; then
+if [ $num_tags -eq 0 ]; then
+  # well... just no tags... :-/ using all git history as changelog...
+  current_tag=`cat .git/refs/heads/upstream/latest`
+  previous_tag=`git rev-list --parents HEAD | egrep "^[a-f0-9]{40}$"`
+elif [ $num_tags -eq 1 ]; then
+  # set previous... as initial commit
   previous_tag=`git rev-list --parents HEAD | egrep "^[a-f0-9]{40}$"`
 else
   previous_tag=`git tag|grep -E "^[0-9\.]+"|grep -B 1 "$current_tag"|head -1`
