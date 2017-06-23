@@ -28,12 +28,3 @@ Last-Update: 2017-06-16
  
  class Colors:
      class Palette:
-@@ -684,7 +685,7 @@
-     LOG(type="NOTICE", message= "[DONE] DHCP pool exhausted!")
-   
- def usage():
--    print __doc__
-+    print(__doc__)
-     
- if __name__ == '__main__':
-     main()

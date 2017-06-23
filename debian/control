@@ -8,9 +8,9 @@ Build-Depends:
  dh-python,
  pkg-config,
  debhelper (>= 10),
- python (>= 2.7)
-Standards-Version: 3.9.8
-XS-Python-Version: >= 2.7
+ python
+Standards-Version: 4.0.0
+XS-Python-Version: all
 Homepage: https://github.com/kamorin/DHCPig
 Vcs-Git: https://anonscm.debian.org/git/pkg-security/dhcpig.git
 Vcs-Browser: https://anonscm.debian.org/cgit/pkg-security/dhcpig.git
@@ -21,7 +21,6 @@ Depends:
  ${misc:Depends},
  ${python:Depends},
  python-scapy,
- python,
 Description: DHCP exhaustion script using scapy network library
  DHCPig initiates an advanced DHCP exhaustion attack. It will consume all IPs
  on the LAN, stop new users from obtaining IPs, release any IPs in use, then

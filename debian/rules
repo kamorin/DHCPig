@@ -1,32 +1,16 @@
 #!/usr/bin/make -f
 
 # redirect module to correct dist-packages dir
-export PYBUILD_INSTALL_ARGS=--install-lib=/usr/lib/python2.7/dist-packages
-
-# get back current tag release notes from GitHub
-mkrelease:
-	quilt push changelog.patch
-	debian/lib/gen_changelog.sh
-	dos2unix changelog
-	quilt refresh
-	quilt pop -a
-	@echo
-	@echo This target is made to fail intentionally, to make sure
-	@echo that it is NEVER run during the automated build. Please
-	@echo ignore the following error, the changelog file has been
-	@echo generated SUCCESSFULLY.
-	@echo
-	exit 1
-
+#export PYBUILD_INSTALL_ARGS=--install-lib=/usr/lib/python2.7/dist-packages
 
 override_dh_auto_build:
-	dh_auto_build -O--buildsystem=pybuild
+	dh_auto_build
 	go-md2man -in debian/dhcpig.1.md -out debian/dhcpig.1
 
 # using pybuild for install
 # pig.py is properly named dhcpig
 override_dh_install:
-	dh_install -O--buildsystem=pybuild
+	dh_install
 	mv $(CURDIR)/debian/dhcpig/usr/bin/pig.py $(CURDIR)/debian/dhcpig/usr/bin/dhcpig
 
 %:
