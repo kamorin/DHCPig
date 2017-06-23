@@ -1,4 +1,4 @@
-dhcpig (0~git20170428-1) unstable; urgency=low
+dhcpig (0~20170428.git67f913-1) unstable; urgency=low
 
   * Initial release (Closes: #864897).
   * Adding epoch-based versioning while no upstream version is formalized.
