@@ -1,0 +1,4 @@
+Tests: test-help.sh
+Restrictions: allow-stderr
+Depends: @
+
