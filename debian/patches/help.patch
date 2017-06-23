@@ -2,6 +2,7 @@ Description: corrected help target
  help target is based on the python script docstring, which is
  incorrectly positioned, making python falling back to "None".
  This patch correct the position.
+Bug: https://github.com/kamorin/DHCPig/issues/12
 Author: Philippe Thierry
 Last-Update: 2017-06-16
 --- a/pig.py

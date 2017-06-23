@@ -2,6 +2,7 @@ Description: pybuild-based install process
  This patch deploy a small setup.py file in the root
  directory of the sources to support pybuild-based installation
  process.
+Bug: https://github.com/kamorin/DHCPig/issues/13
 Author: Philippe Thierry
 Last-Update: 2017-06-16
 --- /dev/null
