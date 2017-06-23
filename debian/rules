@@ -1,7 +1,9 @@
 #!/usr/bin/make -f
 
-# redirect module to correct dist-packages dir
-#export PYBUILD_INSTALL_ARGS=--install-lib=/usr/lib/python2.7/dist-packages
+# To make debian/rules clean work even when setup.py doesn't exist
+# because our patches are not applied
+override_dh_auto_clean:
+	[ ! -e setup.py ] || dh_auto_clean
 
 override_dh_auto_build:
 	dh_auto_build
