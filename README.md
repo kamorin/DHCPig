@@ -56,7 +56,7 @@ PROTOCOL
 
 CHANGELOG
 -----
-	 2017 : Better support for WiFi.  pig no longer spoofs the ethernet frame src MAC address, just chaddr.  
+	 1.5 : 3-2017 : Better support for WiFi.  pig no longer spoofs the ethernet frame src MAC address, just chaddr.  
          Updated DHCP fingerprint to match existing operating systems.  Some routers will only respond to known devices.
          Changed the BOOTP flag to broadcast from unicast.  FIOS routers will only respond if broadcast BOOTP option is set.
          Feedback welcome, pig is now running well on the networks we have tested on.
