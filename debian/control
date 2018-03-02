@@ -1,7 +1,7 @@
 Source: dhcpig
 Section: net
 Priority: extra
-Maintainer: Debian Security Tools Packaging Team <pkg-security-team@lists.alioth.debian.org>
+Maintainer: Debian Security Tools <team+pkg-security@tracker.debian.org>
 Uploaders: Philippe Thierry <phil@reseau-libre.net>
 Build-Depends:
  go-md2man,
