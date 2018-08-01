@@ -1,9 +1,5 @@
 #! /usr/bin/env python
 # -*- coding: utf-8 -*-
-from scapy.all import *
-import string, binascii, signal, sys, threading, socket, struct, getopt
-from sys import stdout
-
 """
 enhanced DHCP exhaustion attack.
 
@@ -46,6 +42,11 @@ Options:
     
     -c, --color                    ... enable color output (off)
 """
+
+from scapy.all import *
+import string, binascii, signal, sys, threading, socket, struct, getopt
+from sys import stdout
+
 
 
 class Colors:
