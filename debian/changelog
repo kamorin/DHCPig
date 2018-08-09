@@ -12,7 +12,7 @@ dhcpig (0~20170428.git67f913-1) unstable; urgency=low
 
   [ Raphaël Hertzog ]
   * Improve debian/tests/test-help.sh.
-  * Ensure debian/rules clean works even when setup.py is missing because patches
-    are not applied.
+  * Ensure debian/rules clean works even when setup.py is missing because
+    patches are not applied.
 
  -- Philippe Thierry <phil@reseau-libre.net>  Fri, 16 Jun 2017 15:38:12 +0200
