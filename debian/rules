@@ -5,9 +5,13 @@
 override_dh_auto_clean:
 	[ ! -e setup.py ] || dh_auto_clean
 
-override_dh_auto_build:
-	dh_auto_build
+genman:
 	go-md2man -in debian/dhcpig.1.md -out debian/dhcpig.1
+	echo "*** This target should not be executed automatically ***"
+	echo "*** as a consequence, it always return an error      ***"
+	echo "*** be sure to update the man page when the markdown ***"
+	echo "*** file is updated                                  ***"
+	exit 1
 
 # using pybuild for install
 # pig.py is properly named dhcpig

@@ -4,7 +4,6 @@ Priority: optional
 Maintainer: Debian Security Tools <team+pkg-security@tracker.debian.org>
 Uploaders: Philippe Thierry <phil@reseau-libre.net>
 Build-Depends:
- go-md2man,
  dh-python,
  pkg-config,
  debhelper (>= 10),
