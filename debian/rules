@@ -20,4 +20,4 @@ override_dh_install:
 	mv $(CURDIR)/debian/dhcpig/usr/bin/pig.py $(CURDIR)/debian/dhcpig/usr/bin/dhcpig
 
 %:
-	dh $@ --with python2 --buildsystem=pybuild
+	dh $@ --with python3 --buildsystem=pybuild

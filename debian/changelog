@@ -1,3 +1,9 @@
+dhcpig (1.5-3) unstable; urgency=medium
+
+  * Add support for Python3 (Closes: 940604)
+
+ -- Philippe Thierry <phil@reseau-libre.net>  Tue, 24 Sep 2019 14:09:19 +0200
+
 dhcpig (1.5-2) unstable; urgency=medium
 
   * Reducing build-dependencies by integrating generated manpages
