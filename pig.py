@@ -1,4 +1,4 @@
-#! /usr/bin/env python
+#! /usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 enhanced DHCP exhaustion attack.
@@ -156,9 +156,9 @@ def checkArgs():
                                                                       "neighbors-attack-release", "neighbors-attack-garp",
                                                                       "fuzz","ipv6","client-src=","color","v6-rapid-commit",
                                                                       "verbosity=","threads=", "show-lease-confirm","request-options="])
-    except getopt.GetoptError, err:
+    except getopt.GetoptError as err:
         # print help information and exit:
-        print str(err)  # will print something like "option -a not recognized"
+        print(str(err))  # will print something like "option -a not recognized"
         usage()
         sys.exit(2)
     for o,a in opts:
@@ -209,7 +209,7 @@ def checkArgs():
                     if len(x) == 2:
                         REQUEST_OPTS += range(int(x[0]),int(x[1]))
                     else:
-                        print "Error in option - request-options"
+                        print("Error in option - request-options")
                         usage()
                         exit()
                 else:
@@ -227,7 +227,7 @@ def checkArgs():
         sys.exit(2)
         
     if conf.verb:
-        print """---------------------[OPTIONS]-----------
+        print("""---------------------[OPTIONS]-----------
         IPv6                            %s
         fuzz                            %s
 
@@ -252,7 +252,7 @@ def checkArgs():
 -----------------------------------------
         """%(MODE_IPv6, MODE_FUZZ, SHOW_ARP, SHOW_ICMP, SHOW_DHCPOPTIONS, SHOW_LEASE_CONFIRM, repr(REQUEST_OPTS),
              TIMEOUT['timer'], TIMEOUT['dos'], TIMEOUT['dhcpip'],
-             DO_GARP, DO_RELEASE, DO_ARP, repr(MAC_LIST), DO_COLOR)
+             DO_GARP, DO_RELEASE, DO_ARP, repr(MAC_LIST), DO_COLOR))
 
 
 def LOG(message=None, type=None):
@@ -310,21 +310,21 @@ def toNum(ip):
 
 def get_if_net(iff):
     for net, msk, gw, iface, addr in read_routes():
-        if (iff == iface and net != 0L):
+        if (iff == iface and net != 0):
             return ltoa(net)
     warning("No net address found for iface %s\n" % iff)
 
 
 def get_if_msk(iff):
     for net, msk, gw, iface, addr in read_routes():
-        if (iff == iface and net != 0L):
+        if (iff == iface and net != 0):
             return ltoa(msk)
     warning("No net address found for iface %s\n" % iff)
 
 
 def get_if_ip(iff):
     for net, msk, gw, iface, addr in read_routes():
-        if (iff == iface and net != 0L):
+        if (iff == iface and net != 0):
             return addr
     warning("No net address found for iface %s\n" % iff)
 
@@ -685,8 +685,8 @@ def main():
     LOG(type="NOTICE", message= "[DONE] DHCP pool exhausted!")
   
 def usage():
-    print __doc__
+    print(__doc__)
     
 if __name__ == '__main__':
     main()
-    print "\n"
+    print("\n")
