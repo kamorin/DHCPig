@@ -1,0 +1,19 @@
+Description: fix binary decode of mac address to string
+From: Carlos Henrique Lima Melara <charlesmelara@outlook.com>
+Bug: https://github.com/kamorin/DHCPig/issues/17
+Forwarded: https://github.com/kamorin/DHCPig/pull/20
+Last-Update: 2023-02-03
+
+--- a/pig.py
++++ b/pig.py
+@@ -342,9 +342,7 @@ def calcCIDR(mask):
+ 
+ 
+ def unpackMAC(binmac):
+-    mac = binascii.hexlify(binmac)[0:12]
+-    blocks = [mac[x:x+2] for x in xrange(0, len(mac), 2)]
+-    return ':'.join(blocks)
++    return str2mac(binmac)
+ 
+ 
+ ##########################################################
