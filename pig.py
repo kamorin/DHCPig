@@ -342,9 +342,7 @@ def calcCIDR(mask):
 
 
 def unpackMAC(binmac):
-    mac = binascii.hexlify(binmac)[0:12]
-    blocks = [mac[x:x+2] for x in xrange(0, len(mac), 2)]
-    return ':'.join(blocks)
+    return str2mac(binmac)
 
 
 ##########################################################
