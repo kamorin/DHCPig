@@ -309,21 +309,21 @@ def toNum(ip):
 
 
 def get_if_net(iff):
-    for net, msk, gw, iface, addr in read_routes():
+    for net, msk, gw, iface, addr, metric in read_routes():
         if (iff == iface and net != 0):
             return ltoa(net)
     warning("No net address found for iface %s\n" % iff)
 
 
 def get_if_msk(iff):
-    for net, msk, gw, iface, addr in read_routes():
+    for net, msk, gw, iface, addr, metric in read_routes():
         if (iff == iface and net != 0):
             return ltoa(msk)
     warning("No net address found for iface %s\n" % iff)
 
 
 def get_if_ip(iff):
-    for net, msk, gw, iface, addr in read_routes():
+    for net, msk, gw, iface, addr, metric in read_routes():
         if (iff == iface and net != 0):
             return addr
     warning("No net address found for iface %s\n" % iff)
