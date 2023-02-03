@@ -1,7 +1,10 @@
 Description: Support for python3
  Update dhcpig source code to support Python3 syntax constraints
 Author: Philippe THIERRY <phiou@debian.org>
-Bug: https://bugs.debian.org/940604
+Bug-Debian: https://bugs.debian.org/940604
+Forwarded: https://github.com/kamorin/DHCPig/pull/20
+Last-Update: 2023-02-03
+
 --- a/pig.py
 +++ b/pig.py
 @@ -1,4 +1,4 @@
