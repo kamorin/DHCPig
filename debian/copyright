@@ -3,11 +3,13 @@ Upstream-Name: DHCPig
 Source: https://github.com/kamorin/DHCPig
 
 Files: *
-Copyright: 2012-2017 (c) Kevin Amorin
+Copyright: 2012-2017 Kevin Amorin
 License: GPL-2+
 
 Files: debian/*
-Copyright: 2017 Philippe Thierry <phil@reseau-libre.net>
+Copyright: 2017-2019 Philippe Thierry <phil@reseau-libre.net>
+           2023      Samuel Henrique <samueloph@debian.org>
+           2023      Carlos Henrique Lima Melara <charlesmelara@outlook.com>
 License: GPL-2+
 
 License: GPL-2+
