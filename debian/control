@@ -25,4 +25,4 @@ Description: DHCP exhaustion script using scapy network library
  .
  It is based on the scapy library and requests admin privileges to execute.
  It has been tested on multiple Linux distributions and multiple DHCP servers
- (ISC, Windows 2k3/2k8,..).
+ (ISC, Windows 2k3/2k8, ...).
