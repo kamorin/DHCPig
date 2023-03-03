@@ -3,7 +3,6 @@ Section: net
 Priority: optional
 Maintainer: Debian Security Tools <team+pkg-security@tracker.debian.org>
 Uploaders: Philippe Thierry <phil@reseau-libre.net>
-X-Python3-Version: >= 3.7
 Rules-Requires-Root: no
 Build-Depends: debhelper-compat (= 13),
                dh-python,
