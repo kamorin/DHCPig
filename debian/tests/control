@@ -1,2 +1,2 @@
 Tests: test-help.sh
-Restrictions: allow-stderr
+Restrictions: allow-stderr, superficial
