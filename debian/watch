@@ -1,3 +1,8 @@
-version=3
-
-https://github.com/kamorin/DHCPig/tags .*/(\d\S*)\.tar\.gz
+version=4
+opts="searchmode=plain,\
+filenamemangle=s%v?@ANY_VERSION@%@PACKAGE@-$1.tar.gz%,\
+uversionmangle=s/(\d)[_\.\-\+]?((RC|rc|pre|dev|beta|alpha|a|b)\d*)$/$1~$2/, \
+dversionmangle=s/@DEB_EXT@//, \
+repacksuffix=+dfsg" \
+https://api.github.com/repos/kamorin/DHCPig/releases?per_page=100 \
+https://api.github.com/repos/[^/]+/[^/]+/tarball/v?@ANY_VERSION@
