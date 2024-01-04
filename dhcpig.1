@@ -1,0 +1,139 @@
+.TH "DHCPIG" "1" " DHCPig Man Page" "Philippe Thierry" "June 2017" 
+.nh
+.ad l
+
+
+.SH NAME
+.PP
+dhcpig \- DHCP exhaustion script using scapy network library
+
+
+.SH SYNOPSIS
+.PP
+\fBdhcpig [options] <interface>\fP
+\fBdhcpig \-h|\-\-help\fP
+
+
+.SH DESCRIPTION
+.PP
+DHCPig initiates an advanced DHCP exhaustion attack. It will consume all IPs
+on the LAN, stop new users from obtaining IPs, release any IPs in use, then
+for good measure send gratuitous ARP and knock all windows hosts offline.
+
+.PP
+When executed the script will perform the following actions:
+
+.PP
+Grab your Neighbors IPs before they do
+   Listen for DHCP Requests from other clients if offer detected, respond with
+   request for that offer.
+
+.PP
+Request all available IP addresses in Zone
+   Loop and Send DHCP Requests all from different hosts \& MAC addresses
+
+.PP
+Find your Neighbors MAC \& IP and release their IP from DHCP server
+   ARP for all neighbors on that LAN, then send DHCPReleases to server
+
+.PP
+Finally the script will then wait for DHCP exhaustion, (that is no received
+DHCP OFFERs for 10 seconds) and then
+
+.PP
+Knock all Windows systems offline
+   gratuitous ARP the LAN, and since no additional DHCP addresses are available
+these windows systems should stay offline. Linux systems will not give up IP
+even when another system on LAN is detected with same IP.
+
+
+.SH OPTIONS:
+.PP
+The options of DHCPig are the following. For each option, the default value or
+default behavior is set between parenthesis.
+
+.PP
+\fB\-h\fP, \fB\-\-help\fP
+  show this help message and exit
+
+.PP
+\fB\-v, \-\-verbosity\fP
+  Set verbosity level. Can be set to:
+    0 ... no         (3)
+    1 ... minimal
+   10 ... default
+   99 ... debug
+
+.PP
+\fB\-6, \-\-ipv6\fP
+  DHCPv6 (off, DHCPv4 by default)
+
+.PP
+\fB\-1, \-\-v6\-rapid\-commit\fP
+  enable RapidCommit (2way ip assignment instead of 4way) (off)
+
+.PP
+\fB\-s, \-\-client\-src\fP
+  a list of client macs 00:11:22:33:44:55,00:11:22:33:44:56 (Default: <random>)
+
+.PP
+\fB\-O, \-\-request\-options\fP
+  option\-codes to request e.g. 21,22,23 or 12,14\-19,23 (Default: 0\-80)
+
+.PP
+\fB\-f, \-\-fuzz\fP
+  randomly fuzz packets (off)
+
+.PP
+\fB\-t, \-\-threads\fP
+  number of sending threads (1)
+
+.PP
+\fB\-a, \-\-show\-arp\fP
+  detect/print arp who\_has (off)
+
+.PP
+\fB\-i, \-\-show\-icmp\fP
+  detect/print icmps requests (off)
+
+.PP
+\fB\-o, \-\-show\-options\fP
+  print lease infos (off)
+
+.PP
+\fB\-l, \-\-show\-lease\-confirm\fP
+  detect/print dhcp replies (off)
+
+.PP
+\fB\-g, \-\-neighbors\-attack\-garp\fP
+  knock off network segment using gratious arps (off)
+
+.PP
+\fB\-r, \-\-neighbors\-attack\-release\fP
+  release all neighbor ips (off)
+
+.PP
+\fB\-n, \-\-neighbors\-scan\-arp\fP
+  arp neighbor scan (off)
+
+.PP
+\fB\-x, \-\-timeout\-threads\fP
+  thread spawn timer (0.4)
+
+.PP
+\fB\-y, \-\-timeout\-dos\fP
+  DOS timeout (8) (wait time to mass grat.arp)
+
+.PP
+\fB\-z, \-\-timeout\-dhcprequest\fP
+  dhcp request timeout (2)
+
+.PP
+\fB\-c, \-\-color\fP
+  enable color output (off)
+
+
+.SH HISTORY
+.PP
+June 2017, Man page originally compiled by Philippe Thierry (phil at reseau\-libre dot
+com)
