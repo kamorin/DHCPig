@@ -109,7 +109,7 @@ EXAMPLE
     
     ./pig.py --neighbors-scan-arp -r -g --show-options eth1
 
-INSTALL
+DEPENDENCIES
 -------
     $ python -m pip install scapy
     $ sudo apt-get install libpcap0.8
