@@ -523,7 +523,7 @@ class send_dhcp(threading.Thread):
                 dhcp_discover = v6_build_discover(m,trid=myxid,options=REQUEST_OPTS)
                 LOG(type="-->", message="v6_DHCP_Discover [cid:%s]"%(repr(str(dhcp_discover[DHCP6OptClientId].duid))))
             else:
-                dhcp_discover = Ether(src=mymac,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(m)],xid=myxid,flags=0xFFFFFF)/DHCP(options=myoptions)
+                dhcp_discover = Ether(src=mymac,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(m)],xid=myxid,flags=0x8000)/DHCP(options=myoptions)
                 LOG(type="-->", message="DHCP_Discover")
             sendPacket(dhcp_discover)
             if TIMEOUT['timer']>0: 
@@ -618,7 +618,7 @@ class sniff_dhcp(threading.Thread):
                                 LOG(type="DEBUG", message=  "\t\t* %s\t%s"%(o[0],o[1:])  )    
 
                     # ("param_req_list",0) is the equivalent of using DHCPRevOptions["pad"][0]
-                    dhcp_req = Ether(src=mymac,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(localm)],xid=localxid,flags=0xFFFFFF)/DHCP(options=[("message-type","request"),("server_id",sip),("requested_addr",myip),("hostname",myhostname),("param_req_list",0),"end"])
+                    dhcp_req = Ether(src=mymac,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(localm)],xid=localxid,flags=0x8000)/DHCP(options=[("message-type","request"),("server_id",sip),("requested_addr",myip),("hostname",myhostname),("param_req_list",0),"end"])
                     
                     LOG(type="-->", message= "DHCP_Request "+myip)
                     sendPacket(dhcp_req)
