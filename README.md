@@ -65,10 +65,10 @@ CHANGELOG
          * Changed the BOOTP flag to broadcast from unicast.  FIOS routers will only respond if broadcast BOOTP option is set.
          * Feedback welcome, pig is now running well on the networks we have tested on.
 	1.0 : 2015-1
-		* more options, fixed v6 supoprt (LL src addr), color output, minimal and debug output
-		* more options, double the fun: scapy fuzzing, ipv6 support
-		* more options, more fun: show options/show icmp/show arp
-		* fixed indents, beautify doc, eyefriendly one-line-logging
+         * more options, fixed v6 supoprt (LL src addr), color output, minimal and debug output
+         * more options, double the fun: scapy fuzzing, ipv6 support
+         * more options, more fun: show options/show icmp/show arp
+         * fixed indents, beautify doc, eyefriendly one-line-logging
 
 
 USAGE
