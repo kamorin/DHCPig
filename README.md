@@ -56,10 +56,14 @@ PROTOCOL
 
 CHANGELOG
 -----
-	 1.5 : 3-2017 : Better support for WiFi.  pig no longer spoofs the ethernet frame src MAC address, just chaddr.  
-         Updated DHCP fingerprint to match existing operating systems.  Some routers will only respond to known devices.
-         Changed the BOOTP flag to broadcast from unicast.  FIOS routers will only respond if broadcast BOOTP option is set.
-         Feedback welcome, pig is now running well on the networks we have tested on.
+
+     1.6 : 2024-01 
+	     * support for python3 via charles2910
+	 1.5 : 2017-1  : 
+	     * Better support for WiFi.  pig no longer spoofs the ethernet frame src MAC address, just chaddr.  
+         * Updated DHCP fingerprint to match existing operating systems.  Some routers will only respond to known devices.
+         * Changed the BOOTP flag to broadcast from unicast.  FIOS routers will only respond if broadcast BOOTP option is set.
+         * Feedback welcome, pig is now running well on the networks we have tested on.
 
 USAGE
 -----
