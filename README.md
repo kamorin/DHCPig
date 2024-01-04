@@ -54,23 +54,6 @@ PROTOCOL
 	 * DHCPd snoop detection (DHCPd often checks if IP is in use)
 	  	* Check for ICMPv6 Snoops 
 
-CHANGELOG
------
-
-     1.6 : 2024-01 
-	     * support for python3 & scapy 2.5.0 via charles2910, k4l3b & maniaque
-	 1.5 : 2017-1 
-	     * Better support for WiFi.  pig no longer spoofs the ethernet frame src MAC address, just chaddr.  
-         * Updated DHCP fingerprint to match existing operating systems.  Some routers will only respond to known devices.
-         * Changed the BOOTP flag to broadcast from unicast.  FIOS routers will only respond if broadcast BOOTP option is set.
-         * Feedback welcome, pig is now running well on the networks we have tested on.
-	1.0 : 2015-1
-         * more options, fixed v6 supoprt (LL src addr), color output, minimal and debug output
-         * more options, double the fun: scapy fuzzing, ipv6 support
-         * more options, more fun: show options/show icmp/show arp
-         * fixed indents, beautify doc, eyefriendly one-line-logging
-
-
 USAGE
 -----
 	enhanced DHCP exhaustion attack plus.
@@ -125,6 +108,28 @@ EXAMPLE
     ./pig.py -6 -c -verbosity=100 eth1
     
     ./pig.py --neighbors-scan-arp -r -g --show-options eth1
+
+INSTALL
+-------
+    $ python -m pip install scapy
+    $ sudo apt-get install libpcap0.8
+ 
+
+CHANGELOG
+-----
+
+     1.6 : 2024-01 
+	     * support for python3 & scapy 2.5.0 via charles2910, k4l3b & maniaque
+	 1.5 : 2017-1 
+	     * Better support for WiFi.  pig no longer spoofs the ethernet frame src MAC address, just chaddr.  
+         * Updated DHCP fingerprint to match existing operating systems.  Some routers will only respond to known devices.
+         * Changed the BOOTP flag to broadcast from unicast.  FIOS routers will only respond if broadcast BOOTP option is set.
+         * Feedback welcome, pig is now running well on the networks we have tested on.
+	1.0 : 2015-1
+         * more options, fixed v6 supoprt (LL src addr), color output, minimal and debug output
+         * more options, double the fun: scapy fuzzing, ipv6 support
+         * more options, more fun: show options/show icmp/show arp
+         * fixed indents, beautify doc, eyefriendly one-line-logging
 
 
 ACTION-SHOTS
