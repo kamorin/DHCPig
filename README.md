@@ -58,12 +58,18 @@ CHANGELOG
 -----
 
      1.6 : 2024-01 
-	     * support for python3 via charles2910
-	 1.5 : 2017-1  : 
+	     * support for python3 & scapy 2.5.0 via charles2910, k4l3b & maniaque
+	 1.5 : 2017-1 
 	     * Better support for WiFi.  pig no longer spoofs the ethernet frame src MAC address, just chaddr.  
          * Updated DHCP fingerprint to match existing operating systems.  Some routers will only respond to known devices.
          * Changed the BOOTP flag to broadcast from unicast.  FIOS routers will only respond if broadcast BOOTP option is set.
          * Feedback welcome, pig is now running well on the networks we have tested on.
+	1.0 : 2015-1
+		* more options, fixed v6 supoprt (LL src addr), color output, minimal and debug output
+		* more options, double the fun: scapy fuzzing, ipv6 support
+		* more options, more fun: show options/show icmp/show arp
+		* fixed indents, beautify doc, eyefriendly one-line-logging
+
 
 USAGE
 -----
@@ -264,14 +270,6 @@ limit DHCP server responses to only the specified port, so use after testing in 
 
 * additional info:
 http://www.cisco.com/en/US/docs/switches/lan/catalyst4500/12.1/12ew/configuration/guide/dhcp.pdf
-
-
-CHANGES:
---------
-more options, fixed v6 supoprt (LL src addr), color output, minimal and debug output
-more options, double the fun: scapy fuzzing, ipv6 support
-more options, more fun: show options/show icmp/show arp
-fixed indents, beautify doc, eyefriendly one-line-logging
 
 
 LICENSE:

@@ -498,25 +498,21 @@ class send_dhcp(threading.Thread):
             # Mac OS options order to avoid DHCP fingerprinting
             myoptions = [
                 ("message-type", "discover"),
-#                ("param_req_list", chr(1),chr(121),chr(3),chr(6),chr(15),chr(119),chr(252),chr(95),chr(44),chr(46)),
-#### Fix by k4l3b ####
-# Replaced the chr(n) by it's numeric representation.
-# Can be replaced by DHCPRevOptions[] as stated, but not all parameters are defined in scapy
-# For a full list of 'em: https://www.iana.org/assignments/bootp-dhcp-parameters/bootp-dhcp-parameters.xhtml
-#("param_req_list",chr(1),chr(121),chr(3),chr(6),chr(15),chr(119),chr(252),chr(95),chr(44),chr(46)),
+                #  Can replace numeric representation with DHCPRevOptions[],
+                #  but not all parameters are defined in scapy.  For full list see:
+                #  https://www.iana.org/assignments/bootp-dhcp-parameters/bootp-dhcp-parameters.xhtml
                 ('param_req_list',
-1, # Subnet Mask DHCPRevOptions["subnet_mask"][0]
-121, # Classless Satic Route
-3, # Router DHCPRevOptions["router"][0]
-6, # Domain Name Server DHCPRevOptions["name_server"][0]
-15, # Domain Name DHCPRevOptions["domain"][0]
-119, # Domain Seach
-252, # Private/Proxy Autodiscovery
-95, # LDAP
-44, # NetBIOS over TCP/IP Name Server DHCPRevOptions["NetBIOS_server"][0]
-46 # NetBIOS over TCP/IP Node Type
-),
-#### End of Fix ######
+                1, # Subnet Mask DHCPRevOptions["subnet_mask"][0]
+                121, # Classless Satic Route
+                3, # Router DHCPRevOptions["router"][0]
+                6, # Domain Name Server DHCPRevOptions["name_server"][0]
+                15, # Domain Name DHCPRevOptions["domain"][0]
+                119, # Domain Seach
+                252, # Private/Proxy Autodiscovery
+                95, # LDAP
+                44, # NetBIOS over TCP/IP Name Server DHCPRevOptions["NetBIOS_server"][0]
+                46 # NetBIOS over TCP/IP Node Type
+                ),
                 ("max_dhcp_size",1500),
                 ("client_id", chr(1), mac2str(m)),
                 ("lease_time",10000),
@@ -620,17 +616,10 @@ class sniff_dhcp(threading.Thread):
                                 LOG(type="DEBUG", message=  "\t\t* "+repr(o)  )
                             else:
                                 LOG(type="DEBUG", message=  "\t\t* %s\t%s"%(o[0],o[1:])  )    
-                    
-                    dhcp_req = Ether(src=mymac,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(localm)],xid=localxid,flags=0xFFFFFF)/DHCP(options=[("message-type","request"),("server_id",sip),("requested_addr",myip),("hostname",myhostname),("param_req_list","pad"),"end"])
 
-
-#### Fix by k4l3b ####
-# replaced ("param_req_list","pad") with ("param_req_list",0)
-# The '0' is the equivalent of using DHCPRevOptions["pad"][0]
-#dhcp_req = Ether(src=mymac,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(localm)],xid=localxid,flags=0xFFFFFF)/DHCP(options=[("message-type","request"),("server_id",sip),("requested_addr",myip),("hostname",myhostname),("param_req_list","pad"),"end"])
+                    # ("param_req_list",0) is the equivalent of using DHCPRevOptions["pad"][0]
                     dhcp_req = Ether(src=mymac,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(localm)],xid=localxid,flags=0xFFFFFF)/DHCP(options=[("message-type","request"),("server_id",sip),("requested_addr",myip),("hostname",myhostname),("param_req_list",0),"end"])
-#### End of Fix ######
-
+                    
                     LOG(type="-->", message= "DHCP_Request "+myip)
                     sendPacket(dhcp_req)
                 elif SHOW_LEASE_CONFIRM and pkt[DHCP] and pkt[DHCP].options[0][1] == 5:
