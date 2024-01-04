@@ -96,6 +96,8 @@ USAGE
 
 EXAMPLE
 -------
+    # requires root privileges to open raw sockets and set the interface in promiscuous mode
+    sudo ./pig.py eth1
 
     ./pig.py eth1
     ./pig.py --show-options eth1
