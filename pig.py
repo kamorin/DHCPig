@@ -444,7 +444,7 @@ def release():
     else:
         LOG(type="NOTICE", message= "***  Sending DHCPRELEASE for neighbors ")
         #iterate over all nodes and release their IP from DHCP server
-        for cmac,cip in nodes.iteritems():
+        for cmac,cip in nodes.items():
             myxid = random.randint(1, 900000000)
             LOG(type="-->", message= "Releasing %s - %s serverip=%s  xid=%i"%(cmac,cip,dhcpsip,myxid))
             dhcp_release =  IP(src=cip,dst=dhcpsip)/UDP(sport=68,dport=67)/BOOTP(ciaddr=cip,chaddr=[mac2str(cmac)],xid=myxid)/\
