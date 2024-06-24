@@ -1,3 +1,21 @@
+dhcpig (1.6-1) unstable; urgency=medium
+
+  * New upstream version 1.6.
+  * Remove manpage from packaging - incorporated by upstream.
+      - debian/dhcpig.1: remove.
+      - debian/dhcpig.1.md: remove.
+      - debian/source/lintian-overrides: remove.
+      - debian/dhcpig.manpages: point to new manpage path.
+  * debian/control:
+      - Add myself to Uploaders field.
+      - s/pkg-config/pkgconf/ in Build-Depends.
+  * debian/copyright: update packaging copyright years.
+  * debian/gbp.conf: add upstream-branch field.
+  * debian/patches/*: removed. Patches incorporated by upstream.
+  * debian/rules: remove rule to generate manpage.
+
+ -- Carlos Henrique Lima Melara <charlesmelara@riseup.net>  Sun, 23 Jun 2024 22:20:22 -0300
+
 dhcpig (1.5-4) unstable; urgency=medium
 
   * Team upload.
