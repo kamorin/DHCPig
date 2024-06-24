@@ -1,4 +1,0 @@
-python3.patch
-fix-DHCPRevOptions.patch
-fix-decode-of-mac-address.patch
-handle-new-return-type.patch
