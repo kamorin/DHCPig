@@ -111,6 +111,7 @@ TIMEOUT['dos']=8
 TIMEOUT['dhcpip']=2
 TIMEOUT['timer']=0.4
 DO_COLOR = False 
+ETHERNET_MAC = False
 COLORSCHEME = {'<--':Colors.green+"%s"+Colors.endc,
                '<-':Colors.blue+"%s"+Colors.endc,
                '->':Colors.cyan+"%s"+Colors.endc,
