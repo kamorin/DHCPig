@@ -1,7 +1,7 @@
-dhcpig (1.6-2) UNRELEASED; urgency=medium
+dhcpig (1.6-2) experimental; urgency=medium
 
-  [ caionv ]
-  * d/control: Bump std version to 4.7.2
+  * Team upload.
+  * d/control: Bump stds-version to 4.7.2
 
  -- Nicolas C Borsari <nicborsari@usp.br>  Wed, 11 Jun 2025 16:10:09 -0300
 
