@@ -557,6 +557,14 @@ class sniff_dhcp(threading.Thread):
             if self.dhcpcount>0 : LOG(type="NOTICE", message="timeout waiting on dhcp packet count %d"%self.dhcpcount)
             self.dhcpcount += 1
             if not MODE_FUZZ and self.dhcpcount==5: dhcpdos = True
+    
+    @staticmethod
+    def get_server_identifier(bootp_siaddr: str, dhcp_options: list) -> str:
+        for opt in dhcp_options:
+            if opt[0] == 'server_id':
+                return opt[1]
+        return bootp_siaddr
+        
           
     def detect_dhcp(self, pkt):
         global dhcpsmac,dhcpsip,subnet,SHOW_ARP,SHOW_DHCPOPTIONS,SHOW_ICMP,DO_v6_RC,p_dhcp_advertise, SHOW_LEASE_CONFIRM,REQUEST_OPTS, ETHERNET_MAC
@@ -601,7 +609,7 @@ class sniff_dhcp(threading.Thread):
                             subnet=opt[1]
                             break
                     myip=pkt[BOOTP].yiaddr
-                    sip=pkt[BOOTP].siaddr
+                    sip=self.get_server_identifier(pkt[BOOTP].siaddr, pkt[DHCP].options)
                     localxid=pkt[BOOTP].xid
                     localm=unpackMAC(pkt[BOOTP].chaddr)
                     if ETHERNET_MAC:
@@ -634,7 +642,7 @@ class sniff_dhcp(threading.Thread):
                     sendPacket(dhcp_req)
                 elif SHOW_LEASE_CONFIRM and pkt[DHCP] and pkt[DHCP].options[0][1] == 5:
                     myip=pkt[BOOTP].yiaddr
-                    sip=pkt[BOOTP].siaddr
+                    sip=self.get_server_identifier(pkt[BOOTP].siaddr, pkt[DHCP].options)
                     LOG(type="<-", message= "DHCP_ACK   " + pkt[Ether].src +"\t"+sip + " IP: "+myip+" for MAC=["+pkt[Ether].dst+"]")
             
             elif ICMP in pkt:
