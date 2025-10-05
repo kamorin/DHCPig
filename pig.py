@@ -21,7 +21,7 @@ Options:
     -1, --v6-rapid-commit          ... enable RapidCommit (2way ip assignment instead of 4way) (off)
     
     -s, --client-src               ... a list of client macs 00:11:22:33:44:55,00:11:22:33:44:56 (Default: <random>)
-    -S, --ethernet-mac             ... Use identical MAC addresses on the Ethernet framd and DHCP frame (off)
+    -S, --ethernet-mac             ... Use identical MAC addresses on the Ethernet frame and DHCP frame (off)
     -O, --request-options          ... option-codes to request e.g. 21,22,23 or 12,14-19,23 (Default: 0-80)
     
     -f, --fuzz                     ... randomly fuzz packets (off)
