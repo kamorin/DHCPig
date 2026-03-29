@@ -1,4 +1,4 @@
-dhcpig (1.6-3) experimental; urgency=medium
+dhcpig (1.6-3) unstable; urgency=medium
 
   * Team upload.
   * Eewrite d/rules with newer & shorter syntax
