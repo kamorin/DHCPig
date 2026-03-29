@@ -7,9 +7,8 @@ override_dh_auto_clean:
 
 # using pybuild for install
 # pig.py is properly named dhcpig
-override_dh_install:
-	dh_install
+execute_after_dh_install:
 	mv $(CURDIR)/debian/dhcpig/usr/bin/pig.py $(CURDIR)/debian/dhcpig/usr/bin/dhcpig
 
 %:
-	dh $@ --with python3 --buildsystem=pybuild
+	dh $@ --buildsystem=pybuild
