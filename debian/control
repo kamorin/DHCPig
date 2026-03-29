@@ -4,7 +4,6 @@ Priority: optional
 Maintainer: Debian Security Tools <team+pkg-security@tracker.debian.org>
 Uploaders: Carlos Henrique Lima Melara <charlesmelara@riseup.net>,
            Philippe Thierry <phil@reseau-libre.net>
-Rules-Requires-Root: no
 Build-Depends: debhelper-compat (= 13),
                dh-sequence-python3,
                pkgconf,
