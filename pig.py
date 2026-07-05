@@ -637,7 +637,7 @@ class sniff_dhcp(threading.Thread):
 
                     # ("param_req_list",0) is the equivalent of using DHCPRevOptions["pad"][0]
                     client_id_bytes = b'\x01' + mac2str(localm)
-                    dhcp_req = Ether(src=mymac,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(localm)],xid=localxid,flags=0x0000)/DHCP(options=[("message-type","request"),("client_id",client_id_bytes),("server_id",sip),("requested_addr",myip),("hostname",myhostname),("param_req_list",0),"end"])
+                    dhcp_req = Ether(src=mymac,dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0",dst="255.255.255.255")/UDP(sport=68,dport=67)/BOOTP(chaddr=[mac2str(localm)],xid=localxid,flags=0x8000)/DHCP(options=[("message-type","request"),("client_id",client_id_bytes),("server_id",sip),("requested_addr",myip),("hostname",myhostname),("param_req_list",0),"end"])
                     
                     LOG(type="-->", message= "DHCP_Request "+myip)
                     sendPacket(dhcp_req)
