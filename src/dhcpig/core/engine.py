@@ -130,6 +130,11 @@ class DhcpEngine:
         self.journal_path: Path | None = None
         if self._journal_enabled:
             self.journal_path = cfg.journal_path or journal.default_path(cfg.interface)
+        # release-previous (2.2): kept separate from control_pre/control_post so the generic
+        # exhaust _finalize_findings() (which reads those) stays a no-op for this mode.
+        self._rp_pre_control: ControlOutcome | None = None
+        self._rp_post_control: ControlOutcome | None = None
+        self.recovery_result: dict = {}
 
     # ---------------------------------------------------------------- lease journal
     def _journal_ack(self, lease: Lease) -> None:
@@ -191,6 +196,7 @@ class DhcpEngine:
             Mode.ACTIVE_SCAN: self._run_active_scan,
             Mode.RELEASE_NEIGHBORS: self._run_release,
             Mode.GARP_DOS: self._run_garp,
+            Mode.RELEASE_PREVIOUS: self._run_release_previous,
         }
         runners[self.cfg.mode]()
 
@@ -333,6 +339,8 @@ class DhcpEngine:
             out["pool_detail"] = est.detail
             out["headroom"] = headroom
             out["in_use_observed"] = len(self._neighbors_by_mac)
+        if self.cfg.mode is Mode.RELEASE_PREVIOUS:
+            out["recovery"] = self.recovery_result or None
         return out
 
     # ---------------------------------------------------------------- helpers
@@ -1392,6 +1400,239 @@ class DhcpEngine:
             return
         sent = self._do_release(neighbors, pre.server_id, server_mac=pre.server_mac)
         self._debug(f"release: sent {sent} RELEASE via server {pre.server_id}")
+
+    # ---------------------------------------------------------------- release-previous (2.2)
+    def _run_release_previous(self) -> None:
+        # needs the sniffer to receive the pre/post "can a new client get an address?" probes
+        if not self.cfg.dry_run:
+            self._sniffer = DhcpSniffer(self.cfg.interface, self.cfg.ip_version, self._on_dhcp)
+            self._sniffer.start()
+            self._debug(f"release-previous: sniffer started on {self.cfg.interface}")
+        t = threading.Thread(target=self._release_previous_worker, daemon=True)
+        t.start()
+        self._threads.append(t)
+
+    def _select_release_previous_entries(
+        self, entries: list, scope: ScopeGuard, pre_control: ControlOutcome
+    ) -> tuple[list, dict]:
+        """Filter journal entries down to what's safe and relevant to release right now.
+
+        See EXECUTION-PLAN-release-previous.md §Phase 2 for why each step exists: interface,
+        then current CIDR (never an unbounded sweep), then same-server (guards against a
+        journal carried between engagements producing targets on the wrong network -- only
+        evaluable when the pre-flight control actually learned a server identity, which it
+        usually won't on a genuinely exhausted pool; that's an accepted gap, not a bug), then
+        age (an optimisation -- a stale entry is harmless because its MAC simply won't match
+        the server's current binding, see the module-level note in journal.py).
+        """
+        known_server_id = pre_control.server_id if pre_control.attempted else None
+        same_server_filter_applied = bool(self.cfg.require_same_server and known_server_id)
+
+        step1 = [e for e in entries if e.iface == self.cfg.interface]
+        step2 = [e for e in step1 if scope.allows(e.ip)]
+
+        if same_server_filter_applied:
+            step3 = [e for e in step2 if e.server_ip == known_server_id]
+        else:
+            step3 = step2
+
+        now = time.time()
+        max_age_s = max(0.0, self.cfg.max_age_days) * 86400
+        step4 = [e for e in step3 if now - (e.ts + (e.lease_time or 0)) <= max_age_s]
+
+        stats = {
+            "journal_entries_loaded": len(entries),
+            "in_cidr": len(step2),
+            "same_server_filter_applied": same_server_filter_applied,
+            "same_server": len(step3),
+            "within_max_age": len(step4),
+            "selected": len(step4),
+        }
+        return step4, stats
+
+    def _release_selected(self, entries: list) -> int:
+        """Group by (server_ip, server_mac) so each batch unicasts to the right server --
+        a journal can span multiple servers on the same segment (failover pairs, a second
+        scope). Funnels through `_release_bindings()`, the one release send-path."""
+        groups: dict[tuple[str, str | None], list[tuple[str, str]]] = {}
+        for e in entries:
+            groups.setdefault((e.server_ip, e.server_mac), []).append((e.mac, e.ip))
+        sent = 0
+        for (server_ip, server_mac), bindings in groups.items():
+            if self._stop.is_set():
+                break
+            sent += self._release_bindings(bindings, server_ip, server_mac=server_mac)
+        return sent
+
+    def _release_previous_worker(self) -> None:
+        """Replay the lease journal to recover a network this tool previously drained.
+
+        No ARP sweep, no server discovery, no leasequery: the journal already carries mac,
+        ip, server_ip and server_mac for every lease, so the release itself is fully
+        self-sufficient from disk. The pre/post control transactions exist purely to produce
+        a trustworthy verdict -- reused from `_control_transaction()`, not reimplemented.
+        """
+        # Read path is independent of self.journal_path (the *write* path, which is None
+        # whenever journaling is off or this is a dry-run) -- release-previous must be able to
+        # read the journal even when it wouldn't write to it, including under --dry-run.
+        jpath = self.cfg.journal_path or journal.default_path(self.cfg.interface)
+        all_entries, warnings = journal.load_open_leases(jpath)
+        for w in warnings:
+            self._debug(f"release-previous: journal warning: {w}")
+        self._debug(f"release-previous: journal {jpath} — {len(all_entries)} open lease(s) loaded")
+
+        cidrs = self._sweep_cidrs()
+        if not cidrs:
+            self._raise(
+                Finding(
+                    id="RELEASE_PREVIOUS_SCOPE_REQUIRED",
+                    title="release-previous refused to run: no scope and no resolvable "
+                    "interface network",
+                    verdict=INCONCLUSIVE,
+                    severity="medium",
+                    evidence={"interface": self.cfg.interface},
+                    recommendation=(
+                        "Pass --scope explicitly, or run on an interface with a configured "
+                        "IPv4 address, so the recovery sweep stays bounded to a known network."
+                    ),
+                )
+            )
+            return
+        scope = ScopeGuard(cidrs)
+
+        if self._stop.is_set():
+            return
+        pre = self._control_transaction("pre", client="new")
+        self._rp_pre_control = pre
+        if pre.success:
+            self._raise(
+                Finding(
+                    id="NO_RECOVERY_NEEDED",
+                    title="A new client already obtains an address — nothing to recover",
+                    verdict=INFO,
+                    severity="info",
+                    evidence={
+                        "interface": self.cfg.interface,
+                        "journal_entries_loaded": len(all_entries),
+                        "offered_ip": pre.offered_ip,
+                    },
+                    recommendation="No RELEASE frames were sent.",
+                )
+            )
+            self.recovery_result = {"outcome": "not_needed", "frames_sent": 0}
+            return
+
+        selected, stats = self._select_release_previous_entries(all_entries, scope, pre)
+        self._debug(
+            "release-previous: selection — "
+            f"{stats['journal_entries_loaded']} loaded, {stats['in_cidr']} in scope, "
+            f"{stats['same_server']} same-server, {stats['within_max_age']} within max-age "
+            f"-> {stats['selected']} to release "
+            f"(same_server_filter_applied={stats['same_server_filter_applied']})"
+        )
+
+        if not selected:
+            self._raise(
+                Finding(
+                    id="NO_JOURNAL_DATA",
+                    title="No journal entries matched this network — nothing to recover",
+                    verdict=INFO,
+                    severity="info",
+                    evidence={"interface": self.cfg.interface, **stats},
+                    recommendation=(
+                        "Either no prior run left an open lease here, or --scope / --max-age "
+                        "/ --any-server need adjusting. release-previous only releases leases "
+                        "this tool recorded taking — it cannot recover what it never recorded."
+                    ),
+                )
+            )
+            self.recovery_result = {"outcome": "no_data", "frames_sent": 0, **stats}
+            return
+
+        if self.cfg.dry_run:
+            for e in selected:
+                self._debug(
+                    f"release-previous: [dry] would release {e.mac} {e.ip} via {e.server_ip}"
+                )
+            self.recovery_result = {"outcome": "dry_run", "frames_sent": 0, **stats}
+            return
+
+        frames_sent = 0
+        passes = max(1, self.cfg.release_passes)
+        for i in range(passes):
+            if self._stop.is_set():
+                break
+            frames_sent += self._release_selected(selected)
+            self._debug(f"release-previous: pass {i + 1}/{passes} — {frames_sent} sent so far")
+
+        if self._stop.is_set():
+            self.recovery_result = {"outcome": "interrupted", "frames_sent": frames_sent, **stats}
+            return
+
+        post = self._control_transaction("post", client="new")
+        self._rp_post_control = post
+
+        # re-fold the journal: how much of what we targeted is actually gone now?
+        remaining_entries, _ = journal.load_open_leases(jpath)
+        targeted_keys = {(e.mac, e.ip) for e in selected}
+        remaining_targeted = [e for e in remaining_entries if (e.mac, e.ip) in targeted_keys]
+
+        evidence = {
+            **stats,
+            "frames_sent": frames_sent,
+            "passes_run": passes,
+            "entries_still_open": len(remaining_targeted),
+            "post_control_success": post.success,
+            "post_control_reason": post.reason,
+        }
+        self.recovery_result = {
+            "outcome": "recovered" if post.success else "failed",
+            "frames_sent": frames_sent,
+            **stats,
+        }
+
+        if post.success:
+            self._raise(
+                Finding(
+                    id="POOL_RECOVERED",
+                    title="A new client obtained an address after release-previous ran",
+                    verdict=PASS,
+                    severity="info",
+                    evidence=evidence,
+                    recommendation="Recovery confirmed. No further action needed.",
+                )
+            )
+        elif remaining_targeted:
+            self._raise(
+                Finding(
+                    id="POOL_RECOVERY_PARTIAL",
+                    title="Some targeted leases were not released before the run ended",
+                    verdict=INCONCLUSIVE,
+                    severity="medium",
+                    evidence=evidence,
+                    recommendation=(
+                        "Re-run release-previous to retry the remaining entries, or increase "
+                        "--passes."
+                    ),
+                )
+            )
+        else:
+            self._raise(
+                Finding(
+                    id="POOL_RECOVERY_FAILED",
+                    title="Every targeted lease was released but a new client is still denied",
+                    verdict=FAIL,
+                    severity="high",
+                    evidence=evidence,
+                    recommendation=(
+                        "The server did not honor these RELEASE frames, or something else is "
+                        "denying new clients. Clear the bindings on the server itself — "
+                        "'omshell' / lease-file edit + reload on ISC dhcpd, 'netsh dhcp server "
+                        "scope <s> delete clientsbyip' or a scope reconcile on Windows Server "
+                        "— or wait for the leases to expire."
+                    ),
+                )
+            )
 
     def _run_garp(self) -> None:
         # watch ARP while poisoning, so we can tell whether targets fight back
