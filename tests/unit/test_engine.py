@@ -97,6 +97,27 @@ def test_arp_conflict_sends_both_arp_forms(sent):
         assert p[pk.ARP].psrc == p[pk.ARP].pdst == "10.0.0.7"
 
 
+def test_arp_conflict_claimed_mac_is_always_bogus_never_the_targets_real_mac(sent, monkeypatch):
+    """The forged MAC must never be the victim's real MAC, or our own -- a bogus MAC blackholes
+    the claim; a real MAC would redirect the victim's traffic, which is interception (out of
+    scope). Pin random_mac() so the assertion isn't merely "different with high probability"."""
+    from dhcpig.core import packets as pk
+
+    # _do_arp_conflict() imports random_mac locally from .netutils -- patch it there
+    monkeypatch.setattr("dhcpig.core.netutils.random_mac", lambda: "aa:bb:cc:dd:ee:ff")
+    bus, _ = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.RELEASE_NEIGHBORS), bus)
+    eng._our_macs.add("11:22:33:44:55:66")  # this run's own interface/control MAC
+    target = Neighbor("de:ad:00:00:00:01", "10.0.0.7")
+    eng._do_arp_conflict([target])
+    assert sent  # sanity: something was actually sent
+    for p in sent:
+        assert p[pk.ARP].hwsrc == "aa:bb:cc:dd:ee:ff"
+        assert p[pk.ARP].hwsrc != target.mac
+        assert p[pk.ARP].hwsrc not in eng._our_macs
+    assert "aa:bb:cc:dd:ee:ff" in eng._evict_bogus_macs
+
+
 def test_do_arp_conflict_no_longer_takes_a_gateway_blackhole():
     """(2.3) build_arp_poison() and the third unicast gateway-blackhole frame were removed --
     _do_arp_conflict's signature no longer accepts a `gateway` argument at all."""
