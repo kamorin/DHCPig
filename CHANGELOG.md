@@ -1,5 +1,28 @@
 # Changelog
 
+## 2.0.0 (unreleased) — garp actually works; UI trimmed
+
+- **ARP-GARP DoS rewritten.** It previously sent *one* broadcast gratuitous-ARP request per
+  victim, claiming the victim's own address — which mostly trips duplicate-address detection,
+  and is undone within seconds when the host re-announces. Now, per target per round:
+  a GARP request **and** reply (stacks differ in which they honour), plus a **unicast ARP reply
+  putting the default gateway at an unused MAC**, which is the frame that actually cuts the
+  victim's route. Rounds repeat every `garp_interval` (2s) until stopped.
+  The forged MAC is always bogus — never our own — so traffic is blackholed, not intercepted.
+- `netutils.default_gateway()` added; the gateway is excluded from the target list.
+- garp now runs an ARP observer and records which targets defend their address, yielding
+  `ARP_FORGERIES_REACHED_TARGETS` (delivery confirmed, so no DAI on this port) or
+  `ARP_FORGERIES_UNANSWERED` (INCONCLUSIVE — filtered or silently accepted look identical from
+  one vantage point; both findings say how to tell them apart).
+- Much more garp debug output: target list with vendor, every frame with op/claimed IP/forged
+  MAC/real owner, per-round summaries, and defenders as they appear.
+- Removed from the UI: the **Restore** button and the **Threads** input. Removed from the CLI:
+  `--threads` (legacy `-t` is now a no-op). There is one sender thread; `--rate` is the pacing
+  control, and extra threads only contended for the same token bucket.
+  Lease cleanup is still available via `dhcpig restore <iface>` and `POST /api/session/restore`.
+- Findings card scrolls; `SSE:` status pinned to the top-right; dashboard column narrowed 20%
+  and the findings/tables column widened by the same amount.
+
 ## 2.0.0 (unreleased) — destructive-mode gate removed
 
 **Behaviour change.** At the maintainer's request the authorization workflow is gone from both

@@ -32,16 +32,16 @@ Both front ends drive the SAME `DhcpEngine` and never touch scapy directly.
 | File | Role |
 |------|------|
 | `core/models.py` | dataclasses/enums: `SessionConfig`, `Lease`, `ServerInfo`, `Neighbor`, `HostFingerprint`, `Mode`, `IPVersion`, `Timeouts`. `DESTRUCTIVE_MODES`, `SCOPE_REQUIRED_MODES`. |
-| `core/packets.py` | **pure** scapy builders/parsers (no I/O). `build_discover_v4`, `build_request_v4`, `build_release_v4`, `build_inform_v4`, `build_garp`, `server_identifier`, `client_mac_from_offer`, `parse_offer`, `is_offer`/`is_ack`, `dhcp_option`. |
+| `core/packets.py` | **pure** scapy builders/parsers (no I/O). `build_discover_v4`, `build_request_v4`, `build_release_v4`, `build_inform_v4`, `build_garp` (op=1/2), `build_arp_poison`, `server_identifier`, `client_mac_from_offer`, `parse_offer`, `is_offer`/`is_ack`, `dhcp_option`. |
 | `core/engine.py` | `DhcpEngine(cfg, bus)`: `start/stop/status/restore`. One state machine, `threading.Event` stop, worker threads + sniffer. **Every outbound frame goes through `_send()`** (the single chokepoint). Control transaction + findings derivation live here too (§5a). Debug via `_debug()`. |
 | `core/events.py` | `EventBus` (thread-safe), event dataclasses, `to_dict()` + `jsonable()` (recursively converts enums/bytes/Path so JSON never breaks). |
-| `core/safety.py` | `authorize()`, `ScopeGuard`, `RateLimiter` (token bucket), `Cleanup` (tracks leases for restore). |
+| `core/safety.py` | `ScopeGuard`, `RateLimiter` (token bucket), `Cleanup` (tracks leases for restore). No `authorize()` — the gate was removed, see §5. |
 | `core/sniffer.py` | thin `AsyncSniffer` wrapper. |
 | `core/fingerprint.py` | `extract_signature()` + `resolve()`: exact option-55 match against `data/combined_dhcp_os_lookup.json`, else builtin vendor-class/PRL table, else `from_mac()` OUI-only. `DB_VERSION`. |
 | `core/oui.py` | MAC → hardware vendor. `data/mac-vendor.txt` supplement (longest prefix wins) then scapy's bundled Wireshark/IEEE `manuf` DB (~50k); locally-administered MACs labelled as randomised. No bundled IEEE copy needed — scapy already ships one. |
 | `core/reporting.py` | `SessionRecorder` → JSON/CSV/HTML (`render()` / `export()`). Neighbors deduped by MAC. |
-| `core/netutils.py` | iface enumeration, `iface_network_cidr()` (scope auto-fill), IP math, `random_mac()`. |
-| `core/exceptions.py` | `DhcpigError`, `Unauthorized`, `ConfigError`, `OutOfScope`, `SessionConflict`. |
+| `core/netutils.py` | iface enumeration, `iface_network_cidr()` (scope auto-fill), `default_gateway()` (garp), IP math, `random_mac()`. |
+| `core/exceptions.py` | `DhcpigError`, `ConfigError`, `OutOfScope`, `SessionConflict`. |
 | `data/combined_dhcp_os_lookup.json` | Static PacketFence + Huginn-Muninn merge (594 fingerprints), built by `data/fingerprint-merge.py` (also a standalone lookup CLI). `data/fingerprints.json` builtin fallback. `data/DATA_ATTRIBUTION.md`. |
 
 ### Web files
@@ -70,7 +70,8 @@ the browser's `EventSource` updates the DOM. **Handlers must be cheap/non-blocki
   and **dry-run** (builds + accounts, never calls `sendp`). Keep all sends flowing through it.
 - `restore()` releases exactly the leases in `Cleanup`. **Auto-restore is OFF by default**
   (`restore_on_exit=False`) so the exhausted state can be verified after a run; the operator
-  cleans up via `dhcpig restore <iface>` / the Restore button, or opts in with
+  cleans up via `dhcpig restore <iface>` or `POST /api/session/restore` (the UI's
+  Restore button was removed at the maintainer's request), or opts in with
   `--restore-on-exit`. Don't silently flip this back — retention is deliberate.
 
 ## 5a. Confidence model — why the tool can be believed
@@ -98,6 +99,16 @@ and should be kept together:
   `OffersCeased` reports the quiet-period countdown so the UI shows progress meanwhile.
 - **Findings** (`_finalize_findings`, `Finding`): id/verdict/severity/evidence/recommendation,
   emitted as `FindingRaised`, collected into `report["findings"]`. Add new findings there.
+
+## 5b. ARP-GARP DoS — why it is shaped the way it is
+A single broadcast GARP claiming the victim's own address does essentially nothing: it trips
+duplicate-address detection, the host defends, and it re-ARPs within seconds. So `_do_garp()`
+sends, per target per round, a GARP **request** + **reply** (stacks honour different forms)
+*plus* a **unicast ARP reply putting the default gateway at an unused MAC** — that last frame is
+the one that costs the victim connectivity. `_garp_worker()` repeats rounds every
+`timeouts.garp_interval`. **Don't "simplify" this back to one broadcast frame.**
+The forged MAC is always bogus. **Never point it at our own MAC** — blackhole is DoS (in scope);
+redirecting traffic through us would be interception (out of scope, see §1).
 
 ## 6. Modes (`Mode` enum)
 `EXHAUST` (default), `SCAN` (passive, read-only), `ACTIVE_SCAN` (ARP sweep + one DHCP INFORM;
@@ -165,7 +176,7 @@ python3 -m ruff format --check src tests
 Roadmap V1.0 (CLI), V1.1 (web Exhaust), V2.0 (web all modes + packaging) are all **done**, plus
 these later additions: combined-DB fingerprinting (replacing FingerBank), distinct-MAC default,
 debug logging + verbosity dropdown, `active-scan`, and neighbor↔fingerprint correlation by MAC.
-**119 unit tests pass; ruff clean.** The user validated a real exhaust run on their Kali VM (pcap
+**115 unit tests pass; ruff clean.** The user validated a real exhaust run on their Kali VM (pcap
 reviewed — worked; the single-MAC finding drove the spoof-default change). The confidence work
 in §5a (control transaction, limit-vs-exhaustion, NAKs, findings, `--rate` pacing fix) is done
 but has **not yet been exercised against real hardware** — that's the next validation step.

@@ -58,6 +58,34 @@ def get_if_ip(iface: str) -> str | None:
         return None
 
 
+def default_gateway(iface: str | None = None) -> str | None:
+    """Next hop of the default route, or None.
+
+    Needed by garp mode: pointing a victim's gateway entry at an unused MAC is what actually
+    cuts it off, whereas merely claiming the victim's own address only trips duplicate-address
+    detection.
+    """
+    try:  # Linux: /proc/net/route, columns Iface Destination Gateway ...
+        with open("/proc/net/route") as fh:
+            next(fh)  # header
+            for line in fh:
+                cols = line.split()
+                if len(cols) > 2 and cols[1] == "00000000":  # default route
+                    if iface and cols[0] != iface:
+                        continue
+                    packed = struct.pack("<L", int(cols[2], 16))
+                    return socket.inet_ntoa(packed)
+    except (OSError, ValueError, StopIteration):
+        pass
+    try:  # fall back to scapy's routing table (works on macOS too)
+        from scapy.all import conf
+
+        gw = conf.route.route("0.0.0.0")[2]
+        return gw if gw and gw != "0.0.0.0" else None
+    except Exception:
+        return None
+
+
 def iface_network_cidr(iface: str) -> str | None:
     """The interface's own network in CIDR form, e.g. '192.168.7.0/24' (best effort).
 

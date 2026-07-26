@@ -107,7 +107,30 @@ MODES
 * __active-scan__ — active discovery: ARP sweep of the scope + a DHCP INFORM to find/fingerprint
                     servers. Non-destructive; requires `--scope` (auto-filled from the interface).
 * __release__     — DHCPRELEASE for neighbors (DESTRUCTIVE; scope defaults to the iface network).
-* __garp__        — standalone gratuitous-ARP flood, no exhaustion phase (DESTRUCTIVE).
+* __garp__        — sustained ARP cache poisoning, no exhaustion phase (DESTRUCTIVE). See below.
+
+ARP-GARP DoS
+------------
+
+Per target, each round sends three frames:
+
+1. a broadcast gratuitous ARP **request** claiming the victim's own IP,
+2. a broadcast gratuitous ARP **reply** making the same claim,
+3. a **unicast** ARP reply to the victim putting the **default gateway** at an unused MAC.
+
+(3) is what actually costs a host connectivity. (1) and (2) only trip duplicate-address
+detection — a well-behaved host defends its address and carries on, which is why announcements
+alone look like they do nothing. Rounds repeat every `garp_interval` (2s) until you stop,
+because hosts re-ARP within seconds and the legitimate owner re-answers, undoing a single pass.
+
+The forged MAC is always a **bogus, unused address**, so poisoned traffic is blackholed. DHCPig
+deliberately never points a forged mapping at its own MAC — that would be traffic interception
+rather than a denial-of-service check, and is out of scope for this tool.
+
+While poisoning, DHCPig watches ARP and records which targets re-announce their address. A host
+defending itself proves the forged frame was *delivered* (so Dynamic ARP Inspection is not
+filtering the port). It does **not** prove the gateway entry survived — confirm with `arp -a` /
+`ip neigh` on a target, or DAI drop counters on the switch.
 
 STATUS OUTPUT
 -------------
