@@ -65,7 +65,13 @@ class SessionConfig:
     control: bool = True
     # ARP-sweep the segment before exhausting, to record who was there beforehand
     arp_sweep: bool = True
+    # Release the leases of ARP-discovered neighbors before exhausting, so the CUJ of "free up
+    # addresses, then take them" is actually exercised rather than assumed. Requires a known
+    # server (from control_pre); skipped with a Debug if none is available.
+    release_neighbors: bool = True
     status_interval: float = 5.0  # heartbeat period for StatusTick; 0 disables
+    window_initial: int = 8  # exhaust: starting number of in-flight DISCOVER/REQUEST transactions
+    window_max: int = 64  # exhaust: ceiling the adaptive window may grow to
     timeouts: Timeouts = field(default_factory=Timeouts)
     verbosity: int = 2
 
@@ -103,6 +109,7 @@ class Lease:
     lease_time: int | None = None
     acquired_at: float = 0.0
     released: bool = False
+    server_mac: str | None = None  # so a later RELEASE can be unicast, not just broadcast
 
 
 @dataclass
@@ -132,6 +139,7 @@ class ControlOutcome:
     mac: str = ""
     offered_ip: str | None = None
     server_id: str | None = None
+    server_mac: str | None = None  # the server's Ethernet address, learned from its OFFER
     subnet: str | None = None
     lease_time: int | None = None
     elapsed: float = 0.0

@@ -69,6 +69,22 @@ def test_release_and_garp_build():
     assert g["ARP"].psrc == "10.0.0.5"
 
 
+def test_release_is_l2_complete_and_broadcasts_without_a_known_server_mac():
+    """BUG FIX (2.1): this used to be an L3-only packet sent through an L2 sendp() — malformed
+    on the wire, so no RELEASE this tool ever sent could have worked."""
+    rel = packets.build_release_v4("de:ad:00:00:00:02", "10.0.0.5", "10.0.0.1", 42)
+    assert Ether in rel
+    assert rel[Ether].src == "de:ad:00:00:00:02"
+    assert rel[Ether].dst == "ff:ff:ff:ff:ff:ff"  # server MAC unknown -> broadcast fallback
+
+
+def test_release_unicasts_to_the_server_mac_when_known():
+    rel = packets.build_release_v4(
+        "de:ad:00:00:00:02", "10.0.0.5", "10.0.0.1", 42, server_mac="aa:bb:cc:dd:ee:ff"
+    )
+    assert rel[Ether].dst == "aa:bb:cc:dd:ee:ff"
+
+
 def test_is_offer_is_ack():
     offer = _make_offer(mac2str("de:ad:00:00:00:03") + b"\x00" * 10, "172.20.15.1", "172.20.15.1")
     assert packets.is_offer(offer)

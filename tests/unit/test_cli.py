@@ -29,6 +29,13 @@ def test_build_config_exhaust_defaults():
     assert cfg.control is True
 
 
+def test_build_config_release_neighbors_default_on_and_opt_out():
+    args = cli.build_parser().parse_args(["exhaust", "eth1"])
+    assert cli.build_config(args).release_neighbors is True
+    args = cli.build_parser().parse_args(["exhaust", "eth1", "--no-release"])
+    assert cli.build_config(args).release_neighbors is False
+
+
 def test_build_config_restore_on_exit_opt_in():
     args = cli.build_parser().parse_args(["exhaust", "eth1", "--restore-on-exit"])
     assert cli.build_config(args).restore_on_exit is True
