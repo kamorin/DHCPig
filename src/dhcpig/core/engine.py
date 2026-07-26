@@ -35,8 +35,18 @@ from .safety import Cleanup, RateLimiter, ScopeGuard
 from .sniffer import DhcpSniffer
 
 # engine states. EXHAUSTED means the *server* stopped offering — it is never set because of
-# anything we chose ourselves (there is no lease cap; --rate is the only self-imposed bound).
-IDLE, RUNNING, EXHAUSTED, STOPPING, DONE = "IDLE", "RUNNING", "EXHAUSTED", "STOPPING", "DONE"
+# anything we chose ourselves (there is no lease cap; the window is the only self-imposed
+# bound, and it exists to protect the server's offer table, not to cap how much we take).
+# HALTED means a defensive control fired mid-run: sending has stopped, but leases are kept and
+# the post-controls still run so the report is complete (see DhcpEngine._trigger_halt()).
+IDLE, RUNNING, HALTED, EXHAUSTED, STOPPING, DONE = (
+    "IDLE",
+    "RUNNING",
+    "HALTED",
+    "EXHAUSTED",
+    "STOPPING",
+    "DONE",
+)
 
 
 class DhcpEngine:
@@ -88,6 +98,18 @@ class DhcpEngine:
         self._garp_targets: set[str] = set()
         self._garp_bogus_macs: set[str] = set()
         self._garp_defenders: set[str] = set()
+        # windowed handshake pipeline (exhaust): bounded in-flight DISCOVER/REQUEST transactions
+        # rather than an open-loop packet flood. xid -> {mac, sent_at, state}.
+        self._window = cfg.window_initial
+        self._inflight: dict[int, dict] = {}
+        self._inflight_lock = threading.Lock()
+        self.timeouts_seen = 0
+        self._consecutive_timeouts = 0
+        self._nak_timestamps: list[float] = []
+        self._offered_ip_macs: dict[str, set[str]] = {}
+        self._duplicate_offer_ips: set[str] = set()
+        # halt-and-report: the first defensive-control signal wins. (signal, detail, leases_held)
+        self._halt_signal: tuple[str, str, int] | None = None
 
     # ---------------------------------------------------------------- send chokepoint
     def _send(self, pkt, target_ip: str | None = None) -> bool:
@@ -150,6 +172,13 @@ class DhcpEngine:
         prev, prev_t = self._counters(), time.time()
         # Event.wait() returns True once _stop is set, so this doubles as the sleep and the exit
         while not self._stop.wait(self.cfg.status_interval):
+            # link_down: a switch putting the port into err-disable is a defensive control
+            # firing, not a glitch to retry through. Polled here rather than a dedicated thread.
+            if self.cfg.mode is Mode.EXHAUST and not self.cfg.dry_run and self._halt_signal is None:
+                from .netutils import link_is_up
+
+                if link_is_up(self.cfg.interface) is False:
+                    self._trigger_halt("link_down", f"carrier lost on {self.cfg.interface}")
             now = time.time()
             cur = self._counters()
             window = max(1e-6, now - prev_t)
@@ -167,6 +196,12 @@ class DhcpEngine:
                     round(now - self._last_offer_ts, 1) if self._offers_seen_any else None
                 ),
             }
+            if self.cfg.mode is Mode.EXHAUST:
+                stats["send_window"] = self._window
+                stats["inflight"] = len(self._inflight)
+                stats["timeouts"] = self.timeouts_seen
+            if self._halt_signal is not None:
+                stats["halt_signal"] = self._halt_signal[0]
             self.bus.emit(ev.StatusTick(stats=stats))
             prev, prev_t = cur, now
 
@@ -242,6 +277,9 @@ class DhcpEngine:
             "control_pre": self.control_pre.success if self.control_pre else None,
             "control_post": self.control_post.success if self.control_post else None,
             "findings": len(self.findings),
+            "send_window": self._window,
+            "halted": self._halt_signal is not None,
+            "halt_signal": self._halt_signal[0] if self._halt_signal else None,
         }
 
     # ---------------------------------------------------------------- helpers
@@ -716,6 +754,82 @@ class DhcpEngine:
             self.bus.emit(ev.GarpSent(ip=n.ip))
         return sent
 
+    # ---------------------------------------------------------------- windowed handshake pipeline
+    def _trigger_halt(self, signal: str, detail: str) -> None:
+        """First control signal wins: stop sending, keep leases, finish the report.
+
+        This is the fix for the run that motivated this rewrite — flooding DISCOVERs kept
+        piling up half-open allocations after the server had already started pushing back
+        (NAKs, then silence), which looked like failure but was actually the tool refusing to
+        stop. Detecting the signal and halting immediately, rather than trying to power
+        through it, is what makes the eventual verdict trustworthy.
+        """
+        if self._halt_signal is not None:
+            return
+        self._halt_signal = (signal, detail, self.acks)
+        self.state = HALTED
+        self.bus.emit(ev.ControlDetected(signal=signal, detail=detail, leases_held=self.acks))
+        self._debug(f"HALT[{signal}] {detail} — leases held: {self.acks}; sending stopped")
+        self._finish_in_background(f"control detected: {signal} — {detail}")
+
+    def _grow_window(self) -> None:
+        with self._inflight_lock:
+            w = self._window = min(self.cfg.window_max, self._window + 1)
+        self._debug(f"window -> {w} (clean ACK)")
+
+    def _shrink_window(self, trigger: str) -> None:
+        with self._inflight_lock:
+            old = self._window
+            w = self._window = max(1, self._window // 2)
+        if w != old:
+            self._debug(f"window {old} -> {w} ({trigger})")
+
+    def _reap_timeouts(self) -> None:
+        """Free in-flight slots that never got a reply. A timeout shrinks the window exactly
+        like a NAK does — a half-open allocation that never completes is the same signal that
+        the server (or the network) can't keep up, whichever end caused it."""
+        now = time.time()
+        limit = self.cfg.timeouts.dhcp_request
+        with self._inflight_lock:
+            expired = [xid for xid, info in self._inflight.items() if now - info["sent_at"] > limit]
+            for xid in expired:
+                del self._inflight[xid]
+        if not expired:
+            return
+        self.timeouts_seen += len(expired)
+        self._consecutive_timeouts += len(expired)
+        self._shrink_window("timeout")
+        self._debug(
+            f"{len(expired)} handshake(s) timed out (no reply within {limit}s); "
+            f"{self._consecutive_timeouts} consecutive"
+        )
+        if self._consecutive_timeouts >= 5:
+            self._trigger_halt(
+                "timeout_storm", f"{self._consecutive_timeouts} consecutive handshake timeouts"
+            )
+
+    def _note_nak_for_burst_detection(self) -> None:
+        now = time.time()
+        self._nak_timestamps.append(now)
+        self._nak_timestamps = [t for t in self._nak_timestamps if now - t <= 5.0]
+        if len(self._nak_timestamps) >= 3:
+            self._trigger_halt("nak_burst", f"{len(self._nak_timestamps)} NAKs within 5s")
+
+    def _note_offer_for_duplicate_detection(self, offered_ip: str, mac: str) -> None:
+        """Same address offered to two of our MACs — the pending-offer-table saturation
+        signature from the run that motivated this rewrite (flooding faster than handshakes
+        could complete)."""
+        macs = self._offered_ip_macs.setdefault(offered_ip, set())
+        macs.add(mac)
+        if len(macs) > 1 and offered_ip not in self._duplicate_offer_ips:
+            self._duplicate_offer_ips.add(offered_ip)
+            if len(self._duplicate_offer_ips) >= 3:
+                self._trigger_halt(
+                    "duplicate_offers",
+                    f"{len(self._duplicate_offer_ips)} address(es) offered to more than one "
+                    "of our MACs",
+                )
+
     # ---------------------------------------------------------------- run loops
     def _run_exhaust(self) -> None:
         # dry-run is fully offline: no sniffer (no OFFERs would arrive), so it needs no root.
@@ -866,27 +980,36 @@ class DhcpEngine:
         self._threads.append(t)
 
     def _exhaust_sender(self) -> None:
+        """Bounded pipeline: at most `self._window` DISCOVER/REQUEST transactions in flight.
+
+        Replaces the old open-loop flood. On the run that motivated this: DISCOVERs were sent
+        faster than handshakes could complete, so half-open allocations piled up in the
+        server's pending-offer table until it started re-offering the same address to two of
+        our MACs and then NAKing — a self-inflicted stall that looked like exhaustion but
+        wasn't. Only an ACK counts as a held address; NAKs, duplicate offers, and timeouts
+        shrink the window instead of being pushed through.
+        """
         from .netutils import random_mac
 
         macs = list(self.cfg.client_macs) if self.cfg.client_macs else None
         while not self._stop.is_set():
+            if self._halt_signal is not None:
+                return  # a control fired — stop sending, leases stay held for the report
             # Offers flowed and then stopped: the pool *looks* drained. Provisional until the
             # post-run control transaction confirms a real client is also denied — which we now
             # go and do ourselves rather than waiting for the operator to press Stop.
             silence = time.time() - self._last_offer_ts
             if self._offers_seen_any and silence > self.cfg.timeouts.offer_silence:
-                if self.state != EXHAUSTED:
-                    self.state = EXHAUSTED
-                    self.bus.emit(
-                        ev.PoolExhausted(
-                            leases=self.acks,
-                            elapsed=time.time() - self._started,
-                            confirmed=False,
-                        )
+                self.bus.emit(
+                    ev.PoolExhausted(
+                        leases=self.acks,
+                        elapsed=time.time() - self._started,
+                        confirmed=False,
                     )
-                    self._finish_in_background(
-                        f"no OFFER for {silence:.0f}s after {self.acks} lease(s)"
-                    )
+                )
+                self._trigger_halt(
+                    "offer_silence", f"no OFFER for {silence:.0f}s after {self.acks} lease(s)"
+                )
                 return
             if self._offers_seen_any and silence > 2.0 and not self._silence_noticed:
                 self._silence_noticed = True
@@ -897,6 +1020,13 @@ class DhcpEngine:
                         deadline=self.cfg.timeouts.offer_silence,
                     )
                 )
+            self._reap_timeouts()
+            with self._inflight_lock:
+                room = self._window - len(self._inflight)
+            if room <= 0:
+                if self._stop.wait(0.02):
+                    return
+                continue
             mac = macs.pop(0) if macs else random_mac()
             if macs is not None:
                 macs.append(mac)  # rotate through the provided list
@@ -904,11 +1034,16 @@ class DhcpEngine:
             src = self._src_mac(mac)
             pkt = packets.build_discover_v4(mac, xid, src)
             self._send(pkt)
+            with self._inflight_lock:
+                self._inflight[xid] = {"mac": mac, "sent_at": time.time(), "state": "DISCOVER_SENT"}
             self.discovers += 1
             self.bus.emit(ev.DiscoverSent(mac=mac))
-            self._debug(f"DISCOVER xid=0x{xid:08x} chaddr={mac} eth_src={src} flags=0x8000")
-            # No extra sleep here: RateLimiter.acquire() inside _send() is the single pacing
-            # mechanism, so --rate is authoritative.
+            self._debug(
+                f"DISCOVER xid=0x{xid:08x} chaddr={mac} eth_src={src} flags=0x8000 "
+                f"window={self._window} inflight={len(self._inflight)}"
+            )
+            # No extra sleep here beyond the window/rate-limit checks above: a fixed per-packet
+            # sleep was the old bug (capped throughput no matter what was asked for).
 
     def _on_dhcp(self, pkt) -> None:
         try:
@@ -940,13 +1075,20 @@ class DhcpEngine:
             self.servers[server_id] = server
             self.bus.emit(ev.ServerDiscovered(server=server))
         server.offers_seen += 1
+        xid = pkt[BOOTP].xid
         lease = Lease(
             packets.client_mac_from_offer(pkt),
             offered_ip,
             server_id,
-            pkt[BOOTP].xid,
+            xid,
             self.cfg.ip_version,
         )
+        with self._inflight_lock:
+            info = self._inflight.get(xid)
+            if info is not None:
+                info["state"] = "REQUEST_SENT"
+                info["sent_at"] = time.time()  # restart the timeout clock for the ACK leg
+        self._note_offer_for_duplicate_detection(offered_ip, lease.mac)
         self.bus.emit(ev.OfferReceived(lease=lease, server=server))
         self._debug(
             f"OFFER xid=0x{pkt[BOOTP].xid:08x} yiaddr={offered_ip} server_id={server_id} "
@@ -976,6 +1118,10 @@ class DhcpEngine:
         )
         self.cleanup.register(lease)
         self.acks += 1
+        with self._inflight_lock:
+            self._inflight.pop(pkt[BOOTP].xid, None)
+        self._consecutive_timeouts = 0  # a clean handshake resets the timeout-storm counter
+        self._grow_window()
         self.bus.emit(ev.AckReceived(lease=lease))
         self._debug(
             f"ACK xid=0x{pkt[BOOTP].xid:08x} yiaddr={ip} server_id={server_id} "
@@ -987,6 +1133,10 @@ class DhcpEngine:
         from scapy.all import BOOTP, DHCP
 
         self.naks += 1
+        with self._inflight_lock:
+            self._inflight.pop(pkt[BOOTP].xid, None)
+        self._shrink_window("nak")
+        self._note_nak_for_burst_detection()
         server_id = packets.server_identifier(pkt[BOOTP].siaddr, pkt[DHCP].options)
         self.bus.emit(ev.NakReceived(server_ip=server_id))
         self._debug(f"NAK xid=0x{pkt[BOOTP].xid:08x} from {server_id} opts=[{_opts_summary(pkt)}]")

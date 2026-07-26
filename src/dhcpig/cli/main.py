@@ -14,7 +14,14 @@ from pathlib import Path
 from ..core.engine import DONE, EXHAUSTED, DhcpEngine
 from ..core.events import EventBus
 from ..core.exceptions import ConfigError
-from ..core.models import DESTRUCTIVE_MODES, IPVersion, Mode, SessionConfig, Timeouts
+from ..core.models import (
+    DESTRUCTIVE_MODES,
+    EXHAUST_DEFAULT_RATE_PPS,
+    IPVersion,
+    Mode,
+    SessionConfig,
+    Timeouts,
+)
 from ..core.reporting import SessionRecorder
 from .render import Renderer
 
@@ -64,7 +71,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     ex = sub.add_parser("exhaust", help="consume the DHCP pool (non-destructive)")
     common(ex)
-    ex.add_argument("--rate", type=int, default=10, help="max packets/sec (safety cap)")
     ex.add_argument("--request-option", default=None, help="e.g. 12,14-19,23")
     ex.add_argument("--client-mac", action="append", dest="client_macs")
     # ethernet src = per-client MAC by default (distinct L2 clients); opt out for Wi-Fi
@@ -174,7 +180,11 @@ def build_config(args) -> SessionConfig:
         spoof_ethernet_src=not getattr(args, "no_spoof_eth_src", False),
         request_options=req_opts,
         fuzz=getattr(args, "fuzz", False),
-        rate_limit_pps=getattr(args, "rate", 10),
+        # exhaust has no --rate: the windowed handshake pipeline paces it. Everything else
+        # (release/garp/active-scan) still takes --rate as its only pacing mechanism.
+        rate_limit_pps=(
+            EXHAUST_DEFAULT_RATE_PPS if mode is Mode.EXHAUST else getattr(args, "rate", 10)
+        ),
         dry_run=getattr(args, "dry_run", False),
         scope_cidrs=scope,
         restore_on_exit=(

@@ -116,6 +116,12 @@ class Renderer:
                 else "provisional — offers stopped arriving"
             )
             self._line("!!", f"POOL EXHAUSTED  leases={e.leases}  in {e.elapsed:.0f}s  [{suffix}]")
+        elif isinstance(e, ev.ControlDetected):
+            self._line(
+                "!!",
+                f"CONTROL DETECTED [{e.signal}]  {e.detail}  "
+                f"— sending stopped, {e.leases_held} lease(s) held for the report",
+            )
         elif isinstance(e, ev.ControlStarted):
             self._line("CTL", f"CONTROL[{e.phase}] starting legitimate DHCP cycle")
         elif isinstance(e, ev.ControlFinished):
@@ -160,9 +166,15 @@ def status_summary(s: dict) -> str:
         parts.append(f"servers {s['servers']}")
     if s.get("neighbors"):
         parts.append(f"neighbors {s['neighbors']}")
+    if s.get("send_window") is not None:
+        parts.append(f"window {s['send_window']} (inflight {s.get('inflight', 0)})")
+    if s.get("timeouts"):
+        parts.append(f"timeouts {s['timeouts']}")
     quiet = s.get("since_last_offer")
     if quiet is not None:
         parts.append(f"last offer {quiet:.0f}s ago")
+    if s.get("halt_signal"):
+        parts.append(f"HALTED[{s['halt_signal']}]")
     return "  ".join(parts)
 
 

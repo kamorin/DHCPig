@@ -179,8 +179,17 @@ def test_sse_serializes_events_with_enums_and_nested_dataclasses():
 
 # ---------------------------------------------------------------- schemas
 def test_as_cli_roundtrip():
+    cfg = schemas.config_from_payload({"interface": "eth1", "mode": "release", "rate": 30})
+    assert schemas.as_cli(cfg) == "dhcpig release eth1 --rate 30"
+
+
+def test_exhaust_ignores_rate_payload_and_as_cli_omits_it():
+    """exhaust has no --rate of its own; the windowed pipeline paces it instead."""
+    from dhcpig.core.models import EXHAUST_DEFAULT_RATE_PPS
+
     cfg = schemas.config_from_payload({"interface": "eth1", "mode": "exhaust", "rate": 30})
-    assert schemas.as_cli(cfg) == "dhcpig exhaust eth1 --rate 30"
+    assert cfg.rate_limit_pps == EXHAUST_DEFAULT_RATE_PPS
+    assert "--rate" not in schemas.as_cli(cfg)
 
 
 def test_token_helpers():

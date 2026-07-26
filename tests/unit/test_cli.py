@@ -19,14 +19,30 @@ def test_parse_request_options():
 
 
 def test_build_config_exhaust_defaults():
-    args = cli.build_parser().parse_args(["exhaust", "eth1", "--rate", "30"])
+    args = cli.build_parser().parse_args(["exhaust", "eth1"])
     cfg = cli.build_config(args)
     assert cfg.mode is Mode.EXHAUST
-    assert cfg.rate_limit_pps == 30
     assert cfg.ip_version is IPVersion.V4
     assert cfg.spoof_ethernet_src is True  # distinct L2 MACs by default
     assert cfg.restore_on_exit is False  # keep leases so the exhausted state can be verified
     assert cfg.control is True
+
+
+def test_exhaust_has_no_rate_flag_windowing_paces_it_instead():
+    """--rate was removed from exhaust: the windowed handshake pipeline is the pacing now."""
+    from dhcpig.core.models import EXHAUST_DEFAULT_RATE_PPS
+
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["exhaust", "eth1", "--rate", "30"])
+    cfg = cli.build_config(cli.build_parser().parse_args(["exhaust", "eth1"]))
+    assert cfg.rate_limit_pps == EXHAUST_DEFAULT_RATE_PPS
+
+
+def test_rate_flag_still_present_on_release_and_garp_and_active_scan():
+    for cmd in ("release", "garp", "active-scan"):
+        extra = ["--scope", "10.0.0.0/24"] if cmd == "active-scan" else []
+        args = cli.build_parser().parse_args([cmd, "eth1", "--rate", "42", *extra])
+        assert cli.build_config(args).rate_limit_pps == 42
 
 
 def test_build_config_release_neighbors_default_on_and_opt_out():

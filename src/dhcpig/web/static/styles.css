@@ -40,6 +40,7 @@ main { display: grid; grid-template-columns: 260px 0.8fr 1.2fr; gap: 12px; paddi
 .config input[type=number], .config input[type=text] { width: 100%; }
 .config label.chk { display: flex; gap: 6px; align-items: center; }
 .destcfg { border: 1px solid var(--bad); border-radius: 8px; padding: 8px; margin: 8px 0; }
+.config .hint { color: var(--muted); font-size: 11px; margin: 4px 0 8px; }
 
 .counters { display: flex; gap: 16px; margin-bottom: 8px; }
 .counter { text-align: center; }

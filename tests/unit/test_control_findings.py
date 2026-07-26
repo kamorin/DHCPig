@@ -294,16 +294,120 @@ def test_no_findings_in_dry_run(monkeypatch):
     assert _finding_ids(events) == []
 
 
-# ---------------------------------------------------------------- pacing (--rate authoritative)
+# ---------------------------------------------------------------- pacing (windowed pipeline)
 def test_sender_does_not_add_fixed_sleep(monkeypatch):
-    """--rate is the only pacing mechanism; a 0.4s per-packet sleep would break this."""
-    eng, _, _ = _engine(monkeypatch, dry_run=True, rate_limit_pps=1000)
+    """No per-packet fixed sleep; throughput is bound only by the window and the rate limiter.
+
+    A high window_initial takes the window out of the picture here (dry-run gets no OFFERs, so
+    slots only ever free up on the 2s dhcp_request timeout) — this test is specifically about
+    the old 0.4s fixed sleep, not about window sizing, which has its own tests below.
+    """
+    eng, _, _ = _engine(
+        monkeypatch, dry_run=True, rate_limit_pps=1000, window_initial=100000, window_max=100000
+    )
     # dry-run gets no ACKs, so stop the loop on a timer rather than on a lease count
     threading.Timer(0.5, eng._stop.set).start()
     eng._exhaust_sender()
     # at 1000 pps a half-second window should comfortably clear 25; the old fixed 0.4s
     # sleep capped it at ~2/sec no matter what --rate said
     assert eng.discovers > 25, f"only {eng.discovers} discovers in 0.5s — is a fixed sleep back?"
+
+
+# ---------------------------------------------------------------- windowed handshake pipeline
+def test_window_never_exceeds_its_configured_cap(monkeypatch):
+    eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST, window_initial=8, window_max=10)
+    for _ in range(20):
+        eng._grow_window()
+    assert eng._window == 10
+
+
+def test_ack_grows_window_nak_and_timeout_halve_it(monkeypatch):
+    eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST, window_initial=8, window_max=64)
+    eng._grow_window()
+    assert eng._window == 9
+    eng._shrink_window("nak")
+    assert eng._window == 4
+    eng._window = 8
+    eng._shrink_window("timeout")
+    assert eng._window == 4
+
+
+def test_only_acks_increment_the_lease_counter_not_timeouts(monkeypatch):
+    eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
+    xid = 0xAAAA
+    with eng._inflight_lock:
+        eng._inflight[xid] = {"mac": "de:ad:00:00:00:01", "sent_at": 0.0, "state": "DISCOVER_SENT"}
+    eng.cfg.timeouts.dhcp_request = 0.01
+    time.sleep(0.02)
+    eng._reap_timeouts()
+    assert eng.acks == 0
+    assert eng.timeouts_seen == 1
+    assert eng._inflight == {}
+    eng._on_dhcp(_reply("ack", 0xBBBB, "de:ad:00:00:00:02"))
+    assert eng.acks == 1
+
+
+def test_nak_burst_triggers_halt_and_stops_sending(monkeypatch):
+    eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
+    for i in range(3):
+        eng._on_dhcp(_reply("nak", i, "de:ad:00:00:00:01"))
+    assert eng._halt_signal is not None
+    assert eng._halt_signal[0] == "nak_burst"
+    assert any(isinstance(e, ev.ControlDetected) and e.signal == "nak_burst" for e in events)
+
+
+def test_timeout_storm_triggers_halt(monkeypatch):
+    eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
+    eng.cfg.timeouts.dhcp_request = 0.01
+    for i in range(5):
+        with eng._inflight_lock:
+            eng._inflight[i] = {
+                "mac": "de:ad:00:00:00:01",
+                "sent_at": 0.0,
+                "state": "DISCOVER_SENT",
+            }
+    time.sleep(0.02)
+    eng._reap_timeouts()
+    assert eng._halt_signal is not None
+    assert eng._halt_signal[0] == "timeout_storm"
+
+
+def test_duplicate_offers_to_our_macs_triggers_halt(monkeypatch):
+    """The pending-offer-table saturation signature from the run that motivated this rewrite."""
+    eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
+    for i in range(3):
+        ip = f"172.20.0.{80 + i}"
+        eng._on_dhcp(_reply("offer", 0x1000 + i * 2, "de:ad:00:00:00:01", yiaddr=ip))
+        eng._on_dhcp(_reply("offer", 0x1000 + i * 2 + 1, "de:ad:00:00:00:02", yiaddr=ip))
+    assert eng._halt_signal is not None
+    assert eng._halt_signal[0] == "duplicate_offers"
+
+
+def test_halt_stops_the_sender_but_leaves_leases_held(monkeypatch):
+    eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST, dry_run=True)
+    eng._started = time.time()
+    eng.acks = 7
+    eng._trigger_halt("nak_burst", "3 NAKs within 5s")
+    eng._exhaust_sender()  # must return immediately without sending anything
+    assert eng.discovers == 0
+    assert eng.acks == 7  # nothing released — the post-controls still need the leases held
+
+
+def test_halt_is_idempotent_first_signal_wins(monkeypatch):
+    eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST, dry_run=True)
+    eng._started = time.time()
+    eng._trigger_halt("nak_burst", "first")
+    eng._trigger_halt("timeout_storm", "second")
+    assert eng._halt_signal[0] == "nak_burst"
+    assert sum(isinstance(e, ev.ControlDetected) for e in events) == 1
+
+
+def test_link_down_reported_as_none_for_an_interface_without_carrier():
+    from dhcpig.core.netutils import link_is_up
+
+    # "lo" (and any nonexistent iface) has no /sys/class/net/<iface>/carrier -> fail open
+    assert link_is_up("lo") in (None, True)
+    assert link_is_up("this-iface-does-not-exist-xyz") is None
 
 
 # ---------------------------------------------------------------- pre-run ARP sweep
