@@ -56,7 +56,6 @@ def config_from_payload(payload: dict) -> SessionConfig:
         dry_run=bool(payload.get("dry_run", False)),
         scope_cidrs=scope,
         spoof_ethernet_src=bool(payload.get("spoof_eth_src", True)),
-        restore_on_exit=bool(payload.get("restore_on_exit", False)),
         arp_sweep=bool(payload.get("arp_sweep", True)),
         release_neighbors=bool(payload.get("release_neighbors", True)),
         status_interval=float(payload.get("status_interval", 5.0) or 0),
@@ -75,8 +74,6 @@ def as_cli(cfg: SessionConfig) -> str:
         parts.append("--ipv6")
     if cfg.mode is not Mode.EXHAUST:
         parts += ["--rate", str(cfg.rate_limit_pps)]
-    if cfg.restore_on_exit:
-        parts.append("--restore-on-exit")
     for cidr in cfg.scope_cidrs or []:
         parts += ["--scope", cidr]
     if cfg.dry_run:

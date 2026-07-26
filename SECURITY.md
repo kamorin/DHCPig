@@ -23,9 +23,10 @@ explicitly authorized to test.
 - `--scope CIDR` bounds which addresses a run may target; out-of-scope targets are dropped.
 - `--dry-run` builds and logs packets without sending anything.
 - `exhaust` tracks every lease it acquires and can release exactly those, and only those.
-  **Leases are kept by default** so the exhausted state can be verified; release them with
-  `dhcpig restore <iface>` (or the Restore button), or run with `--restore-on-exit` to have
-  the run clean up after itself automatically.
+  **Leases are always kept after the run** so the exhausted state can be verified; release them
+  explicitly with `dhcpig restore <iface>` (or the Restore button) when the same process is
+  still around, or `dhcpig release-previous <iface>` once it isn't — see RECOVERY below. There
+  is no auto-restore-on-exit anymore: cleanup is always a deliberate, caller-initiated step.
 - Out-of-scope targets are dropped by the ScopeGuard and logged.
 
 ## `exhaust` is no longer purely passive by default
