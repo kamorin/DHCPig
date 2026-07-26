@@ -228,9 +228,13 @@ def test_dry_run_sends_nothing_but_lists_the_selection(monkeypatch, tmp_path):
     jpath = tmp_path / "leases-lo.jsonl"
     _seed_journal(jpath, "de:ad:00:00:00:01", "172.20.0.51")
     eng, events, sent = _engine(
-        monkeypatch, journal_path=jpath, scope_cidrs=["172.20.0.0/24"], dry_run=True
+        monkeypatch,
+        journal_path=jpath,
+        scope_cidrs=["172.20.0.0/24"],
+        dry_run=True,
+        offline=True,  # dry_run alone now probes for real (2.3); offline keeps this test no-root
     )
-    eng._release_previous_worker()  # dry-run: _control_transaction short-circuits on its own
+    eng._release_previous_worker()  # offline: _control_transaction short-circuits on its own
     assert sent == []
     assert eng.recovery_result.get("outcome") == "dry_run"
     assert eng.recovery_result.get("selected") == 1

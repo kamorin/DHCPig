@@ -123,6 +123,8 @@ class DhcpEngine:
         self._first_offer_ip: str | None = None
         self._first_offer_subnet: str | None = None
         self._baseline_neighbor_count = 0
+        # dry-run only: neighbor count the release phase would have released, for DRY_RUN_SUMMARY
+        self._dry_run_would_release = 0
         # lease journal (2.2): resolved once so the CLI/report can display the path used.
         # Never active for dry-run -- a dry run must not pollute the recovery record with
         # leases that were never actually acquired.
@@ -155,17 +157,25 @@ class DhcpEngine:
             self._debug(f"journal: could not record release {mac}/{ip}: {exc}")
 
     # ---------------------------------------------------------------- send chokepoint
-    def _send(self, pkt, target_ip: str | None = None) -> bool:
-        """Return True if the frame was sent (or would-be-sent under dry-run).
+    def _send(self, pkt, target_ip: str | None = None, probe: bool = False) -> bool:
+        """Return True if the frame was sent (or would-be-sent under dry-run/offline).
 
-        Enforces scope (for targeted frames), rate limit, and dry-run in one place.
+        Enforces scope (for targeted frames), rate limit, and dry-run/offline in one place.
+
+        `probe=True` marks traffic a legitimate client on this segment would send anyway and
+        that leaves no lasting change (ARP discovery, the control transaction's own
+        DISCOVER/REQUEST/RELEASE) -- it bypasses dry-run suppression so a dry run is a genuine
+        reconnaissance pass rather than a no-op. It never bypasses `offline`, which is the hard
+        "nothing ever touches a socket" switch for tests and no-root previews.
         """
         if target_ip is not None and not self.scope.allows(target_ip):
             self.bus.emit(ev.Skipped(ip=target_ip, reason="OUT OF SCOPE"))
             return False
         self.rate.acquire()
-        if self.cfg.dry_run:
-            return True  # build + account, but never touch the wire
+        if self.cfg.offline:
+            return True  # tests / no-root preview: never touch the wire, no matter what
+        if self.cfg.dry_run and not probe:
+            return True  # build + account, but never touch the wire (mutating frame, suppressed)
         sendp(pkt, iface=self.cfg.interface, verbose=False)
         return True
 
@@ -262,7 +272,8 @@ class DhcpEngine:
             t.join(timeout=3.0)
         # Post-run control runs BEFORE restore, while our leases are still held — that is what
         # makes "a real client can't get an address" a meaningful measurement. Not optional:
-        # dry-run has no sniffer to receive the reply, which is the only thing that skips it.
+        # offline is the only thing that skips it (no sniffer to receive the reply); dry-run
+        # alone still runs this leg for real, as a probe.
         if self.cfg.mode is Mode.EXHAUST and self._sniffer is not None:
             self.control_post = self._control_transaction("post", client="self")
             # the leg that actually answers "is the pool drained?" — needs a fresh address
@@ -400,8 +411,8 @@ class DhcpEngine:
             the only leg that can show whether a *new* client can still obtain an address.
         """
         out = ControlOutcome(phase=phase, client=client)
-        if self.cfg.dry_run:
-            out.reason = "skipped (dry-run)"
+        if self.cfg.offline:
+            out.reason = "skipped (offline)"
             self.bus.emit(ev.ControlFinished(outcome=out))
             return out
         from scapy.all import DHCP
@@ -431,7 +442,7 @@ class DhcpEngine:
         self._control_offer_evt.clear()
         self._control_ack_evt.clear()
         try:
-            self._send(packets.build_discover_v4(mac, xid, mac))
+            self._send(packets.build_discover_v4(mac, xid, mac), probe=True)
             who = "real NIC MAC" if client == "self" else "fresh unseen MAC"
             self._debug(f"CONTROL[{phase}/{client}] DISCOVER xid=0x{xid:08x} chaddr={mac} ({who})")
             if not self._control_offer_evt.wait(self.cfg.timeouts.control):
@@ -448,7 +459,7 @@ class DhcpEngine:
             lt = packets.dhcp_option(offer[DHCP].options, "lease_time")
             out.lease_time = int(lt) if isinstance(lt, int) else None
             self._debug(f"CONTROL[{phase}/{client}] OFFER {offered_ip} from {sid} subnet={subnet}")
-            self._send(packets.build_request_v4(offer, mac))
+            self._send(packets.build_request_v4(offer, mac), probe=True)
             if not self._control_ack_evt.wait(self.cfg.timeouts.control):
                 out.reason = f"OFFER {offered_ip} but no ACK within timeout"
                 return out
@@ -460,7 +471,10 @@ class DhcpEngine:
                 f"CONTROL[{phase}/{client}] ACK {offered_ip} — this client can obtain a lease"
             )
             # give the address straight back; the control must not consume pool capacity
-            self._send(packets.build_release_v4(mac, offered_ip, sid, xid, server_mac=server_mac))
+            self._send(
+                packets.build_release_v4(mac, offered_ip, sid, xid, server_mac=server_mac),
+                probe=True,
+            )
             self._debug(f"CONTROL[{phase}/{client}] RELEASE {offered_ip}")
         except Exception as exc:  # a broken control must never kill the run
             out.reason = f"error: {exc!r}"
@@ -477,9 +491,14 @@ class DhcpEngine:
         self.bus.emit(ev.FindingRaised(finding=finding))
 
     def _finalize_findings(self) -> None:
-        """Turn what we observed into auditable verdicts. Called once, at stop()."""
-        if self.cfg.dry_run:
-            return
+        """Turn what we observed into auditable verdicts. Called once, at stop().
+
+        dry-run (2.3) no longer short-circuits this wholesale: the control transaction and ARP
+        discovery ran for real, so CONTROL_BASELINE_FAILED / NEW_CLIENT_BLOCKED_AT_BASELINE /
+        POOL_HEADROOM_LOW are legitimate findings even under dry-run. Only the exhaustion verdict
+        itself (which depends on leases actually held) is meaningless without real sends, so that
+        block alone is gated below; DRY_RUN_SUMMARY stands in for it.
+        """
         pre, post = self.control_pre, self.control_post
         distinct_macs = len({ln.mac for ln in self.cleanup.all()})
         elapsed = round(time.time() - self._started, 1) if self._started else 0.0
@@ -557,7 +576,7 @@ class DhcpEngine:
                         )
                     )
 
-        if self.cfg.mode is Mode.EXHAUST:
+        if self.cfg.mode is Mode.EXHAUST and not self.cfg.dry_run:
             # Exhaustion is judged on the NEW-client leg. The self leg usually renews an
             # existing binding, so it can succeed against a completely drained pool.
             pre_new, post_new = self.control_pre_new, self.control_post_new
@@ -668,6 +687,30 @@ class DhcpEngine:
                             ),
                         )
                     )
+
+        if self.cfg.mode is Mode.EXHAUST and self.cfg.dry_run:
+            est, headroom = self._pool_headroom()
+            self._raise(
+                Finding(
+                    id="DRY_RUN_SUMMARY",
+                    title="Dry run: reconnaissance only, nothing sent that would take a lease",
+                    verdict=INFO,
+                    severity="info",
+                    evidence={
+                        "hosts_seen": len(self._neighbors_by_mac),
+                        "server_id": (pre.server_id if pre and pre.success else None),
+                        "pool_size": est.size,
+                        "pool_source": est.source,
+                        "headroom": headroom,
+                        "would_release": self._dry_run_would_release,
+                    },
+                    recommendation=(
+                        "The control transaction and ARP discovery ran for real, but the "
+                        "windowed sender, RELEASE, re-acquisition, and eviction were all "
+                        "suppressed. Re-run with dry-run disabled to actually measure exhaustion."
+                    ),
+                )
+            )
 
         if self.cfg.mode is Mode.GARP_DOS and self.garps > 0:
             defended = sorted(self._garp_defenders)
@@ -1003,19 +1046,22 @@ class DhcpEngine:
 
     # ---------------------------------------------------------------- run loops
     def _run_exhaust(self) -> None:
-        # dry-run is fully offline: no sniffer (no OFFERs would arrive), so it needs no root.
-        if not self.cfg.dry_run:
-            self._sniffer = DhcpSniffer(self.cfg.interface, self.cfg.ip_version, self._on_dhcp)
-            self._sniffer.start()
-            self._debug(f"sniffer started on {self.cfg.interface} (filter: dhcp/arp/icmp)")
-            # Prelude (inventory + controls) runs off-thread so start() returns immediately and
-            # the UI streams progress instead of blocking the HTTP request for ~10s.
-            t = threading.Thread(target=self._exhaust_prelude, daemon=True)
-            t.start()
-            self._threads.append(t)
+        # offline is the hard "no sockets at all" switch (tests, no-root preview) -- no sniffer
+        # (no OFFERs would arrive), so skip straight to the sender. dry-run alone still runs the
+        # full prelude for real: it's a genuine reconnaissance pass now, not a shape-only preview
+        # -- see _send()'s `probe` parameter and SessionConfig.offline.
+        if self.cfg.offline:
+            self._debug("offline: sniffer disabled, prelude skipped (no packets sent or received)")
+            self._start_senders()
             return
-        self._debug("dry-run: sniffer disabled (no packets sent or received)")
-        self._start_senders()
+        self._sniffer = DhcpSniffer(self.cfg.interface, self.cfg.ip_version, self._on_dhcp)
+        self._sniffer.start()
+        self._debug(f"sniffer started on {self.cfg.interface} (filter: dhcp/arp/icmp)")
+        # Prelude (inventory + controls) runs off-thread so start() returns immediately and
+        # the UI streams progress instead of blocking the HTTP request for ~10s.
+        t = threading.Thread(target=self._exhaust_prelude, daemon=True)
+        t.start()
+        self._threads.append(t)
 
     def _exhaust_prelude(self) -> None:
         """Baseline the segment, release what's there, then hand off to the senders.
@@ -1067,6 +1113,14 @@ class DhcpEngine:
         ]
         if not neighbors:
             self._debug("release phase: no ARP-discovered neighbors to release")
+            return
+        self._dry_run_would_release = len(neighbors)  # for DRY_RUN_SUMMARY; harmless when live
+        if self.cfg.dry_run:
+            self._debug(
+                f"release phase: [dry] would send DHCPRELEASE for {len(neighbors)} neighbor(s) "
+                f"via server {server_id} ({server_mac or 'MAC unknown, broadcasting'}) -- "
+                "nothing sent"
+            )
             return
         self._debug(
             f"release phase: sending DHCPRELEASE for {len(neighbors)} neighbor(s) via "
@@ -1343,8 +1397,10 @@ class DhcpEngine:
             self.bus.emit(ev.ErrorEvent(message=f"scan parse error: {exc!r}"))
 
     def _run_active_scan(self) -> None:
-        # active but non-destructive: ARP sweep + DHCP INFORM. Sniffer catches replies.
-        if not self.cfg.dry_run:
+        # active but non-destructive: ARP sweep + DHCP INFORM. Sniffer catches replies. Gated on
+        # offline, not dry_run (2.3) -- active-scan sends nothing destructive in the first place,
+        # so dry_run has nothing to suppress here; only offline should skip the sniffer/sends.
+        if not self.cfg.offline:
             self._sniffer = DhcpSniffer(self.cfg.interface, self.cfg.ip_version, self._on_scan)
             self._sniffer.start()
             self._debug(f"active-scan sniffer started on {self.cfg.interface}")
@@ -1401,8 +1457,10 @@ class DhcpEngine:
 
     # ---------------------------------------------------------------- release-previous (2.2)
     def _run_release_previous(self) -> None:
-        # needs the sniffer to receive the pre/post "can a new client get an address?" probes
-        if not self.cfg.dry_run:
+        # needs the sniffer to receive the pre/post "can a new client get an address?" probes.
+        # Gated on offline, not dry_run (2.3): the control transaction now probes for real under
+        # dry_run alone, and a probe with no sniffer running to catch the reply always times out.
+        if not self.cfg.offline:
             self._sniffer = DhcpSniffer(self.cfg.interface, self.cfg.ip_version, self._on_dhcp)
             self._sniffer.start()
             self._debug(f"release-previous: sniffer started on {self.cfg.interface}")
@@ -1732,7 +1790,7 @@ class DhcpEngine:
         for cidr in (cidrs if cidrs is not None else self.cfg.scope_cidrs) or []:
             net = ipaddress.ip_network(cidr, strict=False)
             targets += [str(h) for h in list(net.hosts())[:1024]]
-        if not targets or self.cfg.dry_run:
+        if not targets or self.cfg.offline:
             return list(found.values()), None
         try:
             ans, _ = srp(

@@ -59,7 +59,9 @@ def _engine(monkeypatch, **cfg):
     bus = EventBus()
     events = []
     bus.subscribe(events.append)
-    return DhcpEngine(SessionConfig(interface="lo", dry_run=True, **cfg), bus), events
+    # offline (2.3), not dry_run: these tests call .start()/.stop() and dry_run alone no longer
+    # skips the sniffer/control transaction -- offline is the hard no-socket switch they need.
+    return DhcpEngine(SessionConfig(interface="lo", offline=True, **cfg), bus), events
 
 
 def test_status_ticks_are_emitted_periodically(monkeypatch):
