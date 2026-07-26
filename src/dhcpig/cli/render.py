@@ -73,13 +73,21 @@ class Renderer:
 
     def handle(self, e: ev.Event) -> None:
         if isinstance(e, ev.DiscoverSent):
-            self._line("->", "DHCP_Discover")
+            tail = _opt50_hostname(e.option50, e.hostname)
+            self._line("->", f"DHCP_Discover  chaddr={e.mac}{tail}")
         elif isinstance(e, ev.OfferReceived):
-            self._line("<-", f"DHCP_Offer    {e.lease.ip}   from {e.server.server_id}")
+            self._line(
+                "<-",
+                f"DHCP_Offer    {e.lease.ip}   from {e.server.server_id}  chaddr={e.lease.mac}",
+            )
         elif isinstance(e, ev.RequestSent):
-            self._line("->", f"DHCP_Request  {e.lease.ip}")
+            self._line(
+                "->",
+                f"DHCP_Request  {e.lease.ip}   chaddr={e.lease.mac}"
+                f"{_opt50_hostname(e.option50, e.hostname)}",
+            )
         elif isinstance(e, ev.AckReceived):
-            self._line("<-", f"DHCP_ACK      {e.lease.ip}")
+            self._line("<-", f"DHCP_ACK      {e.lease.ip}   chaddr={e.lease.mac}")
         elif isinstance(e, ev.NakReceived):
             self._line("!!", f"DHCP_NAK from {e.server_ip}")
         elif isinstance(e, ev.ServerDiscovered):
@@ -95,7 +103,7 @@ class Renderer:
             label = fp.os or fp.device or fp.vendor or "unknown"
             self._line("--", f"host {fp.mac}  {label}  conf {fp.confidence}%  via {fp.matched_via}")
         elif isinstance(e, ev.LeaseReleased):
-            self._line("->", f"DHCPRELEASE  {e.lease.ip}   (in scope)")
+            self._line("->", f"DHCPRELEASE  {e.lease.ip}   chaddr={e.lease.mac}   (in scope)")
         elif isinstance(e, ev.ArpConflictSent):
             self._line("->", f"ARP_conflict  contest ownership of {e.ip}   (in scope)")
         elif isinstance(e, ev.ForeignDiscover):
@@ -141,6 +149,18 @@ class Renderer:
         elif isinstance(e, ev.Debug):
             if self.verbosity >= 3:  # debug detail only at highest verbosity
                 self._line("DBG", e.message)
+
+
+def _opt50_hostname(option50: str | None, hostname: str | None) -> str:
+    """Trailing `  option50=...  hostname=...` clause for a DISCOVER/REQUEST line -- shown at
+    the normal info level (not gated to -v3 debug) so an operator can see, without raising
+    verbosity, exactly what address and hostname each outbound packet claimed."""
+    tail = ""
+    if option50:
+        tail += f"  option50={option50}"
+    if hostname:
+        tail += f"  hostname={hostname!r}"
+    return tail
 
 
 def status_summary(s: dict) -> str:

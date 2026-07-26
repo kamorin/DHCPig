@@ -1573,7 +1573,9 @@ class DhcpEngine:
             self._reacquire_targets[xid] = ip
             self.discovers += 1
             pushed.append(xid)
-            self.bus.emit(ev.DiscoverSent(mac=client_mac))
+            self.bus.emit(
+                ev.DiscoverSent(mac=client_mac, option50=ip, hostname=packets.packet_hostname(pkt))
+            )
             self._debug(f"reacquire: DISCOVER xid=0x{xid:08x} option50={ip} chaddr={client_mac}")
 
         # Drain: wait for every pushed xid to leave _inflight (ACK/NAK/timeout). Bounded by one
@@ -1707,7 +1709,7 @@ class DhcpEngine:
             with self._inflight_lock:
                 self._inflight[xid] = {"mac": mac, "sent_at": time.time(), "state": "DISCOVER_SENT"}
             self.discovers += 1
-            self.bus.emit(ev.DiscoverSent(mac=mac))
+            self.bus.emit(ev.DiscoverSent(mac=mac, hostname=packets.packet_hostname(pkt)))
             self._debug(
                 f"DISCOVER xid=0x{xid:08x} chaddr={mac} eth_src={src} flags=0x8000 "
                 f"window={self._window} inflight={len(self._inflight)}"
@@ -1777,7 +1779,7 @@ class DhcpEngine:
         Every sighting is still tracked in `_foreign_discovers` by xid so `_handle_offer()` can
         mark it answered, and the counters keep moving either way.
         """
-        from scapy.all import BOOTP, DHCP
+        from scapy.all import BOOTP
 
         try:
             if BOOTP not in pkt:
@@ -1786,13 +1788,7 @@ class DhcpEngine:
             if xid in self._foreign_discovers:
                 return  # duplicate delivery of the same frame
             mac = packets.client_mac_from_offer(pkt)
-            hostname = None
-            if DHCP in pkt:
-                raw = packets.dhcp_option(pkt[DHCP].options, "hostname")
-                if isinstance(raw, bytes):
-                    hostname = raw.decode("utf-8", errors="replace")
-                elif isinstance(raw, str):
-                    hostname = raw
+            hostname = packets.packet_hostname(pkt)
             self._foreign_discovers[xid] = {
                 "mac": mac,
                 "hostname": hostname,
@@ -1858,7 +1854,11 @@ class DhcpEngine:
         )
         req = packets.build_request_v4(pkt, self._src_mac(lease.mac))
         self._send(req)
-        self.bus.emit(ev.RequestSent(lease=lease))
+        self.bus.emit(
+            ev.RequestSent(
+                lease=lease, option50=offered_ip, hostname=packets.packet_hostname(req)
+            )
+        )
         self._debug(
             f"REQUEST xid=0x{pkt[BOOTP].xid:08x} requested_addr={offered_ip} server_id={server_id}"
         )
@@ -2245,6 +2245,7 @@ class DhcpEngine:
         targets stay pinned to the authorised scope.
         """
         import ipaddress
+        import itertools
 
         from scapy.all import ARP, Ether, srp
 
@@ -2255,7 +2256,11 @@ class DhcpEngine:
         targets: list[str] = []
         for cidr in (cidrs if cidrs is not None else self.cfg.scope_cidrs) or []:
             net = ipaddress.ip_network(cidr, strict=False)
-            targets += [str(h) for h in list(net.hosts())[:1024]]
+            # BUG FIX (2.3): `list(net.hosts())[:1024]` materialized every host in the network
+            # before slicing -- a /8 (as "lo" auto-detects to) means ~16M IPv4Address objects
+            # built just to keep the first 1024, several real seconds of dead time before the
+            # sweep even sends a packet. islice caps the work at 1024 regardless of network size.
+            targets += [str(h) for h in itertools.islice(net.hosts(), 1024)]
         if not targets or self.cfg.offline:
             return list(found.values()), None
         try:

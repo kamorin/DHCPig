@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -17,6 +18,7 @@ from urllib.parse import urlparse
 from ..core.engine import DONE, DhcpEngine
 from ..core.events import EventBus
 from ..core.exceptions import ConfigError, SessionConflict
+from ..core.models import RUN_ONCE_MODES
 from ..core.reporting import SessionRecorder
 from . import api
 from .auth import SECURITY_HEADERS, new_token, same_origin_ok, token_from_request, token_ok
@@ -50,6 +52,23 @@ class WebApp:
             self.bus.subscribe(self.recorder.handle)
             self.engine = DhcpEngine(cfg, self.bus)
             self.engine.start()
+            if cfg.mode in RUN_ONCE_MODES:
+                # release/release-previous finish their work inline in a worker thread and just
+                # return -- nothing in the engine calls stop() for them (unlike exhaust, which
+                # can self-finalize via _finish_in_background() on a control signal). The CLI
+                # covers this with a polling loop in _run_session(); the web control plane had no
+                # equivalent, so a run would sit in RUNNING (empty StatusTicks) until someone
+                # clicked Stop by hand. Mirror the CLI here: watch the worker, stop() once it's
+                # the last one standing. stop() is idempotent, so a race with a manual Stop click
+                # is harmless.
+                threading.Thread(
+                    target=self._reap_when_done, args=(self.engine,), daemon=True
+                ).start()
+
+    def _reap_when_done(self, engine: DhcpEngine) -> None:
+        while not engine._stop.is_set() and any(t.is_alive() for t in engine._threads):
+            time.sleep(0.5)
+        engine.stop()
 
     def stop(self) -> None:
         with self._lock:

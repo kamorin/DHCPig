@@ -228,13 +228,23 @@ function connectStream() {
 
 function handleEvent(e) {
   switch (e.type) {
-    case "DiscoverSent": logLine("out", "[->] DHCP_Discover", 2); break;
+    case "DiscoverSent": {
+      let tail = `  chaddr=${e.mac}`;
+      if (e.option50) tail += `  option50=${e.option50}`;
+      if (e.hostname) tail += `  hostname=${e.hostname}`;
+      logLine("out", `[->] DHCP_Discover${tail}`, 2); break;
+    }
     case "OfferReceived":
-      logLine("in", `[<-] DHCP_Offer    ${e.lease.ip}   from ${e.server.server_id}`, 2); break;
-    case "RequestSent": logLine("out", `[->] DHCP_Request  ${e.lease.ip}`, 2); break;
+      logLine("in", `[<-] DHCP_Offer    ${e.lease.ip}   from ${e.server.server_id}  chaddr=${e.lease.mac}`, 2); break;
+    case "RequestSent": {
+      let tail = `  chaddr=${e.lease.mac}`;
+      if (e.option50) tail += `  option50=${e.option50}`;
+      if (e.hostname) tail += `  hostname=${e.hostname}`;
+      logLine("out", `[->] DHCP_Request  ${e.lease.ip}${tail}`, 2); break;
+    }
     case "AckReceived":
       leases.push(e.lease); renderLeases();
-      logLine("in", `[<-] DHCP_ACK      ${e.lease.ip}`, 2); break;
+      logLine("in", `[<-] DHCP_ACK      ${e.lease.ip}   chaddr=${e.lease.mac}`, 2); break;
     case "ServerDiscovered":
       servers.set(e.server.server_id, e.server); renderServers();
       logLine("note", `[--] DHCP server ${e.server.server_id}`, 1); break;
@@ -259,7 +269,8 @@ function handleEvent(e) {
         `[--] ${fp.role || "host"} ${fp.mac}  ${fp.os || fp.device || "?"}  conf ${fp.confidence}%`, 2);
       break;
     }
-    case "LeaseReleased": logLine("out", `[->] DHCPRELEASE  ${e.lease.ip}`, 2); break;
+    case "LeaseReleased":
+      logLine("out", `[->] DHCPRELEASE  ${e.lease.ip}   chaddr=${e.lease.mac}`, 2); break;
     case "ArpConflictSent": logLine("out", `[->] ARP_conflict contest ownership of ${e.ip}`, 2); break;
     case "ForeignDiscover": {
       const who = e.hostname ? `  hostname=${e.hostname}` : "";

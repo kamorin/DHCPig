@@ -23,7 +23,11 @@ class Event:
 
 @dataclass
 class DiscoverSent(Event):
-    mac: str
+    mac: str  # chaddr
+    # option 50 (requested_addr) -- only set by targeted re-acquisition (2.3); a plain exhaust
+    # DISCOVER doesn't ask for a specific address, so this is None there.
+    option50: str | None = None
+    hostname: str | None = None  # option 12, decoded off the packet we actually sent
 
 
 @dataclass
@@ -35,6 +39,11 @@ class OfferReceived(Event):
 @dataclass
 class RequestSent(Event):
     lease: Lease
+    # option 50 (requested_addr) -- every REQUEST sends one (it's yiaddr from the OFFER); logged
+    # explicitly rather than assumed equal to lease.ip so the log reflects what was actually on
+    # the wire.
+    option50: str | None = None
+    hostname: str | None = None  # option 12, decoded off the packet we actually sent
 
 
 @dataclass

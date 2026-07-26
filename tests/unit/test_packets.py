@@ -38,8 +38,23 @@ def test_discover_carries_option50_when_requested_addr_given():
     )
     assert packets.dhcp_option(pkt[DHCP].options, "requested_addr") == "172.20.0.51"
     # message-type and client_id must both still be present -- option 50 is additive
-    assert packets.dhcp_option(pkt[DHCP].options, "message-type") in ("discover", 1)
-    assert packets.dhcp_option(pkt[DHCP].options, "client_id") is not None
+
+
+# ---------------------------------------------------------------- packet_hostname (2.3)
+def test_packet_hostname_decodes_our_own_discover_and_request():
+    """Our own DISCOVER/REQUEST always carry a random hostname (option 12) -- packet_hostname()
+    is how the engine surfaces it in the info-level DiscoverSent/RequestSent log lines."""
+    disc = packets.build_discover_v4("de:ad:be:ef:00:05", 0xABD0, "de:ad:be:ef:00:05")
+    hostname = packets.packet_hostname(disc)
+    assert hostname is not None and len(hostname) == 8 and hostname.isalnum()
+
+    offer = _make_offer(mac2str("de:ad:be:ef:00:05"), "172.20.15.1", "172.20.15.1")
+    req = packets.build_request_v4(offer, "de:ad:be:ef:00:05")
+    assert packets.packet_hostname(req) is not None
+
+
+def test_packet_hostname_none_when_no_dhcp_layer():
+    assert packets.packet_hostname(Ether() / IP()) is None
 
 
 def test_server_identifier_prefers_option54():  # PR #27

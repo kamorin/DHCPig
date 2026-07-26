@@ -147,6 +147,39 @@ def test_report_download_csv(server):
     _req(addr, "POST", "/api/session/stop", token="TESTTOKEN", body={}, origin=o)
 
 
+def test_release_mode_auto_finalizes_without_manual_stop(server):
+    """(2.3) release's worker thread finishes on its own after release+eviction, but nothing in
+    the engine calls stop() for it -- unlike exhaust, which can self-finalize via a halt signal.
+    A live run exposed this: the web session just sat in RUNNING (empty StatusTicks) until a
+    human clicked Stop. WebApp._reap_when_done() (started by WebApp.start() for any RUN_ONCE_MODES
+    mode) is the fix -- verify a release run reaches DONE on its own, no /api/session/stop call.
+    """
+    app, addr = server
+    o = f"http://{addr[0]}:{addr[1]}"
+    # narrow scope: "lo" auto-detects to 127.0.0.0/8, and _discover_neighbors() materializes the
+    # whole host list before slicing to 1024 -- several real seconds for a /8, unrelated to what
+    # this test is checking. A tight scope keeps the ARP-sweep step (skipped anyway, offline) cheap.
+    b = {
+        "interface": "lo",
+        "mode": "release",
+        "dry_run": True,
+        "offline": True,
+        "scope_cidrs": ["127.0.0.1/32"],
+    }
+    status, _ = _req(addr, "POST", "/api/session/start", token="TESTTOKEN", body=b, origin=o)
+    assert status == 200
+    deadline = time.time() + 5.0
+    state = None
+    while time.time() < deadline:
+        state = json.loads(_req(addr, "GET", "/api/session/status", token="TESTTOKEN")[1])[
+            "status"
+        ]["state"]
+        if state == "DONE":
+            break
+        time.sleep(0.1)
+    assert state == "DONE"  # reached without ever calling /api/session/stop
+
+
 # ---------------------------------------------------------------- SSE plumbing
 def test_sse_subscriber_receives_events():
     bus = EventBus()
