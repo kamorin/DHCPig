@@ -59,6 +59,21 @@ def server_identifier(siaddr: str, options: list) -> str:
     return siaddr
 
 
+def lease_time_from(options: list) -> int | None:
+    """DHCP option 51 (lease-time) in seconds, or None if the server didn't send one.
+
+    Used by the lease journal (2.2) to know when a phantom lease naturally expires. Never
+    raises on a malformed value -- a bad option 51 just means "unknown", not a crash.
+    """
+    for opt in options:
+        if isinstance(opt, tuple) and opt and opt[0] == "lease_time":
+            try:
+                return int(opt[1])
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
 def client_mac_from_offer(offer: BOOTP) -> str:
     """FIX B (PR #28): chaddr is a padded 16-byte field; use the first 6 bytes."""
     return str2mac(bytes(offer[BOOTP].chaddr)[:6])

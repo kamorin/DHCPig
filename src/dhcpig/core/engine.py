@@ -736,24 +736,29 @@ class DhcpEngine:
             self._neighbors_by_mac[fp.mac] = updated
             self.bus.emit(ev.NeighborFound(neighbor=updated))
 
-    def _do_release(
-        self, neighbors: list[Neighbor], server_ip: str, server_mac: str | None = None
+    def _release_bindings(
+        self, bindings: list[tuple[str, str]], server_ip: str, server_mac: str | None = None
     ) -> int:
-        """Send DHCPRELEASE for in-scope neighbors. Returns count sent. Unit-testable."""
+        """Send DHCPRELEASE for a list of (mac, ip) bindings. Returns count sent.
+
+        The one release send-path -- both `_do_release()` (ARP-discovered neighbors) and
+        `release-previous` (journal-recorded phantom leases, 2.2) funnel through here, so there
+        is exactly one place that builds the packet and emits LeaseReleased.
+        """
         sent = 0
-        for n in neighbors:
+        for mac, ip in bindings:
             if self._stop.is_set():
                 break
             xid = _rand_xid()
-            pkt = packets.build_release_v4(n.mac, n.ip, server_ip, xid, server_mac=server_mac)
-            if self._send(pkt, target_ip=n.ip):
+            pkt = packets.build_release_v4(mac, ip, server_ip, xid, server_mac=server_mac)
+            if self._send(pkt, target_ip=ip):
                 sent += 1
                 self.releases += 1
                 self.bus.emit(
                     ev.LeaseReleased(
                         lease=Lease(
-                            n.mac,
-                            n.ip,
+                            mac,
+                            ip,
                             server_ip,
                             xid,
                             self.cfg.ip_version,
@@ -763,6 +768,14 @@ class DhcpEngine:
                     )
                 )
         return sent
+
+    def _do_release(
+        self, neighbors: list[Neighbor], server_ip: str, server_mac: str | None = None
+    ) -> int:
+        """Send DHCPRELEASE for in-scope neighbors. Returns count sent. Unit-testable."""
+        return self._release_bindings(
+            [(n.mac, n.ip) for n in neighbors], server_ip, server_mac=server_mac
+        )
 
     def _do_garp(self, targets: list[Neighbor], gateway: str | None = None) -> int:
         """One poisoning round over `targets`. Returns frames sent. Unit-testable.
@@ -1229,16 +1242,18 @@ class DhcpEngine:
         )
 
     def _handle_ack(self, pkt) -> None:
-        from scapy.all import BOOTP
+        from scapy.all import BOOTP, DHCP
 
         mac = packets.client_mac_from_offer(pkt)
         server_id, server_mac, ip, _ = packets.parse_offer(pkt)
+        lease_time = packets.lease_time_from(pkt[DHCP].options)
         lease = Lease(
             mac,
             ip,
             server_id,
             pkt[BOOTP].xid,
             self.cfg.ip_version,
+            lease_time=lease_time,
             acquired_at=time.time(),
             server_mac=server_mac or None,
         )

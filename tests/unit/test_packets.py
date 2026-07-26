@@ -96,3 +96,19 @@ def test_build_inform():
     assert packets.dhcp_option(pkt[DHCP].options, "message-type") in ("inform", 8)
     assert pkt[BOOTP].ciaddr == "192.168.1.50"  # INFORM comes from an addressed client
     assert pkt[IP].src == "192.168.1.50"
+
+
+# ---------------------------------------------------------------- lease_time_from (2.2 journal)
+def test_lease_time_from_reads_option_51():
+    opts = [("message-type", "ack"), ("lease_time", 3600), "end"]
+    assert packets.lease_time_from(opts) == 3600
+
+
+def test_lease_time_from_none_when_option_absent():
+    opts = [("message-type", "ack"), "end"]
+    assert packets.lease_time_from(opts) is None
+
+
+def test_lease_time_from_none_on_malformed_value():
+    opts = [("message-type", "ack"), ("lease_time", "not-a-number"), "end"]
+    assert packets.lease_time_from(opts) is None
