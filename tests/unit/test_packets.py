@@ -91,6 +91,39 @@ def test_is_offer_is_ack():
     assert not packets.is_ack(offer)
 
 
+# ---------------------------------------------------------------- decline/discover (2.3)
+def test_message_type_recognizes_decline_and_inform():
+    """message_type()'s name map was missing 'decline'/'inform' -- DECLINE already existed as a
+    constant but was never reachable through the map, so a real DHCPDECLINE would have come
+    back as None."""
+    opts = [("message-type", "decline"), "end"]
+    assert packets.message_type(_opts_pkt(opts)) == packets.DECLINE
+    opts = [("message-type", "inform"), "end"]
+    assert packets.message_type(_opts_pkt(opts)) == packets.INFORM
+
+
+def _opts_pkt(opts):
+    return (
+        Ether(src="de:ad:00:00:00:01")
+        / IP(src="10.0.0.5", dst="255.255.255.255")
+        / UDP(sport=68, dport=67)
+        / BOOTP(chaddr=mac2str("de:ad:00:00:00:01"), xid=0x1234)
+        / DHCP(options=opts)
+    )
+
+
+def test_is_discover():
+    pkt = packets.build_discover_v4("de:ad:00:00:00:04", 0x5678, "de:ad:00:00:00:04")
+    assert packets.is_discover(pkt)
+    assert not packets.is_decline(pkt)
+
+
+def test_is_decline():
+    pkt = _opts_pkt([("message-type", "decline"), "end"])
+    assert packets.is_decline(pkt)
+    assert not packets.is_discover(pkt)
+
+
 def test_build_inform():
     pkt = packets.build_inform_v4("de:ad:00:00:00:05", "192.168.1.50", 0x1234)
     assert packets.dhcp_option(pkt[DHCP].options, "message-type") in ("inform", 8)

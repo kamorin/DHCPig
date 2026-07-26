@@ -158,3 +158,47 @@ def test_active_scan_dry_run_sends_nothing(sent):
     eng.stop()
     assert sent == []  # dry-run: INFORM built + logged, nothing on the wire
     assert any(isinstance(e, ev.Debug) and "INFORM" in e.message for e in events)
+
+
+# ---------------------------------------------------------------- self-filter (2.3)
+def test_sniffer_bpf_widened_to_both_directions():
+    """(2.3) Foreign DISCOVERs and DHCPDECLINEs are client->server (dst port 67) and were
+    invisible under the old server-only filter."""
+    from dhcpig.core.sniffer import _BPF
+
+    assert _BPF[IPVersion.V4] == "arp or icmp or (udp and (port 67 or port 68))"
+
+
+def test_is_own_traffic_true_for_our_mac(sent):
+    bus, _ = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo"), bus)
+    eng._our_macs.add("de:ad:00:00:00:01")
+    pkt = packets.build_discover_v4("de:ad:00:00:00:01", 0x1111, "de:ad:00:00:00:01")
+    assert eng._is_own_traffic(pkt) is True
+
+
+def test_is_own_traffic_true_for_inflight_xid(sent):
+    bus, _ = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo"), bus)
+    eng._inflight[0x2222] = {"mac": "de:ad:00:00:00:02", "sent_at": 0.0, "state": "DISCOVER_SENT"}
+    # a different (unregistered) src MAC -- only the xid should match
+    pkt = packets.build_discover_v4("de:ad:00:00:00:02", 0x2222, "de:ad:00:00:00:02")
+    assert eng._is_own_traffic(pkt) is True
+
+
+def test_is_own_traffic_false_for_a_stranger(sent):
+    bus, _ = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo"), bus)
+    pkt = packets.build_discover_v4("de:ad:00:00:00:09", 0x3333, "de:ad:00:00:00:09")
+    assert eng._is_own_traffic(pkt) is False
+
+
+def test_on_dhcp_ignores_a_packet_whose_xid_is_in_inflight():
+    """The self-filter must not raise NeighborFound/ErrorEvent or otherwise process our own
+    echoed DISCOVER — it should be silently dropped."""
+    bus, events = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo"), bus)
+    eng._inflight[0x4444] = {"mac": "de:ad:00:00:00:03", "sent_at": 0.0, "state": "DISCOVER_SENT"}
+    pkt = packets.build_discover_v4("de:ad:00:00:00:03", 0x4444, "de:ad:00:00:00:03")
+    eng._on_dhcp(pkt)
+    assert events == []

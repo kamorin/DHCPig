@@ -211,11 +211,24 @@ def message_type(pkt) -> int | None:
         "discover": DISCOVER,
         "offer": OFFER,
         "request": REQUEST,
+        "decline": DECLINE,
         "ack": ACK,
         "nak": NAK,
         "release": RELEASE,
+        "inform": INFORM,
     }
     return names.get(mt, mt) if isinstance(mt, str) else int(mt)
+
+
+def is_discover(pkt) -> bool:
+    """A DHCPDISCOVER — used to spot foreign clients probing the segment during a run."""
+    return message_type(pkt) == DISCOVER
+
+
+def is_decline(pkt) -> bool:
+    """DHCPDECLINE — a client refusing an offered/assigned address (e.g. failed ARP probe,
+    or APIPA fallback after eviction). Client->server, only visible since the BPF widen."""
+    return message_type(pkt) == DECLINE
 
 
 def is_offer(pkt) -> bool:
