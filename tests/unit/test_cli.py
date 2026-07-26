@@ -24,7 +24,6 @@ def test_build_config_exhaust_defaults():
     assert cfg.mode is Mode.EXHAUST
     assert cfg.ip_version is IPVersion.V4
     assert cfg.spoof_ethernet_src is True  # distinct L2 MACs by default
-    assert cfg.restore_on_exit is False  # keep leases so the exhausted state can be verified
 
 
 def test_exhaust_has_no_no_control_flag():
@@ -112,9 +111,11 @@ def test_build_config_release_neighbors_default_on_and_opt_out():
     assert cli.build_config(args).release_neighbors is False
 
 
-def test_build_config_restore_on_exit_opt_in():
-    args = cli.build_parser().parse_args(["exhaust", "eth1", "--restore-on-exit"])
-    assert cli.build_config(args).restore_on_exit is True
+def test_exhaust_has_no_restore_on_exit_flag():
+    """Auto-restore-on-exit was removed -- release-previous is the caller-initiated recovery
+    path now, so exhaust always keeps its leases until the operator explicitly releases them."""
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["exhaust", "eth1", "--restore-on-exit"])
 
 
 def test_build_config_no_spoof_eth_src():

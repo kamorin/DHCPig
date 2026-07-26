@@ -96,15 +96,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ex.add_argument("--fuzz", action="store_true")
     ex.add_argument("--dry-run", action="store_true")
-    # leases are kept by default so the exhausted state can be observed/verified
-    ex.add_argument(
-        "--restore-on-exit",
-        dest="restore_on_exit",
-        action="store_true",
-        help="release acquired leases when the run ends (default: keep them, then "
-        "`dhcpig restore <iface>` when you are done)",
-    )
-    ex.add_argument("--no-restore", action="store_true", help=argparse.SUPPRESS)  # legacy no-op
     ex.add_argument(
         "--no-arp-scan",
         dest="no_arp_scan",
@@ -240,9 +231,6 @@ def build_config(args) -> SessionConfig:
         ),
         dry_run=getattr(args, "dry_run", False),
         scope_cidrs=scope,
-        restore_on_exit=(
-            getattr(args, "restore_on_exit", False) and not getattr(args, "no_restore", False)
-        ),
         report_path=Path(args.report) if getattr(args, "report", None) else None,
         arp_sweep=not getattr(args, "no_arp_scan", False),
         release_neighbors=not getattr(args, "no_release", False),

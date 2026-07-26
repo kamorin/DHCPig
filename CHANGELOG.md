@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased — auto-restore-on-exit removed
+
+`--restore-on-exit`/`restore_on_exit` is gone. `release-previous`'s lease journal is now the
+real cross-process recovery path, so an in-process "release everything when the run ends" flag
+no longer earns its complexity — it never survived a killed process or reboot anyway. Leases are
+now **always** kept after a run; the caller releases them explicitly via `dhcpig restore
+<iface>` (or `POST /api/session/restore`) if the same session is still around, or `dhcpig
+release-previous <iface>` once it isn't.
+
+- `core/models.py`: removed `SessionConfig.restore_on_exit`.
+- `core/engine.py`: `stop()` no longer conditionally calls `self.restore()`; `restore()` itself
+  is unchanged and still available for explicit, caller-initiated cleanup.
+- `cli/main.py`: removed `--restore-on-exit` and the legacy `--no-restore` no-op from the
+  `exhaust` subparser.
+- `web/schemas.py`: removed `restore_on_exit` from `config_from_payload()` and `as_cli()`.
+- `web/static/index.html`/`app.js`: removed the "disable auto-restore" checkbox and its wiring.
+
 ## Unreleased — fingerprint/OUI data simplified to single-source
 
 `src/dhcpig/data/` now ships exactly two sources: PacketFence DHCP fingerprints and scapy's

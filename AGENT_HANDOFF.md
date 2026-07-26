@@ -70,11 +70,13 @@ the browser's `EventSource` updates the DOM. **Handlers must be cheap/non-blocki
   is the one remaining hard requirement, so its sweep can't be unbounded.
 - **`_send()` is the chokepoint**: scope check (drops out-of-scope, emits `Skipped`), rate limit,
   and **dry-run** (builds + accounts, never calls `sendp`). Keep all sends flowing through it.
-- `restore()` releases exactly the leases in `Cleanup`. **Auto-restore is OFF by default**
-  (`restore_on_exit=False`) so the exhausted state can be verified after a run; the operator
-  cleans up via `dhcpig restore <iface>` or `POST /api/session/restore` (the UI's
-  Restore button was removed at the maintainer's request), or opts in with
-  `--restore-on-exit`. Don't silently flip this back — retention is deliberate.
+- `restore()` releases exactly the leases in `Cleanup`. **There is no auto-restore-on-exit
+  anymore** (`restore_on_exit`/`--restore-on-exit` were removed, 2.2) — leases are always kept
+  after a run so the exhausted state can be verified; the operator cleans up explicitly via
+  `dhcpig restore <iface>` or `POST /api/session/restore` (same-process/session only — the UI's
+  Restore button was removed at the maintainer's request) or, once that process is gone,
+  `dhcpig release-previous <iface>` replaying the lease journal. Don't silently reintroduce
+  an auto-restore flag — retention followed by an explicit recovery step is deliberate.
 
 ## 5a. Confidence model — why the tool can be believed
 The engine reports **verdicts backed by evidence**, not just counters. Several pieces work
@@ -290,9 +292,9 @@ python3 -m ruff format --check src tests
   `RateLimiter`/`rate.acquire()` from `_send()` — it's still the only thing pacing four of the
   six modes (the fifth, `scan`, sends nothing at all).
 - **Halt-on-control never releases leases.** `_trigger_halt()` stops the sender but leaves
-  `Cleanup` untouched; `restore_on_exit` defaults `False` for the same reason as always (§5). If
-  you're tempted to auto-release on halt, don't — the post-controls need the leases held to be
-  meaningful.
+  `Cleanup` untouched; there's no auto-restore-on-exit to accidentally trigger either (§5, 2.2).
+  If you're tempted to auto-release on halt, don't — the post-controls need the leases held to
+  be meaningful.
 - **Pool-size estimates must never be presented as authoritative.** `PoolEstimate.size` is either
   `None` (show `—`) or a number that must always render next to its `source`/`detail` — a
   fabricated-looking denominator is exactly the kind of false confidence the two-leg control

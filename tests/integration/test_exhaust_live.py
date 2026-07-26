@@ -127,7 +127,6 @@ def test_exhaust_grants_then_releases(veth_pair):
         interface=VETH_A,
         mode=Mode.EXHAUST,
         rate_limit_pps=200,
-        restore_on_exit=True,
         # control is not optional; FakeDhcpServer answers any DISCOVER/REQUEST regardless of
         # MAC, so the pre/post control legs (and the release phase's RELEASE, which it ignores)
         # are handled the same as the exhaust sender's own traffic.
@@ -142,7 +141,10 @@ def test_exhaust_grants_then_releases(veth_pair):
     assert engine.acks >= 1, "engine should have obtained at least one lease"
     acquired = len(engine.cleanup.all())
 
-    engine.stop()  # restore_on_exit -> releases the acquired leases
+    engine.stop()  # leases are kept by default now -- no auto-restore-on-exit anymore
+    assert not any(ln.released for ln in engine.cleanup.all())
+
+    engine.restore()  # the caller explicitly restores, same as `dhcpig restore`/the web button
     server.stop()
 
     assert all(ln.released for ln in engine.cleanup.all())

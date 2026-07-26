@@ -37,7 +37,6 @@ function currentConfig() {
     dry_run: $("dryrun").checked,
     scope_cidrs: scope.length ? scope : null,
     spoof_eth_src: $("spoofeth").checked,
-    restore_on_exit: !$("norestore").checked,
     arp_sweep: $("arpscan").checked,
     release_neighbors: $("releasefirst").checked,
     verbosity: currentVerbosity(),
@@ -62,7 +61,7 @@ function setRunning(on) {
   running = on;
   $("start").disabled = on;
   $("stop").disabled = !on;
-  ["iface", "mode", "rate", "dryrun", "norestore", "scope",
+  ["iface", "mode", "rate", "dryrun", "scope",
     "spoofeth", "arpscan", "releasefirst"].forEach((id) => ($(id).disabled = on));
 }
 
@@ -422,7 +421,6 @@ function cliFromConfig() {
   const c = currentConfig();
   let s = `dhcpig ${c.mode} ${c.interface}`;
   if (c.mode !== "exhaust") s += ` --rate ${c.rate}`;
-  if (c.restore_on_exit) s += " --restore-on-exit";
   (c.scope_cidrs || []).forEach((x) => (s += ` --scope ${x}`));
   if (c.dry_run) s += " --dry-run";
   if (!c.arp_sweep && c.mode === "exhaust") s += " --no-arp-scan";

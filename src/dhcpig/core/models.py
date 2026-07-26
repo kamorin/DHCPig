@@ -66,9 +66,6 @@ class SessionConfig:
     v6_rapid_commit: bool = False
     dry_run: bool = False
     scope_cidrs: list[str] | None = None  # optional; bounds targets when supplied
-    # Default False: keep the leases after the run so the exhausted state can be observed and
-    # verified. Release them explicitly with `dhcpig restore` / the Restore button when done.
-    restore_on_exit: bool = False
     report_path: Path | None = None
     # NOTE: there is no opt-out for the control transaction. A legitimate DHCP cycle from the
     # real NIC MAC always runs before and after exhausting — it's what separates "the network

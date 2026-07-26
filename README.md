@@ -44,12 +44,12 @@ Safety flags:
     --no-release         skip releasing ARP-discovered neighbors before exhausting
     --no-arp-scan        skip the pre-run ARP inventory
     --no-journal         don't record acquired leases to the recovery journal (see RECOVERY)
-    --restore-on-exit    release the acquired leases when the run ends
     --status-interval N  periodic status line, default every 5s (0 disables)
 
-Leases are **kept by default** so the exhausted state can be observed and verified after the
-run. Release them with `sudo dhcpig restore eth1` (or the Restore button in the web UI) when
-you are done.
+Leases are **always kept** after the run so the exhausted state can be observed and verified.
+There is no auto-restore-on-exit — release them explicitly with `sudo dhcpig restore eth1` (or
+the Restore button in the web UI) if the same process/session is still around, or
+`sudo dhcpig release-previous eth1` once it isn't — see RECOVERY below.
 
 EXHAUST PIPELINE
 -----------------

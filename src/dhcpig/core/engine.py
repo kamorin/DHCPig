@@ -183,7 +183,7 @@ class DhcpEngine:
             f"start mode={c.mode.value} iface={c.interface} ipver={c.ip_version.value} "
             f"rate={c.rate_limit_pps}pps "
             f"dry_run={c.dry_run} spoof_eth_src={c.spoof_ethernet_src} "
-            f"scope={c.scope_cidrs} restore_on_exit={c.restore_on_exit}"
+            f"scope={c.scope_cidrs}"
         )
         if self.cfg.status_interval > 0:
             self._ticker = threading.Thread(
@@ -280,8 +280,6 @@ class DhcpEngine:
         self._finalize_findings()
         if self._sniffer is not None:
             self._sniffer.stop()
-        if self.cfg.restore_on_exit and self.cfg.mode is Mode.EXHAUST:
-            self.restore()
         self.state = DONE
         self.bus.emit(ev.SessionEnded(report=self.status()))
 
