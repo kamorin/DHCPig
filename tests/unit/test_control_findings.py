@@ -59,10 +59,24 @@ def _engine(monkeypatch, **cfg):
 # ---------------------------------------------------------------- NAK (previously dropped)
 def test_nak_is_emitted_and_counted(monkeypatch):
     eng, events, _ = _engine(monkeypatch, dry_run=True)
+    eng._inflight[0x1234] = {"mac": "de:ad:00:00:00:01", "sent_at": time.time(), "state": "x"}
     eng._on_dhcp(_reply("nak", 0x1234, "de:ad:00:00:00:01"))
     assert eng.naks == 1
     naks = [e for e in events if isinstance(e, ev.NakReceived)]
     assert len(naks) == 1 and naks[0].server_ip == SERVER
+
+
+def test_foreign_nak_is_not_counted_as_ours(monkeypatch):
+    """(2.3, race-freed) BUG FIX regression: a NAK whose xid we never sent must not shrink our
+    window or count toward naks/nak_burst -- it belongs to some other client's transaction."""
+    eng, events, _ = _engine(monkeypatch, dry_run=True)
+    eng._window = 8
+    assert 0x9999 not in eng._inflight
+    eng._on_dhcp(_reply("nak", 0x9999, "de:ad:00:00:00:99"))
+    assert eng.naks == 0
+    assert eng._window == 8  # unchanged -- _shrink_window() never ran
+    assert eng._nak_timestamps == []  # _note_nak_for_burst_detection() never ran
+    assert not any(isinstance(e, ev.NakReceived) for e in events)
 
 
 def test_is_nak_helper():
@@ -433,10 +447,21 @@ def test_ack_populates_lease_time_from_option_51(monkeypatch):
 def test_nak_burst_triggers_halt_and_stops_sending(monkeypatch):
     eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
     for i in range(3):
+        eng._inflight[i] = {"mac": "de:ad:00:00:00:01", "sent_at": time.time(), "state": "x"}
         eng._on_dhcp(_reply("nak", i, "de:ad:00:00:00:01"))
     assert eng._halt_signal is not None
     assert eng._halt_signal[0] == "nak_burst"
     assert any(isinstance(e, ev.ControlDetected) and e.signal == "nak_burst" for e in events)
+
+
+def test_foreign_naks_do_not_trigger_halt(monkeypatch):
+    """Companion to test_foreign_nak_is_not_counted_as_ours: three foreign NAKs must not add up
+    to a nak_burst halt the way three of our own would."""
+    eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
+    for i in range(3):
+        eng._on_dhcp(_reply("nak", i, "de:ad:00:00:00:01"))  # never registered in _inflight
+    assert eng._halt_signal is None
+    assert not any(isinstance(e, ev.ControlDetected) for e in events)
 
 
 def test_timeout_storm_triggers_halt(monkeypatch):
