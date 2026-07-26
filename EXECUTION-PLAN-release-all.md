@@ -93,10 +93,11 @@ each ACK lands, and `fsync`'d cheaply (or opened line-buffered). One line per le
  "server_ip":"172.20.15.1","server_mac":"00:0c:29:aa:bb:cc","xid":305419896,"lease_time":3600}
 ```
 
-Location: `/var/lib/dhcpig/leases-<iface>.jsonl` when running as root (which exhaust always is),
-falling back to `$XDG_STATE_HOME/dhcpig/`. `--from-journal auto` discovers the newest journal
-for the named interface. Entries are marked released rather than deleted, so a partially
-successful recovery can be resumed.
+Location: `$XDG_STATE_HOME/dhcpig/leases-<iface>.jsonl`, falling back to
+`~/.local/state/dhcpig/` — never `/var/lib` or another system-owned path; this is per-operator
+engagement data, not system state. `--from-journal auto` discovers the newest journal for the
+named interface. Entries are marked released rather than deleted, so a partially successful
+recovery can be resumed.
 
 **This is the single highest-value piece of work in the plan.** It converts recovery from
 "hopefully" to "deterministically" for every run made after it ships, and it is a ~60-line
