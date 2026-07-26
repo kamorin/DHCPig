@@ -79,6 +79,12 @@ class SessionConfig:
     status_interval: float = 5.0  # heartbeat period for StatusTick; 0 disables
     window_initial: int = 8  # exhaust: starting number of in-flight DISCOVER/REQUEST transactions
     window_max: int = 64  # exhaust: ceiling the adaptive window may grow to
+    # Lease journal (2.2): an append-only, crash-tolerant record of every lease acquired, so
+    # `release-previous` can recover a drained pool even after the process that drained it is
+    # long gone. On by default -- a recovery tool that only sometimes records is useless.
+    # `journal_path=None` resolves to `journal.default_path(interface)` at engine construction.
+    journal: bool = True
+    journal_path: Path | None = None
     timeouts: Timeouts = field(default_factory=Timeouts)
     verbosity: int = 2
 
