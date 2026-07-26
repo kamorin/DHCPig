@@ -41,7 +41,9 @@ already had rather than its own thinner, buggier path.
   owner's claim to it via forged broadcast ARP (`ARP_REQUEST` + `ARP_REPLY`, bogus MAC, never our
   own), by default 4 rounds spaced 3s apart (`evict_rounds`/`timeouts.evict_interval`, validated
   at config build against RFC 5227's 10s `DEFEND_INTERVAL` — `ConfigError` if violated), then an
-  8s settle (`evict_settle`) before measuring the outcome ladder: `no_reaction` < `defended` <
+  16s settle (`evict_settle`, bumped from 8.0s after a live run showed a DECLINE could be
+  measured before its follow-up DISCOVER arrived, understating the outcome by one rung) before
+  measuring the outcome ladder: `no_reaction` < `defended` <
   `declined` < `rediscovered` < `discover_unanswered` < `apipa`. New `--no-evict` (default on).
   New findings `CLIENTS_EVICTED_FROM_ADDRESSES` (FAIL, high) / `CLIENTS_DEFENDED_ADDRESSES`
   (INCONCLUSIVE) / `ARP_CONFLICTS_UNANSWERED` (INCONCLUSIVE) — deliberately no PASS, since

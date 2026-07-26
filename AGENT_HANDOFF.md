@@ -272,7 +272,9 @@ Ties §5b/§5c together into the actual attack chain both `exhaust` and `release
   inside that window; spaced 10s+ apart, each round looks like a fresh independently-defensible
   conflict and the host never gives up the address). `SessionConfig.__post_init__` raises
   `ConfigError` naming RFC 5227 if either constraint is violated. After the last round, sleeps
-  `evict_settle` (default 8.0s) before measuring — gives a DECLINE/restart/APIPA time to land.
+  `evict_settle` (default 16.0s, bumped from 8.0s after a live run showed a DECLINE could be
+  measured before its follow-up DISCOVER arrived, understating the outcome by one rung) before
+  measuring — gives a DECLINE/restart/APIPA time to land.
   **Outcome ladder** (causal/temporal order, not evidence-strength — a host that reaches a later
   rung passed through the earlier ones, whether or not we directly observed them):
   `no_reaction` < `defended` (ARP announcement from the real owner MAC — our frame was delivered,
