@@ -422,18 +422,25 @@ whole feature.
 
 ## 3. Acceptance criteria (whole plan)
 
-- [ ] `Lease.lease_time` is populated from option 51; regression tests cover present/absent/malformed.
-- [ ] `_release_bindings()` is the single release send-path; `_do_release()` wraps it; no behaviour change.
-- [ ] Journal survives a truncated final line, malformed lines, and unknown record kinds without raising.
-- [ ] A journal written during exhaust replays correctly after the engine object is destroyed.
-- [ ] `release-previous --dry-run` sends zero packets and lists exactly what it would release.
-- [ ] Pre-flight control success ⇒ `NO_RECOVERY_NEEDED`, zero frames sent, exit 0.
-- [ ] Entries outside the current CIDR, from a different server, or past `--max-age` are excluded.
-- [ ] `dry_run=True` writes no journal records.
-- [ ] Journal write failure (read-only path) degrades to a Debug event; exhaust still completes.
-- [ ] Findings report addresses-observed-recovered separately from frames-sent.
-- [ ] Integration test: exhaust → destroy engine → `release-previous` → a fresh MAC gets an address.
-- [ ] `ruff check` and `ruff format --check` clean; full suite green (155 baseline + new tests).
+- [x] `Lease.lease_time` is populated from option 51; regression tests cover present/absent/malformed.
+- [x] `_release_bindings()` is the single release send-path; `_do_release()` wraps it; no behaviour change.
+- [x] Journal survives a truncated final line, malformed lines, and unknown record kinds without raising.
+- [x] A journal written during exhaust replays correctly after the engine object is destroyed
+      (unit-tested with two independent `DhcpEngine` instances sharing a journal file; see note below).
+- [x] `release-previous --dry-run` sends zero packets and lists exactly what it would release.
+- [x] Pre-flight control success ⇒ `NO_RECOVERY_NEEDED`, zero frames sent, exit 0.
+- [x] Entries outside the current CIDR, from a different server, or past `--max-age` are excluded.
+- [x] `dry_run=True` writes no journal records.
+- [x] Journal write failure (read-only path) degrades to a Debug event; exhaust still completes.
+- [x] Findings report addresses-observed-recovered separately from frames-sent.
+- [ ] **Not done: netns/root integration test** (exhaust → destroy engine → `release-previous` →
+      a fresh MAC gets an address). The existing `FakeDhcpServer` fixture in
+      `test_exhaust_live.py` has an unbounded address pool and never NAKs, so it cannot actually
+      simulate an exhausted pool — this needs a real rewrite of that fixture (bounded pool,
+      NAK-when-full, RELEASE-frees-a-binding), and no environment with root + veth was available
+      to write and verify it against. See AGENT_HANDOFF.md §10 for what that rewrite needs to do.
+- [x] `ruff check` and `ruff format --check` clean; full suite green (200 passed, up from the
+      155 baseline; the difference includes Phase 0/1/2's own new tests).
 
 ---
 

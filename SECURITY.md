@@ -8,6 +8,9 @@ explicitly authorized to test.
   clean ACK, halves on a NAK/timeout/duplicate offer) instead of a flat rate cap — see the
   README's EXHAUST PIPELINE section. `release`, `garp`, and `active-scan` still take a rate cap
   (`--rate`, default 7 pps) bounding how fast they emit RELEASE/ARP/INFORM traffic.
+  `release-previous` also takes `--rate` but defaults to 50 pps — its frames are unicast to a
+  single server, not sprayed at the segment, and it runs during an outage the operator is
+  actively trying to end.
 - `exhaust` also **halts sending immediately** if a defensive control fires mid-run (a NAK
   burst, the link going down, a timeout storm, or a duplicate-offer pattern) — it doesn't try to
   push through a control that's already working. Leases already acquired are kept (not
@@ -45,7 +48,29 @@ first and an explicit `--scope` in production.
 Because leases are now retained by default, **an exhaust run leaves the pool consumed until you
 restore it.** That is deliberate — it is what lets you confirm the impact — but it means the
 operator owns the cleanup step. `dhcpig restore <iface>` releases exactly the leases that run
-acquired.
+acquired. `dhcpig release-previous <iface>` covers the case `restore` can't: the process was
+killed, the box rebooted, or you're recovering from a different machine entirely — see below.
+
+## The lease journal is data about a customer's network, on your disk
+Every lease `exhaust` acquires is recorded to an append-only journal the moment the ACK lands —
+that's what lets `release-previous` recover a drained pool after this process is long gone. It
+is **on by default** (`--no-journal` to opt out, though the tool's ability to clean up after
+itself depends on it existing).
+
+The journal is engagement data: which addresses were taken on which network, when, via which
+server. It lives at `$XDG_STATE_HOME/dhcpig/leases-<iface>.jsonl`, falling back to
+`~/.local/state/dhcpig/` — deliberately **not** under `/var/lib` or any other system-owned path,
+so it stays out of anything a package manager might also claim and is obviously yours to manage.
+It has a `--max-age` (default 7 days) that makes `release-previous` *ignore* old entries, but the
+tool never deletes the file itself — that's on the operator, same as any other engagement
+artifact. Delete it when you're done with a customer's network:
+
+    rm -rf ~/.local/state/dhcpig/
+
+`release-previous` releases only what the journal proves this tool acquired — it adds no
+capability beyond what `exhaust` already used. It is not gated behind the destructive-mode
+handling `release`/`garp` get, because it can't expand a run's blast radius: worst case, it
+re-sends a RELEASE for an address that's already free, which is a no-op.
 
 ## Reporting a vulnerability
 Please open a GitHub issue for non-sensitive bugs. For sensitive reports, contact the

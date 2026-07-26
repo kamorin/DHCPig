@@ -238,6 +238,16 @@ def test_release_previous_as_cli_roundtrip():
     assert "--passes 5" in line
 
 
+def test_journal_flag_from_payload_and_as_cli():
+    cfg = schemas.config_from_payload({"interface": "eth1", "mode": "exhaust"})
+    assert cfg.journal is True
+    assert "--no-journal" not in schemas.as_cli(cfg)
+
+    cfg = schemas.config_from_payload({"interface": "eth1", "mode": "exhaust", "journal": False})
+    assert cfg.journal is False
+    assert "--no-journal" in schemas.as_cli(cfg)
+
+
 def test_token_helpers():
     assert auth.token_ok("abc", "abc")
     assert not auth.token_ok("abc", "xyz")

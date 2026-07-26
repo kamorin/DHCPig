@@ -1,5 +1,35 @@
 # Changelog
 
+## 2.2.0 (unreleased) — lease journal + release-previous recovery
+
+`dhcpig restore` only ever released leases held in the memory of the currently-running engine —
+useless once the process was killed, the box rebooted, or you're recovering from a different
+machine. This release adds a real recovery path.
+
+- **Lease journal.** Every lease `exhaust` acquires is now recorded to an append-only,
+  crash-tolerant JSONL file the moment the ACK lands (`core/journal.py`), not just at the end of
+  a clean run. Lives at `$XDG_STATE_HOME/dhcpig/leases-<iface>.jsonl` (falling back to
+  `~/.local/state/dhcpig/`) — deliberately never under `/var/lib` or another system-owned path,
+  since it's per-engagement data, not system state. On by default; `--no-journal` opts out.
+  DHCP option 51 (lease-time) is now parsed into `Lease.lease_time`, which was declared but
+  never actually populated before this.
+- **`release-previous` command.** Replays the journal to recover a network this tool previously
+  drained: filters to the current interface, the current CIDR (`--scope`, else the interface's
+  own network — refuses to run if neither resolves), the currently-reachable DHCP server (guards
+  against a journal carried between engagements producing targets on the wrong network;
+  `--any-server` overrides), and `--max-age` (default 7 days). Runs a "can a new client get an
+  address?" probe before starting (skips entirely, sending nothing, if the pool isn't actually
+  exhausted) and again after, producing a verdict (`POOL_RECOVERED` /
+  `POOL_RECOVERY_PARTIAL` / `POOL_RECOVERY_FAILED`) rather than just a packet count. Needs no ARP
+  sweep, server discovery, or leasequery — the journal already carries everything. Not gated
+  behind `DESTRUCTIVE_MODES`: it only ever releases leases the journal proves this tool took, so
+  it adds no capability beyond what `exhaust` already used. Default `--rate` is 50, not the usual
+  7 — it runs during an outage the operator is trying to end, and the frames are unicast to one
+  server rather than sprayed at the segment.
+- Design plan: `EXECUTION-PLAN-release-previous.md`. A broader recovery-command proposal
+  (`EXECUTION-PLAN-release-all.md`) considered and narrowed away from leasequery, blind sweeps,
+  and ARP-derived targets in favor of the journal-only approach above — see that doc for why.
+
 ## 2.1.0 (unreleased) — release-first exhaust, windowed pacing, halt-on-control, headroom
 
 Prompted by a live run on a real `/22` that stalled at 56/~1000 addresses. The capture showed

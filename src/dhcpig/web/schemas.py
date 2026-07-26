@@ -60,6 +60,7 @@ def config_from_payload(payload: dict) -> SessionConfig:
         arp_sweep=bool(payload.get("arp_sweep", True)),
         release_neighbors=bool(payload.get("release_neighbors", True)),
         status_interval=float(payload.get("status_interval", 5.0) or 0),
+        journal=bool(payload.get("journal", True)),
         journal_path=Path(journal_path) if journal_path else None,
         max_age_days=float(payload.get("max_age_days", 7.0) or 0),
         require_same_server=bool(payload.get("require_same_server", True)),
@@ -84,6 +85,8 @@ def as_cli(cfg: SessionConfig) -> str:
         parts.append("--no-arp-scan")
     if not cfg.release_neighbors and cfg.mode is Mode.EXHAUST:
         parts.append("--no-release")
+    if not cfg.journal and cfg.mode is Mode.EXHAUST:
+        parts.append("--no-journal")
     if cfg.mode is Mode.RELEASE_PREVIOUS:
         if cfg.journal_path:
             parts += ["--journal", str(cfg.journal_path)]
