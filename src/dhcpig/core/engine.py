@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 
 from scapy.all import sendp  # module-level so tests can monkeypatch dhcpig.core.engine.sendp
 
 from . import events as ev
-from . import packets
+from . import journal, packets
 from .events import EventBus
 from .exceptions import ConfigError
 from .fingerprint import extract_signature, resolve
@@ -122,6 +123,31 @@ class DhcpEngine:
         self._first_offer_ip: str | None = None
         self._first_offer_subnet: str | None = None
         self._baseline_neighbor_count = 0
+        # lease journal (2.2): resolved once so the CLI/report can display the path used.
+        # Never active for dry-run -- a dry run must not pollute the recovery record with
+        # leases that were never actually acquired.
+        self._journal_enabled = cfg.journal and not cfg.dry_run
+        self.journal_path: Path | None = None
+        if self._journal_enabled:
+            self.journal_path = cfg.journal_path or journal.default_path(cfg.interface)
+
+    # ---------------------------------------------------------------- lease journal
+    def _journal_ack(self, lease: Lease) -> None:
+        """Best-effort: a journal write failure must never take down a run."""
+        if not self._journal_enabled or self.journal_path is None:
+            return
+        try:
+            journal.record_ack(self.journal_path, self.cfg.interface, lease)
+        except OSError as exc:
+            self._debug(f"journal: could not record ACK {lease.mac}/{lease.ip}: {exc}")
+
+    def _journal_release(self, mac: str, ip: str) -> None:
+        if not self._journal_enabled or self.journal_path is None:
+            return
+        try:
+            journal.record_released(self.journal_path, self.cfg.interface, mac, ip)
+        except OSError as exc:
+            self._debug(f"journal: could not record release {mac}/{ip}: {exc}")
 
     # ---------------------------------------------------------------- send chokepoint
     def _send(self, pkt, target_ip: str | None = None) -> bool:
@@ -278,6 +304,7 @@ class DhcpEngine:
             self._send(pkt)  # releasing our own leases; not scope-gated
             lease.released = True
             self.releases += 1
+            self._journal_release(lease.mac, lease.ip)
             self.bus.emit(ev.LeaseReleased(lease=lease))
 
     def status(self) -> dict:
@@ -754,6 +781,7 @@ class DhcpEngine:
             if self._send(pkt, target_ip=ip):
                 sent += 1
                 self.releases += 1
+                self._journal_release(mac, ip)  # no-op if (mac, ip) was never a journaled ACK
                 self.bus.emit(
                     ev.LeaseReleased(
                         lease=Lease(
@@ -1258,6 +1286,7 @@ class DhcpEngine:
             server_mac=server_mac or None,
         )
         self.cleanup.register(lease)
+        self._journal_ack(lease)
         self.acks += 1
         with self._inflight_lock:
             self._inflight.pop(pkt[BOOTP].xid, None)
