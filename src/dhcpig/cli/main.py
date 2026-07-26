@@ -114,6 +114,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="don't record acquired leases to the recovery journal (default: on) -- without "
         "it, 'dhcpig release-previous' has nothing to recover with if this run is interrupted",
     )
+    ex.add_argument(
+        "--no-evict",
+        dest="no_evict",
+        action="store_true",
+        help="skip ARP-conflict eviction of re-acquired addresses (default: on) -- see "
+        "RFC 5227 SS2.4; contests ownership to force a DECLINE/restart-at-INIT",
+    )
 
     sc = sub.add_parser("scan", help="passive ARP + DHCP fingerprint (read-only)")
     common(sc)
@@ -230,6 +237,7 @@ def build_config(args) -> SessionConfig:
         report_path=Path(args.report) if getattr(args, "report", None) else None,
         arp_sweep=not getattr(args, "no_arp_scan", False),
         release_neighbors=not getattr(args, "no_release", False),
+        evict=not getattr(args, "no_evict", False),
         status_interval=getattr(args, "status_interval", 5.0),
         journal=not getattr(args, "no_journal", False),
         journal_path=Path(args.journal) if getattr(args, "journal", None) else None,

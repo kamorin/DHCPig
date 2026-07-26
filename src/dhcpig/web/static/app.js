@@ -266,6 +266,12 @@ function handleEvent(e) {
       logLine("note", `[<-] foreign DHCP_Discover  ${e.mac}${who}  (not ours)`, 2);
       break;
     }
+    case "ClientEvicted": {
+      const bad = ["declined", "discover_unanswered", "apipa"].includes(e.outcome);
+      logLine(bad ? "alert" : "in",
+        `[${bad ? "!!" : "<-"}] evict outcome  ${e.ip} / ${e.mac}  -> ${e.outcome}`, 2);
+      break;
+    }
     case "Skipped": logLine("alert", `[!!] SKIPPED ${e.ip}  ${e.reason}`, 1); break;
     case "StatusTick": {
       const s = e.stats, w = Math.round(s.window || 0);

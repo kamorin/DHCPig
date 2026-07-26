@@ -105,8 +105,38 @@ class SessionConfig:
     # release-previous only: RELEASE has no reply (RFC 2131), so a dropped frame is silent —
     # resend the whole selected set this many times as cheap insurance.
     release_passes: int = 2
+    # ARP-conflict eviction (2.3): after re-acquiring a freed address (Phase 3), contest the
+    # victim's ownership of every OTHER address we now hold, per RFC 5227 §2.4, to move it out
+    # of its "defend once" phase and force a DECLINE/restart-at-INIT. Runs automatically as
+    # part of exhaust/release; there is no standalone "evict" mode (GARP_DOS was retired, 2.3).
+    evict: bool = True
+    evict_rounds: int = 4  # must be >= 2 -- one round can only ever reach "defended", never more
+    # evict_settle: how long to wait, after the last round, before measuring the outcome ladder
+    # -- gives a DECLINE/restart-at-INIT/APIPA time to actually land on the wire.
+    evict_settle: float = 8.0
     timeouts: Timeouts = field(default_factory=Timeouts)
     verbosity: int = 2
+
+    def __post_init__(self) -> None:
+        # RFC 5227 §2.4 correctness requirements, not taste: spaced >= 10s apart, each round
+        # looks like a fresh, independently-defensible conflict and the host never gives up the
+        # address; fewer than 2 rounds can only ever reach "defended" (the second conflict inside
+        # DEFEND_INTERVAL is what actually moves a host out of its defend-once phase).
+        from .exceptions import ConfigError
+
+        if self.timeouts.evict_interval >= 10.0:
+            raise ConfigError(
+                "timeouts.evict_interval must be < 10.0s (RFC 5227 SS2.4 DEFEND_INTERVAL) -- "
+                f"got {self.timeouts.evict_interval}. Spaced 10s or further apart, each ARP "
+                "conflict round looks like a fresh, independently-defensible conflict and the "
+                "host never gives up the address."
+            )
+        if self.evict_rounds < 2:
+            raise ConfigError(
+                f"evict_rounds must be >= 2 (RFC 5227 SS2.4) -- got {self.evict_rounds}. A "
+                "single round can only ever reach 'defended': the *second* conflict inside "
+                "DEFEND_INTERVAL is what moves a host out of its defend-once phase."
+            )
 
 
 @dataclass

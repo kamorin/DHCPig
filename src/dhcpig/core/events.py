@@ -59,6 +59,17 @@ class ForeignDiscover(Event):
 
 
 @dataclass
+class ClientEvicted(Event):
+    """Outcome-ladder update for one ARP-conflict eviction target (2.3, Phase 4). Emitted once
+    per target after the settle period, carrying the highest rung reached: no_reaction ->
+    defended -> declined -> rediscovered -> discover_unanswered -> apipa."""
+
+    ip: str
+    mac: str
+    outcome: str
+
+
+@dataclass
 class ServerDiscovered(Event):
     server: ServerInfo
 
