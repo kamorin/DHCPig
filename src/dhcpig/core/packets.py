@@ -32,7 +32,12 @@ def _hostname() -> str:
 # --------------------------------------------------------------------------- builders
 
 
-def build_discover_v4(mac: str, xid: int, src_mac: str) -> Ether:
+def build_discover_v4(mac: str, xid: int, src_mac: str, requested_addr: str | None = None) -> Ether:
+    """`requested_addr` emits DHCP option 50 (RFC 2131 Table 5 permits it in a DISCOVER) --
+    used by targeted re-acquisition (2.3) to ask the server for a specific, just-released
+    address rather than whatever it would otherwise hand out. Servers generally honour it when
+    the address is free; nothing here assumes they do -- the caller must still check the OFFER.
+    """
     opts = [
         ("message-type", "discover"),
         ("param_req_list", *_MACOS_PRL),
@@ -40,8 +45,10 @@ def build_discover_v4(mac: str, xid: int, src_mac: str) -> Ether:
         ("client_id", b"\x01" + mac2str(mac)),
         ("lease_time", 10000),
         ("hostname", _hostname()),
-        ("end", "00000000000000"),
     ]
+    if requested_addr:
+        opts.append(("requested_addr", requested_addr))
+    opts.append(("end", "00000000000000"))
     return (
         Ether(src=src_mac, dst="ff:ff:ff:ff:ff:ff")
         / IP(src="0.0.0.0", dst="255.255.255.255")

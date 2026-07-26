@@ -26,6 +26,22 @@ def test_discover_sets_broadcast_flag_and_client_id():
     assert cid == b"\x01" + mac2str("de:ad:be:ef:00:01")
 
 
+# ---------------------------------------------------------------- targeted re-acquisition (2.3)
+def test_discover_omits_option50_by_default():
+    pkt = packets.build_discover_v4("de:ad:be:ef:00:02", 0xABCE, "de:ad:be:ef:00:02")
+    assert packets.dhcp_option(pkt[DHCP].options, "requested_addr") is None
+
+
+def test_discover_carries_option50_when_requested_addr_given():
+    pkt = packets.build_discover_v4(
+        "de:ad:be:ef:00:03", 0xABCF, "de:ad:be:ef:00:03", requested_addr="172.20.0.51"
+    )
+    assert packets.dhcp_option(pkt[DHCP].options, "requested_addr") == "172.20.0.51"
+    # message-type and client_id must both still be present -- option 50 is additive
+    assert packets.dhcp_option(pkt[DHCP].options, "message-type") in ("discover", 1)
+    assert packets.dhcp_option(pkt[DHCP].options, "client_id") is not None
+
+
 def test_server_identifier_prefers_option54():  # PR #27
     opts = [("message-type", "offer"), ("server_id", "172.20.15.1"), "end"]
     assert packets.server_identifier("0.0.0.0", opts) == "172.20.15.1"

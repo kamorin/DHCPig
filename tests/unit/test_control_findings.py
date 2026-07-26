@@ -595,14 +595,27 @@ def test_release_phase_uses_server_from_pre_control(monkeypatch):
         return len(neighbors)
 
     monkeypatch.setattr(eng, "_do_release", fake_do_release)
-    monkeypatch.setattr(eng, "_reprobe_released", lambda neighbors: 0)
+    monkeypatch.setattr(eng, "_reprobe_released", lambda ips: 0)
     monkeypatch.setattr(eng, "_release_gateway", lambda: None)
-    eng._release_phase()
+    monkeypatch.setattr(
+        eng,
+        "_reacquire_phase",
+        lambda freed: {"granted": 1, "offered_different": 0, "naked": 0, "no_response": 0},
+    )
+    freed = eng._release_phase()
+    eng._finish_release(freed)
     assert captured["server_ip"] == "10.0.0.1"
     assert captured["server_ip"] != "0.0.0.0"
     assert captured["server_mac"] == "aa:bb:cc:dd:ee:ff"
+    assert freed == [("de:ad:00:00:00:01", "10.0.0.5")]
     ids = [e.finding.id for e in events if isinstance(e, ev.FindingRaised)]
     assert "NEIGHBOR_LEASES_RELEASED" in ids
+    finding = next(
+        e.finding
+        for e in events
+        if isinstance(e, ev.FindingRaised) and e.finding.id == "NEIGHBOR_LEASES_RELEASED"
+    )
+    assert finding.evidence["granted"] == 1
 
 
 def test_release_phase_excludes_gateway_and_server(monkeypatch):
@@ -632,7 +645,96 @@ def test_release_phase_excludes_gateway_and_server(monkeypatch):
 
 def test_release_phase_dry_run_reprobe_sends_nothing(monkeypatch):
     eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST, dry_run=True)
-    assert eng._reprobe_released([Neighbor("de:ad:00:00:00:01", "10.0.0.5")]) == 0
+    assert eng._reprobe_released(["10.0.0.5"]) == 0
+
+
+# ---------------------------------------------------------------- targeted re-acquisition (2.3)
+def test_finish_release_is_a_noop_when_nothing_was_freed(monkeypatch):
+    eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
+    called = []
+    monkeypatch.setattr(eng, "_reacquire_phase", lambda freed: called.append(freed) or {})
+    eng._finish_release([])
+    assert called == []  # never even attempted -- nothing to re-acquire
+    assert not any(isinstance(e, ev.FindingRaised) for e in events)
+
+
+def test_finish_release_recommendation_when_nothing_granted(monkeypatch):
+    """The server ignoring RELEASE (nothing re-acquirable) is the desired-behavior case."""
+    eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
+    eng.control_pre = ControlOutcome(
+        phase="pre", client="self", attempted=True, success=True, server_id=SERVER
+    )
+    monkeypatch.setattr(eng, "_reprobe_released", lambda ips: 0)
+    monkeypatch.setattr(
+        eng,
+        "_reacquire_phase",
+        lambda freed: {"granted": 0, "offered_different": 0, "naked": 2, "no_response": 0},
+    )
+    eng._finish_release([("de:ad:00:00:00:01", "10.0.0.5"), ("de:ad:00:00:00:02", "10.0.0.6")])
+    finding = next(
+        e.finding
+        for e in events
+        if isinstance(e, ev.FindingRaised) and e.finding.id == "NEIGHBOR_LEASES_RELEASED"
+    )
+    assert finding.evidence["granted"] == 0
+    assert finding.evidence["naked"] == 2
+    assert "desired behavior" in finding.recommendation
+
+
+def test_finish_release_recommendation_when_some_granted(monkeypatch):
+    eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
+    eng.control_pre = ControlOutcome(
+        phase="pre", client="self", attempted=True, success=True, server_id=SERVER
+    )
+    monkeypatch.setattr(eng, "_reprobe_released", lambda ips: 0)
+    monkeypatch.setattr(
+        eng,
+        "_reacquire_phase",
+        lambda freed: {"granted": 1, "offered_different": 0, "naked": 0, "no_response": 0},
+    )
+    eng._finish_release([("de:ad:00:00:00:01", "10.0.0.5")])
+    finding = next(
+        e.finding
+        for e in events
+        if isinstance(e, ev.FindingRaised) and e.finding.id == "NEIGHBOR_LEASES_RELEASED"
+    )
+    assert finding.evidence["granted"] == 1
+    assert "re-acquire" in finding.recommendation
+
+
+def test_reacquire_phase_classifies_all_four_outcomes(monkeypatch):
+    """End-to-end through the real windowed pipeline: granted (offer matches option 50),
+    offered_different (server ignored option 50), naked (REQUEST refused), and no_response
+    (never answered) must each land in the right bucket."""
+    eng, events, sent = _engine(monkeypatch)
+    eng.cfg.timeouts.control = 0.5
+    eng.cfg.timeouts.dhcp_request = 0.3
+    behaviors = ["granted", "offered_different", "naked", "no_response"]
+    freed = [(f"de:ad:00:00:00:0{i}", f"172.20.0.{50 + i}") for i in range(len(behaviors))]
+    handled: set[int] = set()
+
+    def responder():
+        deadline = time.time() + 2.0
+        while len(handled) < 3 and time.time() < deadline:  # no_response is never handled
+            with eng._inflight_lock:
+                xids = list(eng._reacquire_targets.items())
+            for idx, (xid, req_ip) in enumerate(xids):
+                if xid in handled or behaviors[idx] == "no_response":
+                    continue
+                handled.add(xid)
+                offer_ip = req_ip if behaviors[idx] in ("granted", "naked") else "10.0.0.222"
+                mac = f"00:11:22:33:44:0{idx}"
+                eng._on_dhcp(_reply("offer", xid, mac, yiaddr=offer_ip))
+                time.sleep(0.05)  # let _handle_offer's REQUEST land before the final reply
+                kind = "nak" if behaviors[idx] == "naked" else "ack"
+                eng._on_dhcp(_reply(kind, xid, mac, yiaddr=offer_ip))
+            time.sleep(0.02)
+
+    t = threading.Thread(target=responder, daemon=True)
+    t.start()
+    counts = eng._reacquire_phase(freed)
+    t.join(timeout=3)
+    assert counts == {"granted": 1, "offered_different": 1, "naked": 1, "no_response": 1}
 
 
 # ---------------------------------------------------------------- auto-finalize
