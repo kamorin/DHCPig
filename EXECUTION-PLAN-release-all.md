@@ -117,20 +117,54 @@ posture, and combining it with the `de:ad:` prefix filter (§1) lets us release 
 this tool created* and leave every legitimate client alone — a level of precision none of the
 other strategies can reach.
 
-**Be honest about the caveats in the docs and in the finding text:**
+#### Support reality check (researched July 2026)
 
-- Leasequery was designed for relay agents and access concentrators. ISC dhcpd requires an
-  explicit `allow leasequery;` and by default answers only configured, permitted sources; many
-  deployments never enable it. Windows DHCP Server supports it but likewise scoped.
-- The query normally carries a `giaddr` identifying the requesting relay. Sending it from a
-  plain client with `giaddr=0.0.0.0` is a legitimate thing to try, and is quietly dropped by
-  some servers.
-- A non-answer is ambiguous: unsupported, not permitted, or lost. Treat silence as "strategy
-  unavailable" and fall through — never as "address is free".
+Leasequery exists to let access concentrators — CMTSes, DSLAMs, BRASes — recover binding state
+they don't store themselves. It is a **broadband access feature**, and its deployment follows
+that: near-universal in cable/DSL networks, close to absent on the enterprise LANs DHCPig is
+usually pointed at.
 
-Cost: one new builder plus one parser in `packets.py` (~50 lines), and a probe-then-fallback
-loop. Worth it; it is the difference between a recovery tool and a recovery tool that only works
-on our own leases from our own machine.
+| Server | Implements RFC 4388? | Default | Confidence |
+|---|---|---|---|
+| ISC dhcpd | Yes, since 3.1.0a1 | **`deny leasequery` — off**, needs explicit `allow leasequery;` | Verified (ISC KB) |
+| ISC Kea | Yes, Lease Query hook; open-sourced in Kea 3.0 (Jun 2025) | Hook not loaded by default | Verified (ISC) |
+| dnsmasq (OpenWrt, OPNsense, libvirt, Pi-hole, most SOHO) | **No** — maintainer declined; needs option-82 storage dnsmasq's lease DB can't do | n/a | Verified (dnsmasq-discuss, 2023) |
+| Microsoft Windows Server DHCP | **Could not confirm — assume no** | n/a | **Unverified** |
+| Infoblox NIOS | Yes — "Allow LEASEQUERY" property | Off | Verified (Infoblox docs) |
+| Cisco Prime Network Registrar / IP Express | Yes, incl. bulk leasequery (RFC 6926) | Restricted | High (cable reference impl.) |
+| BlueCat / EfficientIP / other commercial IPAM | Likely | Off | Unverified |
+| udhcpd / BusyBox, systemd-networkd, hostapd, MikroTik | No | n/a | High |
+
+Three multiplied probabilities decide whether this works on any given engagement:
+implemented × enabled × willing to answer *us*. Every implementation above ships it **off**,
+and it gets turned on essentially only where a relay agent needs it. On a corporate LAN —
+Windows DHCP or dnsmasq being the two most likely servers, neither of which will answer —
+**realistically well under 10%.** On a service-provider access network it could be better than
+50%, but that is not this tool's habitat.
+
+**Conclusion: demote S2 from a primary strategy to an opportunistic probe.** It is one
+round-trip to find out, it costs ~50 lines, and when it does work it is the difference between
+"we can recover anything" and "we can recover what we recorded". But the plan must not lean on
+it, and the lease journal (S1) has to carry the weight.
+
+#### Two corrections to the naive implementation
+
+1. **`giaddr` must be non-zero.** RFC 4388 requires `giaddr` to be set to the requestor's IP
+   address, and a leasequery with `giaddr = 0.0.0.0` is invalid. The RFC is also explicit that
+   giaddr here is used *only* as the destination for the reply, MUST NOT restrict processing,
+   and MUST NOT be used as a key for address-pool selection. So setting `giaddr` to **our own
+   real interface address** is exactly what the spec prescribes — it is a return address, not
+   relay-agent impersonation, and the §2 "rejected" note about spoofing giaddr does not apply.
+   The earlier draft of this plan proposed `giaddr=0.0.0.0`, which would have guaranteed
+   failure against every compliant server.
+2. **Silence is ambiguous.** Unsupported, not permitted, dropped, or firewalled all look
+   identical. Treat a non-answer as "strategy unavailable" and fall through — **never** as
+   "address is free". Probe with a couple of addresses first and skip the whole sweep if
+   nothing answers, rather than walking a /22 in silence.
+
+Minor caveat: ISC dhcpd's leasequery does not report statically configured `fixed-address`
+reservations. Irrelevant for phantom dynamic leases, but it means a leasequery sweep is not a
+complete picture of the subnet.
 
 ### S3 — MAC-prefix filter (`de:ad:`) — a filter, not a source
 
@@ -175,9 +209,10 @@ correct output.
   fixing it, and turns a recovery command into a more durable attack than `exhaust` itself.
   Do not add it.
 - **Brute-forcing the MAC space.** See §1.
-- **Spoofing a relay agent (`giaddr`) to unlock leasequery.** Impersonating infrastructure to
-  bypass a server's access control is over the whitehat line. Set `giaddr=0.0.0.0`, and if the
-  server declines to answer, fall through.
+- **Spoofing a *foreign* relay agent's address in `giaddr` to get past a server's leasequery
+  permit list.** Setting `giaddr` to our own address is required by the RFC and is fine (§2 S2);
+  setting it to some *other* device's address to impersonate a permitted relay is over the
+  whitehat line. If the server declines to answer us, fall through.
 
 ### The zeroth option: wait
 
@@ -359,8 +394,9 @@ Each phase is its own commit, tests green before the next starts — the convent
 - **Phase 2 — `release-all` skeleton, records-only.** New mode, CLI subcommand, `--from-journal`
   / `--from-report`, filters, pre/post control verification, findings, dry-run. This alone is a
   complete and useful recovery tool.
-- **Phase 3 — leasequery (if approved).** Builder, parser, probe-and-fallback, the
-  `LEASEQUERY_UNAVAILABLE` finding.
+- **Phase 3 — leasequery (if approved).** Builder, parser, `giaddr` = our own interface address,
+  probe-two-addresses-then-commit, the `LEASEQUERY_UNAVAILABLE` finding. Expect this to be the
+  no-op path on most engagements (§2 S2).
 - **Phase 4 — `--include-live` / `--blind` (if approved).** Confirmation gate, warnings,
   effectiveness measurement, `SECURITY.md` update.
 - **Phase 5 — web UI + docs.** Mode in the SPA, README/SECURITY/AGENT_HANDOFF/CHANGELOG.
@@ -389,10 +425,13 @@ every future run, add zero offensive capability, and are the parts with no open 
 
 ## 10. Open decisions for the maintainer
 
-1. **Is DHCPLEASEQUERY (S2) in scope?** It is the only strategy that recovers a network with no
-   local records, and the only one that can precisely distinguish our leases from real clients
-   without a journal. Cost is a new message type in `packets.py` and honest handling of the
-   common case where the server just doesn't answer.
+1. **Is DHCPLEASEQUERY (S2) in scope, given it will usually fail?** The support research in §2
+   puts the realistic hit rate on an enterprise LAN at **under 10%** — every implementation
+   ships it off, and the two most likely servers (Windows DHCP, dnsmasq) probably don't have it
+   at all. It remains the only strategy that recovers a network with no local records. Ship it
+   as a cheap opportunistic probe (recommended), or drop it and rely entirely on the journal?
+   If it ships, someone should verify the Windows Server behaviour on a real box — it is the
+   one row in the matrix that is unverified and it is also the most commonly encountered server.
 2. **Do `--blind` and `--all-macs` ship at all?** Together they cross the "no new offensive
    capability" line (§5). Options: drop both; ship `--blind` only in combination with
    `--only-ours`; or ship both behind a typed confirmation and document them as disruptive.
