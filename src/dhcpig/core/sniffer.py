@@ -7,7 +7,11 @@ from collections.abc import Callable
 from .models import IPVersion
 
 _BPF = {
-    IPVersion.V4: "arp or icmp or (udp and src port 67 and dst port 68)",
+    # Widened (2.3) from server->client only ("src port 67 and dst port 68") to both
+    # directions: foreign DISCOVERs and DHCPDECLINEs are client->server (dst port 67) and were
+    # invisible to the engine before this. ARP is unchanged — eviction's defense-announcement
+    # and APIPA observation both ride on it and needed no filter change.
+    IPVersion.V4: "arp or icmp or (udp and (port 67 or port 68))",
     IPVersion.V6: "icmp6 or (udp and src port 547 and dst port 546)",
 }
 

@@ -96,6 +96,12 @@ class DhcpEngine:
         # Neighbors table shows OS/Device regardless of which signal (ARP vs DHCP) arrives first
         self._neighbors_by_mac: dict[str, Neighbor] = {}
         self._fp_by_mac: dict[str, HostFingerprint] = {}
+        # self-filter (2.3): the sniffer's BPF now sees client->server traffic too, including
+        # our own outbound DISCOVER/REQUEST/RELEASE echoed back and every other client's DHCP
+        # traffic. Populated in _exhaust_sender() and _control_transaction() with every source
+        # MAC we've sent from, so foreign-DISCOVER observation (Phase 2) can tell "ours" from
+        # "someone else's" without false positives.
+        self._our_macs: set[str] = set()
         # garp mode: who we are poisoning, the forged MACs we used, and who fought back
         self._garp_targets: set[str] = set()
         self._garp_bogus_macs: set[str] = set()
@@ -431,6 +437,7 @@ class DhcpEngine:
 
         out.attempted = True
         out.mac = mac
+        self._our_macs.add(mac)
         self.bus.emit(ev.ControlStarted(phase=phase))
         started = time.time()
         xid = _rand_xid()
@@ -1258,6 +1265,7 @@ class DhcpEngine:
                 macs.append(mac)  # rotate through the provided list
             xid = _rand_xid()
             src = self._src_mac(mac)
+            self._our_macs.add(src)
             pkt = packets.build_discover_v4(mac, xid, src)
             self._send(pkt)
             with self._inflight_lock:
@@ -1275,14 +1283,46 @@ class DhcpEngine:
         try:
             if self._consume_control(pkt):  # belongs to the in-flight control transaction
                 return
+            # Server-origin types first: OFFER/ACK/NAK are never self-originated (we don't send
+            # them), so they must never be run through the self-filter below, which relies on
+            # xid membership in self._inflight -- exactly the xid a legitimate reply to our own
+            # DISCOVER carries.
             if packets.is_offer(pkt):
                 self._handle_offer(pkt)
             elif packets.is_ack(pkt):
                 self._handle_ack(pkt)
             elif packets.is_nak(pkt):
                 self._handle_nak(pkt)
+            elif self._is_own_traffic(pkt):
+                return  # our own DISCOVER/REQUEST/RELEASE, echoed back by the widened BPF (2.3)
         except Exception as exc:  # never let a bad packet kill the sniffer thread
             self.bus.emit(ev.ErrorEvent(message=f"parse error: {exc!r}"))
+
+    def _is_own_traffic(self, pkt) -> bool:
+        """True if `pkt` is a frame we sent ourselves, echoed back by the sniffer.
+
+        The BPF widen (2.3) makes client->server traffic visible, including our own outbound
+        DISCOVER/REQUEST/RELEASE and every other host's DHCP traffic. Two independent signals,
+        either sufficient: the Ethernet source is one of ours (`_our_macs`, populated by
+        `_exhaust_sender()` and `_control_transaction()`), or the xid belongs to one of our own
+        in-flight transactions (the windowed sender's `_inflight`, or the control transaction's
+        `_control_xid`) -- a foreign host choosing the exact same 32-bit xid is not realistic.
+        Only meaningful for client-originated message types (DISCOVER/REQUEST/RELEASE/DECLINE);
+        callers must not apply it to OFFER/ACK/NAK, which we never send.
+        """
+        from scapy.all import BOOTP, Ether
+
+        if Ether in pkt and pkt[Ether].src in self._our_macs:
+            return True
+        if BOOTP in pkt:
+            xid = pkt[BOOTP].xid
+            with self._inflight_lock:
+                if xid in self._inflight:
+                    return True
+            with self._control_lock:
+                if self._control_xid is not None and xid == self._control_xid:
+                    return True
+        return False
 
     def _handle_offer(self, pkt) -> None:
         from scapy.all import BOOTP
