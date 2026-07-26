@@ -70,9 +70,9 @@ th { color: var(--muted); font-weight: 600; }
 .findings { max-height: 260px; overflow-y: scroll; overflow-x: hidden; padding-right: 4px; }
 .findings .hint { color: var(--muted); font-size: 12px; margin: 4px 0 10px; }
 
-/* neighbors tab: header row + 20 data rows (each ~27px at the table's 12px/1.5 line-height,
+/* neighbors tab: header row + 10 data rows (each ~27px at the table's 12px/1.5 line-height,
    4px vertical padding, 1px border) before it scrolls */
-.neighbors { max-height: 568px; overflow-y: scroll; overflow-x: hidden; padding-right: 4px; }
+.neighbors { max-height: 298px; overflow-y: scroll; overflow-x: hidden; padding-right: 4px; }
 
 .findings, .neighbors { scrollbar-width: thin; scrollbar-color: var(--edge) var(--bg); }
 .findings::-webkit-scrollbar, .neighbors::-webkit-scrollbar { width: 10px; }
