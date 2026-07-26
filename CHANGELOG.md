@@ -1,5 +1,44 @@
 # Changelog
 
+## 2.1.0 (unreleased) — release-first exhaust, windowed pacing, halt-on-control, headroom
+
+Prompted by a live run on a real `/22` that stalled at 56/~1000 addresses. The capture showed
+the server re-offering the same address to two of our MACs, then NAKing, then going silent —
+**pending-offer table saturation from flooding faster than handshakes could complete, not real
+pool exhaustion.**
+
+- **Release phase runs first, inside `exhaust`.** Before the sender starts, DHCPRELEASE is sent
+  for every ARP-discovered neighbor (`release_neighbors`, default on; `--no-release` opts out),
+  freeing addresses so "take every address in the range" has somewhere to go. Fixed two bugs
+  that made release a no-op before this: (1) the server identity was always `0.0.0.0` because
+  `_discover_neighbors()` is ARP-only and never learns a DHCP server — it now comes from the
+  control transaction; (2) `build_release_v4()` built an L3-only packet despite being sent via
+  L2 `sendp()` — it now carries an `Ether` layer, unicast to the server MAC when known. Standalone
+  `release` mode got the same server-discovery fix. Re-probes released addresses by ARP and
+  raises `NEIGHBOR_LEASES_RELEASED` reporting observed effect, not frames sent.
+- **Windowed, adaptive handshake pipeline replaces the open-loop DISCOVER flood.** At most
+  `window_initial` (8) DISCOVER/REQUEST transactions in flight; a clean ACK grows the window
+  (to `window_max`, 64), a NAK/timeout/duplicate-offer halves it. Only an ACK counts as a held
+  address. `--rate` is **removed from `exhaust`** (the window paces it now) but unchanged on
+  `release`/`garp`/`active-scan`.
+- **Halt-and-report.** On the first of five signals — a NAK burst, offers going quiet, link
+  carrier loss (port-security err-disable), a timeout storm, or the same address offered to two
+  of our MACs — sending stops immediately, but leases already held are **kept** and both
+  post-run controls still run so the report is complete. New `HALTED` state, `ControlDetected`
+  event.
+- **Headroom.** A best-effort pool-size estimate (from `--scope`, else the first OFFER's subnet;
+  never fabricated — shows `—` when unknown) surfaces as a live dashboard number:
+  `headroom = pool_size - leases_held - observed_in_use`, floored at 0, always labelled with its
+  source. New `POOL_HEADROOM_LOW` finding when the pre-test baseline is already ≥80% utilized.
+- **Verdict rename.** `DHCP_STARVATION_POSSIBLE`, `DHCP_STARVATION_BLOCKED`,
+  `POOL_EXHAUSTED_CONFIRMED`, and `POOL_NOT_EXHAUSTED` are retired in favor of two:
+  `DHCP_STARVATION_ATTAINED` (FAIL — acks>0 and the post-run new-MAC control was denied and its
+  own baseline succeeded) and `DHCP_STARVATION_NOT_ATTAINED` (PASS — everything else), with a
+  `reason` (`control_fired`, `pool_headroom_remaining`, `blocked_at_baseline`, or
+  `inconclusive_baseline`). Because halt-on-control now stops the run on the first defensive
+  signal, `ATTAINED` is rare by construction on a defended network — `NOT_ATTAINED +
+  control_fired`, naming the control and the lease count it fired at, is the expected result.
+
 ## 2.0.0 (unreleased) — garp actually works; UI trimmed
 
 - **ARP-GARP DoS rewritten.** It previously sent *one* broadcast gratuitous-ARP request per

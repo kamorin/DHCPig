@@ -12,21 +12,22 @@ fingerprinting so security engineers can confirm a network is defended (DHCP sno
 port security, etc.).
 
 `dhcpig` 2.x is a refactor of the original single-file `pig.py` into an installable,
-tested package. It requires `scapy>=2.5` and root/CAP_NET_RAW. Destructive actions are
-opt-in, authorization-gated, scope-restricted, rate-limited, and reversible.
+tested package. It requires `scapy>=2.5` and root/CAP_NET_RAW. Destructive modes
+(`release`/`garp`) are opt-in by subcommand, take an optional `--scope`, and are rate-limited
+and reversible (`dhcpig restore`) — there is no separate authorization gate; see DISCLAIMER.
 
 INSTALL
 -------
 
     pipx install dhcpig        # or: pip install .
 
-USAGE (V1.0 — CLI)
-------------------
+USAGE (CLI)
+-----------
 
-    sudo dhcpig exhaust eth1 --rate 20 --report run.json
+    sudo dhcpig exhaust eth1 --report run.json
     sudo dhcpig scan eth1 --report inventory.json          # passive, read-only
-    sudo dhcpig release eth1 --scope 172.20.0.0/16         # DESTRUCTIVE
-    sudo dhcpig garp    eth1 --scope 172.20.0.0/16         # DESTRUCTIVE
+    sudo dhcpig release eth1 --scope 172.20.0.0/16 --rate 20  # DESTRUCTIVE
+    sudo dhcpig garp    eth1 --scope 172.20.0.0/16 --rate 20  # DESTRUCTIVE
     sudo dhcpig restore eth1                               # release leases we grabbed
     dhcpig ifaces
 
@@ -37,15 +38,39 @@ every host on the segment. Pass `--scope` to bound it.
 Safety flags:
 
     --dry-run            build + log packets, send nothing on the wire
-    --rate N             cap packets/sec (authoritative — the only pacing mechanism, default 10)
+    --rate N             cap packets/sec — release/garp/active-scan only, default 10
+                          (exhaust has no --rate; see EXHAUST PIPELINE below)
     --scope CIDR         restrict targets to these networks (repeatable; optional)
     --no-control         skip the control transaction (see below; not recommended)
+    --no-release         skip releasing ARP-discovered neighbors before exhausting
+    --no-arp-scan        skip the pre-run ARP inventory
     --restore-on-exit    release the acquired leases when the run ends
     --status-interval N  periodic status line, default every 5s (0 disables)
 
 Leases are **kept by default** so the exhausted state can be observed and verified after the
 run. Release them with `sudo dhcpig restore eth1` (or the Restore button in the web UI) when
-you are done. `--rate` is the remaining bound on how fast a run can consume a pool.
+you are done.
+
+EXHAUST PIPELINE
+-----------------
+
+`exhaust` runs four phases before the sender starts: an ARP sweep (pre-run inventory), a
+control transaction (baseline reachability), a **release phase** (DHCPRELEASE for every
+ARP-discovered neighbor, so the pool has addresses to give up rather than only whatever was
+already free — `--no-release` to skip), then the sender.
+
+The sender is a **windowed, adaptive pipeline**, not an open-loop flood: a handful of
+DISCOVER/REQUEST transactions are in flight at once, growing on a clean ACK and halving on a
+NAK, timeout, or duplicate offer. Flooding faster than handshakes can complete saturates the
+server's pending-offer table — which looks like exhaustion but isn't, and produced a false
+result on a real `/22` (the server re-offered the same address to two of our MACs, then NAKed,
+then went silent at 56/~1000 addresses). This is why `exhaust` has no `--rate`: the window paces
+it, and backs off automatically.
+
+If a defensive control fires mid-run — a NAK burst, offers going quiet, the link going down
+(port-security err-disable), a timeout storm, or the same address offered to two of our MACs —
+sending **stops immediately**, but leases already held are kept and both post-run control
+transactions still run, so the report is complete rather than truncated.
 
 CONTROL TRANSACTION & FINDINGS
 ------------------------------
@@ -67,24 +92,38 @@ Reading the matrix:
 
 * `pre/self` **fails** → the test is invalid (wrong VLAN/interface/no server) → **INCONCLUSIVE**.
 * `pre/self` OK but `pre/new` **fails** → unknown MACs are refused up front: DHCP snooping or
-  port security → **PASS**.
-* Spoofed MACs get no addresses at all → the network defended itself → **PASS**.
+  port security → **PASS** (`DHCP_STARVATION_NOT_ATTAINED`, reason `blocked_at_baseline`).
 * `post/new` **fails** while leases are held → a new client is denied service → genuine
-  exhaustion (**FAIL**).
-* Offers stopped but `post/new` still **succeeds** → the server stopped answering *you*
-  specifically (rate-limiting, offer-table saturation, anti-starvation), which is reported as
-  `SERVER_STOPPED_SERVING_TEST_CLIENTS` rather than exhaustion. Retry with a lower `--rate`.
+  exhaustion → **FAIL** (`DHCP_STARVATION_ATTAINED`).
+* `post/new` still **succeeds** → **PASS** (`DHCP_STARVATION_NOT_ATTAINED`), with a `reason`:
+  `control_fired` if a defensive control halted sending first (the expected result on a
+  defended network — see EXHAUST PIPELINE above), otherwise `pool_headroom_remaining`.
+* Offers stopped but `post/new` still succeeds *and* a control never fired → the server stopped
+  answering *you* specifically (rate-limiting, offer-table saturation, anti-starvation), which
+  is reported separately as `SERVER_STOPPED_SERVING_TEST_CLIENTS`.
 
 Runs end with **findings** — an ID, verdict, severity, the evidence behind it, and a
 recommendation — printed by the CLI, shown in the web UI's Findings tab, and included in the
 JSON/HTML reports.
 
 A run **ends by itself**: once offers stop arriving for `offer_silence` seconds (10s by
-default) the pool is treated as drained, and the engine runs the post-control and produces the
-verdict without waiting for you to press Stop. `POOL EXHAUSTED` therefore only ever refers to
-the server ceasing to serve — there is no self-imposed lease cap that could be mistaken for it.
+default), or a defensive control fires (EXHAUST PIPELINE above), the engine runs the post-control
+and produces the verdict without waiting for you to press Stop. `POOL EXHAUSTED` therefore only
+ever refers to the server ceasing to serve — there is no self-imposed lease cap that could be
+mistaken for it.
 
 Legacy `./pig.py eth1` still works via a deprecated shim.
+
+HEADROOM
+--------
+
+The dashboard/status line also surfaces a **headroom** estimate for `exhaust`:
+`pool_size - leases_held - observed_in_use`, floored at 0. `pool_size` comes from an explicit
+`--scope` when given, else it's inferred from the first OFFER's subnet (DHCP option 1); if
+neither is available it shows `—` rather than a fabricated number, and every surface (CLI, web,
+JSON/HTML report) renders the source alongside it. A separate `POOL_HEADROOM_LOW` finding fires
+when the *pre-test* ARP baseline already shows the scope at ≥80% utilization — independent of
+whether exhausting the pool succeeded.
 
 WEB UI
 ------
@@ -93,9 +132,9 @@ WEB UI
 
 The web UI (`dhcpig-web`) is Python-stdlib only (no framework, no build step). It is bound to
 `127.0.0.1`, requires the printed bearer token, and enforces same-origin. All four modes are
-available with a live dashboard, OS-inventory tables, JSON/CSV/HTML export, "Copy as CLI", and
-profile save/load. Destructive modes require the authorization checkbox, a scope, and a typed
-confirmation (re-validated server-side). For a headless VM, reach it from your host with:
+available with a live dashboard (including the headroom counter for exhaust), OS-inventory
+tables, JSON/CSV/HTML export, "Copy as CLI", and profile save/load. For a headless VM, reach it
+from your host with:
 
     ssh -L 8787:127.0.0.1:8787 kali@<vm-ip>
 
@@ -136,13 +175,17 @@ STATUS OUTPUT
 -------------
 
 At normal verbosity a status line is printed every 5 seconds with running totals, the change
-over the last window, and rates — so you can tell a working run from a stalled one:
+over the last window, and rates — so you can tell a working run from a stalled one. `exhaust`
+also carries the send window/inflight count and the headroom estimate:
 
-    [##] t=220s  RUNNING  leases 1022 (+0 in 5s, 0.0/s)  discovers 4300 (+250 in 5s, 50.0/s)
-         offers 1030 (+0 in 5s)  servers 1  last offer 6s ago
+    [##] t=220s  RUNNING  leases 412 (+8 in 5s, 1.6/s)  discovers 480 (+9 in 5s, 1.8/s)
+         offers 420 (+8 in 5s)  servers 1  window 16 (inflight 12)  headroom 610 / ~1022 est.
+         last offer 1s ago
 
-Leases flat while discovers keep climbing, with `last offer` growing, is the pool draining.
-Counters that are idle are left out. Use `--status-interval 0` to switch it off.
+Leases flat while discovers keep climbing, with `last offer` growing, is the pool draining. A
+shrinking window with rising `timeouts` means NAKs/timeouts/duplicate offers are throttling the
+run back — that's the adaptive pacing working, not a bug. Counters that are idle are left out.
+Use `--status-interval 0` to switch it off.
 
 FINGERPRINTING
 --------------
