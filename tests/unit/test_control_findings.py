@@ -389,6 +389,15 @@ def test_only_acks_increment_the_lease_counter_not_timeouts(monkeypatch):
     assert eng.acks == 1
 
 
+def test_ack_populates_lease_time_from_option_51(monkeypatch):
+    """Regression: Lease.lease_time used to be dropped on the floor at _handle_ack -- the
+    journal (2.2) needs it to know when a phantom lease naturally expires."""
+    eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
+    eng._on_dhcp(_reply("ack", 0xCCCC, "de:ad:00:00:00:03"))
+    acked = [e for e in events if isinstance(e, ev.AckReceived)]
+    assert acked and acked[-1].lease.lease_time == 600  # _reply() bakes in lease_time=600
+
+
 def test_nak_burst_triggers_halt_and_stops_sending(monkeypatch):
     eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
     for i in range(3):
