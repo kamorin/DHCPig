@@ -47,9 +47,7 @@ def test_live_send_calls_sendp(sent):
 
 def test_scope_blocks_out_of_scope_target(sent):
     bus, events = _bus_collect()
-    cfg = SessionConfig(
-        interface="lo", mode=Mode.GARP_DOS, authorized=True, scope_cidrs=["10.0.0.0/24"]
-    )
+    cfg = SessionConfig(interface="lo", mode=Mode.GARP_DOS, scope_cidrs=["10.0.0.0/24"])
     eng = DhcpEngine(cfg, bus)
     assert eng._send(_pkt(), target_ip="192.168.1.5") is False
     assert sent == []
@@ -71,9 +69,7 @@ def test_restore_releases_exactly_acquired_leases(sent):
 
 def test_do_garp_only_in_scope(sent):
     bus, events = _bus_collect()
-    cfg = SessionConfig(
-        interface="lo", mode=Mode.GARP_DOS, authorized=True, scope_cidrs=["172.20.0.0/16"]
-    )
+    cfg = SessionConfig(interface="lo", mode=Mode.GARP_DOS, scope_cidrs=["172.20.0.0/16"])
     eng = DhcpEngine(cfg, bus)
     n = eng._do_garp(["172.20.0.7", "10.9.9.9", "172.20.0.8"])
     assert n == 2
@@ -84,9 +80,7 @@ def test_do_garp_only_in_scope(sent):
 
 def test_do_release_only_in_scope(sent):
     bus, events = _bus_collect()
-    cfg = SessionConfig(
-        interface="lo", mode=Mode.RELEASE_NEIGHBORS, authorized=True, scope_cidrs=["172.20.0.0/16"]
-    )
+    cfg = SessionConfig(interface="lo", mode=Mode.RELEASE_NEIGHBORS, scope_cidrs=["172.20.0.0/16"])
     eng = DhcpEngine(cfg, bus)
     neighbors = [
         Neighbor("de:ad:00:00:00:11", "172.20.0.51"),
@@ -97,13 +91,14 @@ def test_do_release_only_in_scope(sent):
     assert len(sent) == 1
 
 
-def test_start_raises_for_unauthorized_destructive():
-    from dhcpig.core.exceptions import Unauthorized
-
-    bus, _ = _bus_collect()
-    eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.RELEASE_NEIGHBORS), bus)
-    with pytest.raises(Unauthorized):
-        eng.start()
+def test_scope_still_bounds_targets_when_supplied(sent):
+    """--scope is optional now, but when given it must still be enforced at _send()."""
+    bus, events = _bus_collect()
+    cfg = SessionConfig(interface="lo", mode=Mode.GARP_DOS, scope_cidrs=["10.0.0.0/24"])
+    eng = DhcpEngine(cfg, bus)
+    assert eng._send(_pkt(), target_ip="10.0.0.5") is True
+    assert eng._send(_pkt(), target_ip="192.168.1.5") is False
+    assert sum(isinstance(e, ev.Skipped) for e in events) == 1
 
 
 def test_active_scan_requires_scope():

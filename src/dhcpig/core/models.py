@@ -20,9 +20,12 @@ class Mode(Enum):
     GARP_DOS = "garp"
 
 
+# Modes that disrupt live clients. Used for labelling and reporting only — they are no longer
+# gated behind an authorization attestation, and --scope is optional (it bounds a run when
+# supplied, and otherwise the interface's own network is used).
 DESTRUCTIVE_MODES: set[Mode] = {Mode.RELEASE_NEIGHBORS, Mode.GARP_DOS}
-# modes that require a scope CIDR (destructive ones, plus active-scan so its sweep is bounded)
-SCOPE_REQUIRED_MODES: set[Mode] = DESTRUCTIVE_MODES | {Mode.ACTIVE_SCAN}
+# active-scan still requires an explicit scope so its sweep can't be unbounded
+SCOPE_REQUIRED_MODES: set[Mode] = {Mode.ACTIVE_SCAN}
 
 
 @dataclass
@@ -47,11 +50,10 @@ class SessionConfig:
     request_options: list[int] = field(default_factory=lambda: list(range(80)))
     fuzz: bool = False
     threads: int = 1
-    rate_limit_pps: int = 20  # required safety cap (the remaining bound on run impact)
+    rate_limit_pps: int = 10  # the bound on how fast a run can consume a pool
     v6_rapid_commit: bool = False
     dry_run: bool = False
-    authorized: bool = False  # set by --i-am-authorized
-    scope_cidrs: list[str] | None = None  # required for destructive modes
+    scope_cidrs: list[str] | None = None  # optional; bounds targets when supplied
     # Default False: keep the leases after the run so the exhausted state can be observed and
     # verified. Release them explicitly with `dhcpig restore` / the Restore button when done.
     restore_on_exit: bool = False

@@ -84,7 +84,6 @@ class SessionRecorder:
                 "started_at": self.started,
                 "ended_at": time.time(),
                 "config": self._config_redacted(),
-                "authorization_attested": self.cfg.authorized,
                 "scope_cidrs": self.cfg.scope_cidrs,
                 "fingerprint_db": DB_VERSION,
                 "servers": list(self.servers.values()),

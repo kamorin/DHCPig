@@ -54,16 +54,16 @@ def test_build_config_ipv6_and_request_options():
     assert cfg.request_options == [1, 3, 6]
 
 
-def test_release_without_flags_exits_unauthorized():
-    args = cli.build_parser().parse_args(["release", "eth1"])
-    cfg = cli.build_config(args)
-    assert cli._run_session(cfg, yes=True) == cli.EXIT_UNAUTH
-
-
-def test_garp_without_scope_exits_unauthorized():
-    args = cli.build_parser().parse_args(["garp", "eth1", "--i-am-authorized"])
-    cfg = cli.build_config(args)
-    assert cli._run_session(cfg, yes=True) == cli.EXIT_UNAUTH
+def test_destructive_modes_take_no_authorization_flags():
+    """The gate is gone: release/garp parse with just an interface, and --scope is optional."""
+    for cmd in ("release", "garp"):
+        cfg = cli.build_config(cli.build_parser().parse_args([cmd, "eth1"]))
+        assert cfg.scope_cidrs is None
+        assert cfg.rate_limit_pps == 10
+    cfg = cli.build_config(
+        cli.build_parser().parse_args(["garp", "eth1", "--scope", "10.0.0.0/24"])
+    )
+    assert cfg.scope_cidrs == ["10.0.0.0/24"]
 
 
 def test_ifaces_command_runs():

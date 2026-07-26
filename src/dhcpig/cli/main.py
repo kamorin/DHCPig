@@ -1,7 +1,7 @@
 """dhcpig command-line interface (V1.0).
 
 Subcommands: exhaust | scan | release | garp | restore | ifaces | report
-Exit codes: 0 ok · 2 bad args · 3 no DHCP server · 4 unauthorized · 130 interrupted
+Exit codes: 0 ok · 2 bad args · 3 no DHCP server · 130 interrupted
 """
 
 from __future__ import annotations
@@ -13,12 +13,12 @@ from pathlib import Path
 
 from ..core.engine import DONE, EXHAUSTED, DhcpEngine
 from ..core.events import EventBus
-from ..core.exceptions import ConfigError, Unauthorized
-from ..core.models import IPVersion, Mode, SessionConfig, Timeouts
+from ..core.exceptions import ConfigError
+from ..core.models import DESTRUCTIVE_MODES, IPVersion, Mode, SessionConfig, Timeouts
 from ..core.reporting import SessionRecorder
 from .render import Renderer
 
-EXIT_OK, EXIT_BADARGS, EXIT_NOSERVER, EXIT_UNAUTH, EXIT_INTERRUPT = 0, 2, 3, 4, 130
+EXIT_OK, EXIT_BADARGS, EXIT_NOSERVER, EXIT_INTERRUPT = 0, 2, 3, 130
 
 _MODE_BY_CMD = {
     "exhaust": Mode.EXHAUST,
@@ -64,7 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     ex = sub.add_parser("exhaust", help="consume the DHCP pool (non-destructive)")
     common(ex)
-    ex.add_argument("--rate", type=int, default=20, help="max packets/sec (safety cap)")
+    ex.add_argument("--rate", type=int, default=10, help="max packets/sec (safety cap)")
     ex.add_argument("--threads", type=int, default=1)
     ex.add_argument("--request-option", default=None, help="e.g. 12,14-19,23")
     ex.add_argument("--client-mac", action="append", dest="client_macs")
@@ -119,7 +119,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="CIDR",
         help="network(s) to sweep; defaults to the interface's own network",
     )
-    asc.add_argument("--rate", type=int, default=20)
+    asc.add_argument("--rate", type=int, default=10)
     asc.add_argument("--dry-run", action="store_true")
 
     for name, helptext in (
@@ -128,10 +128,14 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         d = sub.add_parser(name, help=helptext)
         common(d)
-        d.add_argument("--scope", action="append", dest="scope_cidrs", metavar="CIDR")
-        d.add_argument("--i-am-authorized", action="store_true", dest="authorized")
-        d.add_argument("--yes", action="store_true", help="skip interactive confirmation")
-        d.add_argument("--rate", type=int, default=20)
+        d.add_argument(
+            "--scope",
+            action="append",
+            dest="scope_cidrs",
+            metavar="CIDR",
+            help="limit targets to these networks (default: the interface's own network)",
+        )
+        d.add_argument("--rate", type=int, default=10)
         d.add_argument("--dry-run", action="store_true")
 
     rs = sub.add_parser("restore", help="release leases acquired by a prior run")
@@ -166,9 +170,8 @@ def build_config(args) -> SessionConfig:
         request_options=req_opts,
         fuzz=getattr(args, "fuzz", False),
         threads=getattr(args, "threads", 1),
-        rate_limit_pps=getattr(args, "rate", 20),
+        rate_limit_pps=getattr(args, "rate", 10),
         dry_run=getattr(args, "dry_run", False),
-        authorized=getattr(args, "authorized", False),
         scope_cidrs=scope,
         restore_on_exit=(
             getattr(args, "restore_on_exit", False) and not getattr(args, "no_restore", False)
@@ -204,30 +207,7 @@ def _cmd_report(path: str) -> int:
     return EXIT_OK
 
 
-def _confirm_destructive(cfg: SessionConfig, yes: bool) -> bool:
-    if cfg.dry_run or yes or not sys.stdin.isatty():
-        return True
-    scope = ",".join(cfg.scope_cidrs or [])
-    ans = input(
-        f"[??] confirm destructive {cfg.mode.value.upper()} on {cfg.interface}, "
-        f"scope {scope} — type interface name: "
-    )
-    return ans.strip() == cfg.interface
-
-
-def _run_session(cfg: SessionConfig, yes: bool = False) -> int:
-    from ..core.models import DESTRUCTIVE_MODES
-
-    if cfg.mode in DESTRUCTIVE_MODES and not (cfg.authorized and cfg.scope_cidrs):
-        print(
-            f"[XX] refused: {cfg.mode.value} requires --i-am-authorized and --scope",
-            file=sys.stderr,
-        )
-        return EXIT_UNAUTH
-    if cfg.mode in DESTRUCTIVE_MODES and not _confirm_destructive(cfg, yes):
-        print("[XX] aborted (confirmation failed)", file=sys.stderr)
-        return EXIT_INTERRUPT
-
+def _run_session(cfg: SessionConfig) -> int:
     bus = EventBus()
     recorder = SessionRecorder(cfg)
     renderer = Renderer(verbosity=cfg.verbosity)
@@ -237,24 +217,26 @@ def _run_session(cfg: SessionConfig, yes: bool = False) -> int:
 
     try:
         engine.start()
-    except Unauthorized as exc:
-        print(f"[XX] {exc}", file=sys.stderr)
-        return EXIT_UNAUTH
     except ConfigError as exc:
         print(f"[XX] {exc}", file=sys.stderr)
         return EXIT_BADARGS
 
     rc = EXIT_OK
     try:
-        deadline_noserver = time.time() + max(20.0, cfg.timeouts.dhcp_request * 20)
+        # count the no-server deadline from the first DISCOVER, not from start(): the prelude
+        # (ARP sweep + control transactions) legitimately runs for several seconds first
+        first_discover_at = None
         while True:
             time.sleep(0.5)
             if engine.state in (EXHAUSTED, DONE):
                 break
+            if first_discover_at is None and engine.discovers:
+                first_discover_at = time.time()
             if (
                 cfg.mode is Mode.EXHAUST
                 and not engine.servers
-                and time.time() > deadline_noserver
+                and first_discover_at is not None
+                and time.time() - first_discover_at > max(20.0, cfg.timeouts.dhcp_request * 20)
                 and not cfg.dry_run
             ):
                 print("[XX] no DHCP server detected — aborting", file=sys.stderr)
@@ -296,7 +278,7 @@ def main(argv: list[str] | None = None) -> int:
         print("[--] restore complete")
         return EXIT_OK
     cfg = build_config(args)
-    return _run_session(cfg, yes=getattr(args, "yes", False))
+    return _run_session(cfg)
 
 
 if __name__ == "__main__":  # pragma: no cover

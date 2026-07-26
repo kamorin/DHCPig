@@ -1,6 +1,6 @@
-"""Safety primitives: authorization gate, scope guard, rate limiter, cleanup/restore.
+"""Safety primitives: scope guard, rate limiter, cleanup/restore.
 
-These enforce the whitehat guarantees and are all unit-testable without root.
+All unit-testable without root.
 """
 
 from __future__ import annotations
@@ -9,26 +9,15 @@ import ipaddress
 import threading
 import time
 
-from .exceptions import Unauthorized
-from .models import DESTRUCTIVE_MODES, Lease, SessionConfig
-
-
-def authorize(cfg: SessionConfig) -> None:
-    """Raise Unauthorized unless a destructive mode has explicit auth + non-empty scope."""
-    if cfg.mode in DESTRUCTIVE_MODES:
-        if not cfg.authorized:
-            raise Unauthorized(
-                f"{cfg.mode.value} is destructive and requires authorization (--i-am-authorized)"
-            )
-        if not cfg.scope_cidrs:
-            raise Unauthorized(f"{cfg.mode.value} is destructive and requires --scope")
+from .models import Lease
 
 
 class ScopeGuard:
     """Decide whether a target IP is permitted.
 
-    Non-destructive modes with no scope allow everything. Destructive modes must be given a
-    scope (enforced by authorize()); an IP is allowed only if it falls inside one CIDR.
+    With no scope set, everything is allowed. When `--scope` is given, an IP is permitted only
+    if it falls inside one of the CIDRs — so the scope still bounds a run when you supply one,
+    it is simply no longer mandatory.
     """
 
     def __init__(self, cidrs: list[str] | None) -> None:

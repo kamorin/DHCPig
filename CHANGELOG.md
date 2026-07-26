@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.0.0 (unreleased) — destructive-mode gate removed
+
+**Behaviour change.** At the maintainer's request the authorization workflow is gone from both
+front ends. `release` and `garp` now run like any other mode.
+
+- Removed: the `⚠ DESTRUCTIVE MODE` banner, the `I am authorized` checkbox, the typed
+  confirmation modal, the CLI's `--i-am-authorized` / `--yes` flags and interactive prompt,
+  `core.safety.authorize()`, the `Unauthorized` exception, the web's 403 re-validation, the
+  `authorized` config field and the `authorization_attested` report key. Exit code 4 retired.
+- `--scope` is now **optional** for `release`/`garp`; with none supplied they target the
+  interface's own network. Supplying a scope still bounds targets via `ScopeGuard` at the
+  `_send()` chokepoint. `active-scan` still requires an explicit scope.
+- Remaining bounds on a run: `--rate`, `--dry-run`, `--scope` when given, and `restore`.
+- Default `--rate` lowered from 20 to 10 pps.
+
 ## 2.0.0 (unreleased) — baseline inventory & a control that can actually detect exhaustion
 
 - **Fixed a false verdict.** The post-run control used this machine's real NIC MAC, which the

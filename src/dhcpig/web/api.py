@@ -6,7 +6,6 @@ Exceptions raised here are mapped to HTTP status by the server handler.
 from __future__ import annotations
 
 from ..core.netutils import iface_network_cidr, list_interfaces
-from ..core.safety import authorize
 from .schemas import as_cli, config_from_payload
 
 
@@ -26,7 +25,6 @@ def api_as_cli(app) -> tuple[int, dict]:
 
 def api_start(app, body: dict) -> tuple[int, dict]:
     cfg = config_from_payload(body)
-    authorize(cfg)  # server-side re-validation — never trust the client
     app.start(cfg)
     return 200, {"ok": True, "as_cli": as_cli(cfg), "status": app.status()}
 

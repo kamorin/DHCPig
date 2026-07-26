@@ -4,7 +4,6 @@
 const TOKEN = new URLSearchParams(location.search).get("token") || "";
 const $ = (id) => document.getElementById(id);
 const authHdr = { Authorization: "Bearer " + TOKEN };
-const DESTRUCTIVE = new Set(["release", "garp"]);
 
 async function api(path, method = "GET", body) {
   const opts = { method, headers: { ...authHdr } };
@@ -37,7 +36,6 @@ function currentConfig() {
     rate: +$("rate").value,
     threads: +$("threads").value,
     dry_run: $("dryrun").checked,
-    authorized: $("authorized").checked,
     scope_cidrs: scope.length ? scope : null,
     spoof_eth_src: $("spoofeth").checked,
     restore_on_exit: !$("norestore").checked,
@@ -54,7 +52,6 @@ function applyConfig(c) {
   if (c.rate != null) $("rate").value = c.rate;
   if (c.threads != null) $("threads").value = c.threads;
   if (c.dry_run != null) $("dryrun").checked = c.dry_run;
-  if (c.authorized != null) $("authorized").checked = c.authorized;
   if (c.spoof_eth_src != null) $("spoofeth").checked = c.spoof_eth_src;
   if (c.control != null) $("control").checked = c.control;
   if (c.arp_sweep != null) $("arpscan").checked = c.arp_sweep;
@@ -69,17 +66,14 @@ function setRunning(on) {
   $("stop").disabled = !on;
   $("restore").disabled = on;
   ["iface", "mode", "rate", "threads", "dryrun", "norestore", "scope",
-    "authorized", "spoofeth", "control", "arpscan"].forEach((id) => ($(id).disabled = on));
+    "spoofeth", "control", "arpscan"].forEach((id) => ($(id).disabled = on));
 }
 
 function onModeChange() {
   const mode = $("mode").value;
-  const dest = DESTRUCTIVE.has(mode);
-  const needsScope = SCOPE_MODES.has(mode);
-  $("destcfg").classList.toggle("hidden", !needsScope);  // scope box for release/garp/active-scan
-  $("authlbl").classList.toggle("hidden", !dest);        // authorized only for destructive
-  $("destbanner").classList.toggle("show", dest);
-  $("destbanner").classList.toggle("hidden", !dest);
+  // scope is optional everywhere except active-scan, but the box is useful for any mode
+  // that targets neighbours, so show it for release/garp/active-scan
+  $("destcfg").classList.toggle("hidden", !SCOPE_MODES.has(mode));
   autofillScope();
   const labels = {
     exhaust: ["leases", "servers", "pps"],
@@ -335,7 +329,7 @@ async function pollStatus() {
 }
 setInterval(pollStatus, 1000);
 
-// ---- start / modal --------------------------------------------------------
+// ---- start ----------------------------------------------------------------
 async function doStart() {
   const cfg = currentConfig();
   try {
@@ -352,35 +346,12 @@ async function doStart() {
 
 $("start").addEventListener("click", () => {
   const cfg = currentConfig();
-  if (DESTRUCTIVE.has(cfg.mode)) {
-    if (!cfg.authorized || !cfg.scope_cidrs) {
-      logLine("alert", "[XX] destructive mode needs 'I am authorized' + a scope CIDR", 0);
-      return;
-    }
-    openModal(cfg);
-  } else if (cfg.mode === "active-scan" && !cfg.scope_cidrs) {
+  if (cfg.mode === "active-scan" && !cfg.scope_cidrs) {
     logLine("alert", "[XX] active-scan needs a scope CIDR (auto-filled from the interface)", 0);
-  } else {
-    doStart();
+    return;
   }
+  doStart();
 });
-
-function openModal(cfg) {
-  $("modal-title").textContent =
-    cfg.mode === "garp" ? "Confirm ARP-GARP DoS (standalone)" : "Confirm DHCP Release";
-  $("modal-text").textContent =
-    `${cfg.mode.toUpperCase()} on ${cfg.interface}, scope ${cfg.scope_cidrs.join(", ")} ` +
-    `(rate <= ${cfg.rate}). This disrupts live clients.`;
-  $("modal-input").value = "";
-  $("modal-go").disabled = true;
-  $("modal").classList.remove("hidden");
-  $("modal-input").focus();
-}
-$("modal-input").addEventListener("input", () => {
-  $("modal-go").disabled = $("modal-input").value.trim() !== $("iface").value;
-});
-$("modal-cancel").addEventListener("click", () => $("modal").classList.add("hidden"));
-$("modal-go").addEventListener("click", () => { $("modal").classList.add("hidden"); doStart(); });
 
 $("stop").addEventListener("click", async () => {
   try { await api("/api/session/stop", "POST", {}); } catch (_) {}
@@ -416,7 +387,6 @@ function cliFromConfig() {
   let s = `dhcpig ${c.mode} ${c.interface} --rate ${c.rate}`;
   if (c.restore_on_exit) s += " --restore-on-exit";
   (c.scope_cidrs || []).forEach((x) => (s += ` --scope ${x}`));
-  if (c.authorized) s += " --i-am-authorized";
   if (c.dry_run) s += " --dry-run";
   if (!c.control && c.mode === "exhaust") s += " --no-control";
   if (!c.arp_sweep && c.mode === "exhaust") s += " --no-arp-scan";

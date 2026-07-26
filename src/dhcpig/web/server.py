@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 
 from ..core.engine import DONE, DhcpEngine
 from ..core.events import EventBus
-from ..core.exceptions import ConfigError, SessionConflict, Unauthorized
+from ..core.exceptions import ConfigError, SessionConflict
 from ..core.reporting import SessionRecorder
 from . import api
 from .auth import SECURITY_HEADERS, new_token, same_origin_ok, token_from_request, token_ok
@@ -148,8 +148,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self._serve_report(self._read_body())
         except ConfigError as exc:
             return self._json(400, {"error": str(exc)})
-        except Unauthorized as exc:
-            return self._json(403, {"error": str(exc)})
         except SessionConflict as exc:
             return self._json(409, {"error": str(exc)})
         return self._json(404, {"error": "not found"})
