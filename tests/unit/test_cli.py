@@ -118,6 +118,14 @@ def test_build_config_evict_default_on_and_opt_out():
     assert cli.build_config(args).evict is False
 
 
+def test_build_config_evict_opt_out_also_available_on_release():
+    """(2.3, Phase 5) release now runs eviction too -- --no-evict must skip it in both modes."""
+    args = cli.build_parser().parse_args(["release", "eth1"])
+    assert cli.build_config(args).evict is True
+    args = cli.build_parser().parse_args(["release", "eth1", "--no-evict"])
+    assert cli.build_config(args).evict is False
+
+
 def test_exhaust_has_no_restore_on_exit_flag():
     """Auto-restore-on-exit was removed -- release-previous is the caller-initiated recovery
     path now, so exhaust always keeps its leases until the operator explicitly releases them."""

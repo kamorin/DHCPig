@@ -151,6 +151,13 @@ def build_parser() -> argparse.ArgumentParser:
         )
         d.add_argument("--rate", type=int, default=7)
         d.add_argument("--dry-run", action="store_true")
+        d.add_argument(
+            "--no-evict",
+            dest="no_evict",
+            action="store_true",
+            help="skip ARP-conflict eviction of re-acquired addresses (default: on) -- see "
+            "RFC 5227 SS2.4; release now shares the full exhaust chain (2.3, Phase 5)",
+        )
 
     rp2 = sub.add_parser(
         "release-previous",

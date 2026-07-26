@@ -166,6 +166,12 @@ class DhcpEngine:
         self._rp_pre_control: ControlOutcome | None = None
         self._rp_post_control: ControlOutcome | None = None
         self.recovery_result: dict = {}
+        # release mode's own pre/self control outcome (2.3, Phase 5) -- same precedent as
+        # _rp_pre_control above: kept out of self.control_pre so _finalize_findings()'s
+        # DHCP_STARVATION_* derivation (which reads control_pre/control_pre_new) never fires for
+        # a release run. release shares _common_prelude() with exhaust but never runs the
+        # client="new" leg, so self.control_pre_new also simply stays None here.
+        self._rel_pre_control: ControlOutcome | None = None
 
     # ---------------------------------------------------------------- lease journal
     def _journal_ack(self, lease: Lease) -> None:
@@ -845,18 +851,27 @@ class DhcpEngine:
                     )
                 )
 
-        # ARP-conflict eviction (2.3, Phase 4). Gated on not dry-run: under dry-run _evict_phase()
-        # still runs and populates targets, but sends nothing, so every outcome would read
-        # no_reaction -- not because nothing reacted, but because nothing was ever sent. That's
-        # not evidence of anything; DRY_RUN_SUMMARY covers the dry-run case instead.
+        # ARP-conflict eviction (2.3, Phase 4/5). Gated on not dry-run: under dry-run
+        # _evict_phase() still runs and populates targets, but sends nothing, so every outcome
+        # would read no_reaction -- not because nothing reacted, but because nothing was ever
+        # sent. That's not evidence of anything; DRY_RUN_SUMMARY covers the dry-run case instead.
         if self._evict_outcomes and not self.cfg.dry_run:
-            evicted = {
+            if self.cfg.mode is Mode.RELEASE_NEIGHBORS:
+                # release never drains the pool -- forcing a clean restart-and-reacquire
+                # (topping out at "rediscovered") is the whole point of this mode, not a harm.
+                # Only a target that couldn't get back online at all, or fell back to APIPA, is
+                # a real denial-of-service byproduct here.
+                fail_rungs = {"discover_unanswered", "apipa"}
+            else:
+                # exhaust: the pool IS meant to be drained, so a successful restart
+                # ("rediscovered") is already evidence the address was taken from its owner by
+                # force -- see the outcome-ladder table in _evict_phase()'s module docstring.
+                fail_rungs = {"declined", "rediscovered", "discover_unanswered", "apipa"}
+            evicted = {ip: rung for ip, rung in self._evict_outcomes.items() if rung in fail_rungs}
+            reacted = {
                 ip: rung
                 for ip, rung in self._evict_outcomes.items()
-                if _EVICT_RUNGS.index(rung) >= _EVICT_RUNGS.index("declined")
-            }
-            defended_only = {
-                ip: rung for ip, rung in self._evict_outcomes.items() if rung == "defended"
+                if rung not in fail_rungs and rung != "no_reaction"
             }
             by_rung: dict[str, int] = {}
             for rung in self._evict_outcomes.values():
@@ -886,24 +901,28 @@ class DhcpEngine:
                         ),
                     )
                 )
-            elif defended_only:
+            elif reacted:
                 self._raise(
                     Finding(
                         id="CLIENTS_DEFENDED_ADDRESSES",
-                        title="Targets defended their addresses; conflict frames were delivered",
+                        title="Targets reacted to the ARP conflict but were not denied service",
                         verdict=INCONCLUSIVE,
                         severity="medium",
                         evidence={
                             "targets": len(self._evict_outcomes),
-                            "defended": len(defended_only),
+                            "reacted": len(reacted),
                             "by_rung": by_rung,
                             "rounds": self.cfg.evict_rounds,
+                            "mode": self.cfg.mode.value,
                         },
                         recommendation=(
                             "Our forged ARP reached the targets — Dynamic ARP Inspection is not "
-                            "filtering this port — but the stacks held their ground rather than "
-                            "giving up the address. Not a pass: some clients defend and still "
-                            "lose the gateway entry, which this vantage point cannot see."
+                            "filtering this port. Some held their ground (defended); others "
+                            "restarted at INIT and immediately reacquired a lease, which is the "
+                            "expected, low-harm outcome under release mode since the pool was "
+                            "never drained. Not a pass: some clients defend and still lose the "
+                            "gateway entry, which this vantage point cannot see, and 'defended' "
+                            "targets in particular show DAI is not filtering this port."
                         ),
                     )
                 )
@@ -1070,7 +1089,8 @@ class DhcpEngine:
         if not granted_ips:
             self._debug("evict phase: no re-acquired addresses to evict from")
             return
-        server_id = self.control_pre.server_id if self.control_pre else None
+        pre = self._prelude_pre_control()
+        server_id = pre.server_id if pre else None
         gateway = self._release_gateway()
         targets = [
             n
@@ -1359,7 +1379,8 @@ class DhcpEngine:
           1. ARP inventory — who was on the network *before* we touched it.
           2. control/self — proves DHCP is reachable and (as a side effect) learns the real
              server's identity, which the release phase needs.
-          3. control/new — the baseline the final verdict is judged against.
+          3. control/new — the baseline the final verdict is judged against. exhaust-only:
+             this is the starvation baseline, meaningless for a release run.
           4. release phase — free the leases of hosts we just inventoried, so "take every
              address in the range" has somewhere to go rather than only mopping up whatever
              was already free.
@@ -1368,26 +1389,54 @@ class DhcpEngine:
              flood might not happen to touch. NEIGHBOR_LEASES_RELEASED is raised here, after
              re-acquisition confirms whether the RELEASE actually took.
           6. senders.
-        Without the baselines a null result at the end can't be interpreted.
+        Without the baselines a null result at the end can't be interpreted. Steps 1-5 are
+        `_common_prelude()`, shared with `_release_worker()` (2.3, Phase 5) -- exhaust is the
+        only mode that runs the client="new" leg and continues into the windowed sender.
+        """
+        self._common_prelude(run_new_leg=True)
+        if not self._stop.is_set():
+            self._start_senders()
+
+    def _common_prelude(self, run_new_leg: bool) -> None:
+        """Shared setup for exhaust and release (2.3, Phase 5): ARP inventory -> control/self
+        [-> control/new, exhaust only] -> release -> re-acquisition.
+
+        The pre/self control outcome is stored in `self.control_pre` for exhaust (where
+        `_finalize_findings()` also reads it to derive the starvation verdict) and in
+        `self._rel_pre_control` for release -- kept separate on purpose, same precedent as
+        `_rp_pre_control` (release-previous), so a release run can never accidentally trigger
+        `DHCP_STARVATION_*`, which it never attempted to cause. `_release_phase()`,
+        `_finish_release()` and `_evict_phase()` all read whichever one applies via
+        `_prelude_pre_control()` rather than `self.control_pre` directly.
         """
         if self.cfg.arp_sweep:
             self._baseline_arp_scan()
-        if not self._stop.is_set():
-            self.control_pre = self._control_transaction("pre", client="self")
+        if self._stop.is_set():
+            return
+        pre = self._control_transaction("pre", client="self")
+        if self.cfg.mode is Mode.EXHAUST:
+            self.control_pre = pre
+        else:
+            self._rel_pre_control = pre
+        if run_new_leg and not self._stop.is_set():
             self.control_pre_new = self._control_transaction("pre", client="new")
-        if not self._stop.is_set():
-            freed = self._release_phase()
-            self._finish_release(freed)
-        if not self._stop.is_set():
-            self._start_senders()
+        if self._stop.is_set():
+            return
+        freed = self._release_phase()
+        self._finish_release(freed)
+
+    def _prelude_pre_control(self) -> ControlOutcome | None:
+        """Whichever pre/self control outcome `_common_prelude()` populated for the current
+        mode -- see its docstring for why this isn't just `self.control_pre`."""
+        return self.control_pre if self.cfg.mode is Mode.EXHAUST else self._rel_pre_control
 
     def _release_phase(self) -> list[tuple[str, str]]:
         """Release the leases of every ARP-discovered neighbor before exhausting.
 
-        Needs a real server identity — sourced from `control_pre`, never guessed — or every
-        RELEASE would carry server_id=0.0.0.0 and be silently dropped (the bug this phase
-        exists to not repeat). Skips itself with a Debug, rather than sending garbage, when
-        that identity isn't available.
+        Needs a real server identity — sourced from `_prelude_pre_control()` (never guessed) —
+        or every RELEASE would carry server_id=0.0.0.0 and be silently dropped (the bug this
+        phase exists to not repeat). Skips itself with a Debug, rather than sending garbage,
+        when that identity isn't available.
 
         Returns the (mac, ip) pairs actually RELEASEd -- empty when disabled, when there's no
         confirmed server identity yet, when there's nothing to release, or under dry-run.
@@ -1397,7 +1446,7 @@ class DhcpEngine:
         if not self.cfg.release_neighbors:
             self._debug("release phase skipped: release_neighbors is disabled")
             return []
-        pre = self.control_pre
+        pre = self._prelude_pre_control()
         if pre is None or not pre.success or not pre.server_id:
             self._debug(
                 "release phase skipped: no confirmed server identity yet "
@@ -1432,13 +1481,14 @@ class DhcpEngine:
     def _finish_release(self, freed: list[tuple[str, str]]) -> None:
         """Re-acquire the just-released addresses and raise NEIGHBOR_LEASES_RELEASED.
 
-        Shared by exhaust (via `_exhaust_prelude()`) and, later, release mode -- both phases
+        Shared by exhaust and release (2.3, Phase 5) via `_common_prelude()` -- both modes
         just went through `_release_phase()` and need the same follow-up. A no-op when nothing
         was freed (disabled, dry-run, no neighbors, no server identity).
         """
         if not freed:
             return
-        server_id = self.control_pre.server_id if self.control_pre else None
+        pre = self._prelude_pre_control()
+        server_id = pre.server_id if pre else None
         counts = self._reacquire_phase(freed)
         granted = counts["granted"]
         stopped = self._reprobe_released([ip for _mac, ip in freed])
@@ -1916,29 +1966,35 @@ class DhcpEngine:
         self._stop.wait()
 
     def _run_release(self) -> None:
-        # discovery + release runs in a worker so start() returns promptly
+        # (2.3, Phase 5) release now shares the exhaust chain -- control transaction,
+        # re-acquisition and eviction all need to observe live replies, which the old ARP-only
+        # release worker never provided a sniffer for (its ControlOutcome could never actually
+        # succeed: nothing was listening for the OFFER/ACK). Mirrors _run_exhaust()'s offline
+        # handling: offline skips the sniffer entirely (tests / no-root preview).
+        if self.cfg.offline:
+            self._debug("offline: sniffer disabled (no packets sent or received)")
+        else:
+            self._sniffer = DhcpSniffer(self.cfg.interface, self.cfg.ip_version, self._on_dhcp)
+            self._sniffer.start()
+            self._debug(f"sniffer started on {self.cfg.interface} (filter: dhcp/arp/icmp)")
         t = threading.Thread(target=self._release_worker, daemon=True)
         t.start()
         self._threads.append(t)
 
     def _release_worker(self) -> None:
-        # no scope given -> fall back to the interface's own network
-        neighbors, _ = self._discover_neighbors(self._sweep_cidrs())
-        self._debug(f"release: {len(neighbors)} neighbor(s) discovered in scope")
-        # _discover_neighbors is ARP-only and never learns a DHCP server identity. (BUG FIX,
-        # 2.1) this mode used to send every RELEASE to 0.0.0.0, which no server honours — run a
-        # quick self-MAC control cycle to learn the real server before sending anything. Not
-        # optional: without it there is no way to target the RELEASE at a real server.
-        pre = self._control_transaction("pre", client="self")
-        self.control_pre = pre
-        if not pre.success or not pre.server_id:
-            self._debug(f"release: skipped — could not learn a server identity ({pre.reason})")
-            return
-        if not neighbors:
-            self._debug("release: no neighbors to release")
-            return
-        sent = self._do_release(neighbors, pre.server_id, server_mac=pre.server_mac)
-        self._debug(f"release: sent {sent} RELEASE via server {pre.server_id}")
+        """New chain (2.3, Phase 5): ARP inventory -> control/self -> release -> re-acquisition
+        -> eviction -- the exhaust chain minus the windowed sender, sharing `_common_prelude()`.
+        Does not run the client="new" control leg (that is exhaust's starvation baseline and
+        meaningless here); stores its control outcome in `self._rel_pre_control` rather than
+        `self.control_pre`, so `_finalize_findings()` never derives a `DHCP_STARVATION_*`
+        verdict from a release run -- see `_common_prelude()`'s docstring. Eviction runs inline
+        here, before this thread exits, so the sniffer (stopped centrally in `stop()`) is still
+        up to observe its signals -- unlike exhaust, `stop()` never calls `_evict_phase()` for
+        this mode.
+        """
+        self._common_prelude(run_new_leg=False)
+        if not self._stop.is_set():
+            self._evict_phase()
 
     # ---------------------------------------------------------------- release-previous (2.2)
     def _run_release_previous(self) -> None:
