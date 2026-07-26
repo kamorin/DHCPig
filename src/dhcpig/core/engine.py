@@ -520,116 +520,116 @@ class DhcpEngine:
                     )
 
         if self.cfg.mode is Mode.EXHAUST:
-            if self.acks > 0:
-                self._raise(
-                    Finding(
-                        id="DHCP_STARVATION_POSSIBLE",
-                        title="Pool addresses obtained using spoofed client MACs",
-                        verdict=FAIL,
-                        severity="high",
-                        evidence={
-                            "leases": self.acks,
-                            "distinct_client_macs": distinct_macs,
-                            "spoofed_ethernet_src": self.cfg.spoof_ethernet_src,
-                            "elapsed_sec": elapsed,
-                            "servers": list(self.servers),
-                        },
-                        recommendation=(
-                            "Enable DHCP snooping on the access switch and port security "
-                            "(MAC limit) on this port, then re-run to confirm."
-                        ),
-                    )
-                )
-            elif baseline_ok and self.discovers > 0:
-                self._raise(
-                    Finding(
-                        id="DHCP_STARVATION_BLOCKED",
-                        title="Spoofed-MAC DHCP requests obtained no addresses",
-                        verdict=PASS,
-                        severity="info",
-                        evidence={
-                            "discovers": self.discovers,
-                            "offers": self.offers,
-                            "leases": 0,
-                            "baseline_lease": pre.offered_ip if pre else None,
-                            "elapsed_sec": elapsed,
-                        },
-                        recommendation=(
-                            "Consistent with DHCP snooping and/or port security. The baseline "
-                            "lease succeeded, so the segment does serve DHCP — the spoofed "
-                            "requests specifically were denied."
-                        ),
-                    )
-                )
-
             # Exhaustion is judged on the NEW-client leg. The self leg usually renews an
             # existing binding, so it can succeed against a completely drained pool.
             pre_new, post_new = self.control_pre_new, self.control_post_new
             new_baseline_ok = pre_new is not None and pre_new.success
             if post_new is not None and post_new.attempted:
-                if not post_new.success and self.acks > 0 and new_baseline_ok:
+                attained = self.acks > 0 and not post_new.success and new_baseline_ok
+                # First reason that applies wins: an invalid or already-blocked baseline
+                # explains a non-result before a mid-run control or remaining headroom does.
+                if not baseline_ok:
+                    reason = "inconclusive_baseline"
+                elif not new_baseline_ok:
+                    reason = "blocked_at_baseline"
+                elif self._halt_signal is not None:
+                    reason = "control_fired"
+                else:
+                    reason = "pool_headroom_remaining"
+
+                if attained:
                     self._raise(
                         Finding(
-                            id="POOL_EXHAUSTED_CONFIRMED",
-                            title="A new client was denied an address while ours were held",
+                            id="DHCP_STARVATION_ATTAINED",
+                            title="A new client was denied an address while spoofed leases "
+                            "were held",
                             verdict=FAIL,
                             severity="high",
                             evidence={
                                 "leases_held": self.acks,
+                                "distinct_client_macs": distinct_macs,
                                 "new_client_reason": post_new.reason,
-                                "new_client_baseline_ip": pre_new.offered_ip if pre_new else None,
+                                "new_client_baseline_ip": (pre_new.offered_ip if pre_new else None),
                                 "renewal_still_worked": bool(post and post.success),
+                                "elapsed_sec": elapsed,
+                                "servers": list(self.servers),
                             },
                             recommendation=(
-                                "The pool was drained to the point of denying service to new "
-                                "clients. Rate-limit DHCP per port and enable snooping."
+                                "The pool was driven to the point of denying service to a "
+                                "brand-new client. Rate-limit DHCP per port and enable DHCP "
+                                "snooping / port security, then re-run to confirm."
                             ),
                         )
                     )
-                elif post_new.success:
+                else:
+                    evidence: dict = {"reason": reason, "leases_held": self.acks}
+                    if reason == "control_fired" and self._halt_signal is not None:
+                        signal, detail, leases_at_halt = self._halt_signal
+                        evidence.update(
+                            {"signal": signal, "detail": detail, "leases_at_halt": leases_at_halt}
+                        )
+                        recommendation = (
+                            f"Sending stopped on {signal} ({detail}) after {leases_at_halt} "
+                            "lease(s) held — that control is what's providing protection here; "
+                            "confirm it in switch/DHCP-server logs."
+                        )
+                    elif reason == "pool_headroom_remaining":
+                        est, headroom = self._pool_headroom()
+                        evidence.update(
+                            {"headroom": headroom, "pool_size": est.size, "pool_source": est.source}
+                        )
+                        hr = headroom if headroom is not None else "an unknown amount of"
+                        recommendation = (
+                            f"A new client could still obtain an address, with ~{hr} address(es) "
+                            "of headroom estimated remaining — the pool was not driven to "
+                            "exhaustion within this run."
+                        )
+                    elif reason == "blocked_at_baseline":
+                        recommendation = (
+                            "An unknown MAC could not obtain an address even before the test "
+                            "began — consistent with DHCP snooping or port security. See "
+                            "NEW_CLIENT_BLOCKED_AT_BASELINE for the direct evidence."
+                        )
+                    else:  # inconclusive_baseline
+                        recommendation = (
+                            "The baseline request from this machine's real MAC failed, so "
+                            "nothing here can be concluded. See CONTROL_BASELINE_FAILED."
+                        )
                     self._raise(
                         Finding(
-                            id="POOL_NOT_EXHAUSTED",
+                            id="DHCP_STARVATION_NOT_ATTAINED",
                             title="A new client could still obtain an address after the run",
-                            verdict=INFO,
+                            verdict=PASS,
                             severity="info",
+                            evidence=evidence,
+                            recommendation=recommendation,
+                        )
+                    )
+
+                # offers stopped, yet a brand-new client is still served: that is the server
+                # refusing our traffic specifically, not running out of addresses
+                if post_new.success and self.state == EXHAUSTED:
+                    self._raise(
+                        Finding(
+                            id="SERVER_STOPPED_SERVING_TEST_CLIENTS",
+                            title="Server stopped answering the test clients while still "
+                            "serving a new client",
+                            verdict=INFO,
+                            severity="medium",
                             evidence={
-                                "leases_held": self.acks,
+                                "leases_before_offers_ceased": self.acks,
+                                "discovers": self.discovers,
+                                "naks": self.naks,
                                 "new_client_ip": post_new.offered_ip,
-                                "offers_ceased": self.state == EXHAUSTED,
                             },
                             recommendation=(
-                                "The pool was not drained. If offers stopped anyway, the server "
-                                "stopped answering *us* — see SERVER_STOPPED_SERVING_TEST_CLIENTS."
+                                "Consistent with DHCP rate-limiting, offer-table saturation "
+                                "or anti-starvation protection rather than pool exhaustion. "
+                                "A NAK burst just before offers ceased points at the server "
+                                "re-offering already-pending addresses."
                             ),
                         )
                     )
-                    # offers stopped, yet a brand-new client is still served: that is the server
-                    # refusing our traffic specifically, not running out of addresses
-                    if self.state == EXHAUSTED:
-                        self._raise(
-                            Finding(
-                                id="SERVER_STOPPED_SERVING_TEST_CLIENTS",
-                                title="Server stopped answering the test clients while still "
-                                "serving a new client",
-                                verdict=INFO,
-                                severity="medium",
-                                evidence={
-                                    "leases_before_offers_ceased": self.acks,
-                                    "discovers": self.discovers,
-                                    "naks": self.naks,
-                                    "rate_pps": self.cfg.rate_limit_pps,
-                                    "new_client_ip": post_new.offered_ip,
-                                },
-                                recommendation=(
-                                    "Consistent with DHCP rate-limiting, offer-table saturation "
-                                    "or anti-starvation protection rather than pool exhaustion. "
-                                    "Re-run with a lower --rate to see whether allocation "
-                                    "resumes; a NAK burst just before offers ceased points at "
-                                    "the server re-offering already-pending addresses."
-                                ),
-                            )
-                        )
 
         if self.cfg.mode is Mode.GARP_DOS and self.garps > 0:
             defended = sorted(self._garp_defenders)
