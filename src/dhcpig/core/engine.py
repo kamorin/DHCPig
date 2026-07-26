@@ -934,6 +934,7 @@ class DhcpEngine:
         macs.add(mac)
         if len(macs) > 1 and offered_ip not in self._duplicate_offer_ips:
             self._duplicate_offer_ips.add(offered_ip)
+            self._shrink_window("duplicate_offer")
             if len(self._duplicate_offer_ips) >= 3:
                 self._trigger_halt(
                     "duplicate_offers",

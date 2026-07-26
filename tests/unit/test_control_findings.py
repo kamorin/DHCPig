@@ -398,6 +398,15 @@ def test_timeout_storm_triggers_halt(monkeypatch):
     assert eng._halt_signal[0] == "timeout_storm"
 
 
+def test_duplicate_offer_shrinks_the_window_immediately(monkeypatch):
+    """Each duplicate shrinks the window right away, not just at the halt threshold (3)."""
+    eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST, window_initial=8, window_max=64)
+    eng._on_dhcp(_reply("offer", 0x2000, "de:ad:00:00:00:01", yiaddr="172.20.0.80"))
+    eng._on_dhcp(_reply("offer", 0x2001, "de:ad:00:00:00:02", yiaddr="172.20.0.80"))
+    assert eng._window == 4  # one duplicate seen -> halved once
+    assert eng._halt_signal is None  # threshold (3 distinct duplicated IPs) not yet reached
+
+
 def test_duplicate_offers_to_our_macs_triggers_halt(monkeypatch):
     """The pending-offer-table saturation signature from the run that motivated this rewrite."""
     eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
