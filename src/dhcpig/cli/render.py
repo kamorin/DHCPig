@@ -170,6 +170,9 @@ def status_summary(s: dict) -> str:
         parts.append(f"window {s['send_window']} (inflight {s.get('inflight', 0)})")
     if s.get("timeouts"):
         parts.append(f"timeouts {s['timeouts']}")
+    if s.get("headroom") is not None:
+        tag = "" if s.get("pool_source") == "scope" else " est."
+        parts.append(f"headroom {s['headroom']} / ~{s.get('pool_size')}{tag}")
     quiet = s.get("since_last_offer")
     if quiet is not None:
         parts.append(f"last offer {quiet:.0f}s ago")
