@@ -61,9 +61,8 @@ def get_if_ip(iface: str) -> str | None:
 def default_gateway(iface: str | None = None) -> str | None:
     """Next hop of the default route, or None.
 
-    Needed by garp mode: pointing a victim's gateway entry at an unused MAC is what actually
-    cuts it off, whereas merely claiming the victim's own address only trips duplicate-address
-    detection.
+    Used to exclude the gateway itself from release/eviction targeting -- taking its lease or
+    ARP-conflicting it would cut off the whole segment's routing, not just the intended victim.
     """
     try:  # Linux: /proc/net/route, columns Iface Destination Gateway ...
         with open("/proc/net/route") as fh:

@@ -118,7 +118,7 @@ class LeaseReleased(Event):
 
 
 @dataclass
-class GarpSent(Event):
+class ArpConflictSent(Event):
     ip: str
 
 

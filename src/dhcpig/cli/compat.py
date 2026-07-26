@@ -49,13 +49,15 @@ def translate(argv: list[str]) -> list[str]:
         opts, args = [], argv
 
     iface = args[0] if args else None
-    # A neighbor-release/garp legacy run maps to the gated destructive subcommands, which now
-    # require explicit authorization; steer the user rather than silently arming them.
+    # A neighbor-release legacy run maps to the "release" subcommand, which now requires
+    # explicit authorization; steer the user rather than silently arming them. -g/
+    # --neighbors-attack-garp had no direct replacement once GARP_DOS was retired as a
+    # standalone mode (2.3) -- ARP-conflict eviction now runs automatically as part of
+    # exhaust/release, not as something invoked on its own -- so it falls through to plain
+    # exhaust like any other unusual legacy flag.
     for o, _ in opts:
         if o in ("-r", "--neighbors-attack-release"):
             return ["release", iface or "", "--help"]
-        if o in ("-g", "--neighbors-attack-garp"):
-            return ["garp", iface or "", "--help"]
 
     out = ["exhaust"]
     if iface:

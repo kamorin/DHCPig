@@ -42,8 +42,8 @@ def test_exhaust_has_no_rate_flag_windowing_paces_it_instead():
     assert cfg.rate_limit_pps == EXHAUST_DEFAULT_RATE_PPS
 
 
-def test_rate_flag_still_present_on_release_and_garp_and_active_scan():
-    for cmd in ("release", "garp", "active-scan"):
+def test_rate_flag_still_present_on_release_and_active_scan():
+    for cmd in ("release", "active-scan"):
         extra = ["--scope", "10.0.0.0/24"] if cmd == "active-scan" else []
         args = cli.build_parser().parse_args([cmd, "eth1", "--rate", "42", *extra])
         assert cli.build_config(args).rate_limit_pps == 42
@@ -99,7 +99,7 @@ def test_exhaust_journal_default_on_and_opt_out():
 
 def test_release_previous_appears_in_run_once_completion_modes():
     """release-previous is not DESTRUCTIVE, but it still needs the CLI's polling loop to
-    recognize a finished worker thread as 'this run is done' -- same as release/garp."""
+    recognize a finished worker thread as 'this run is done' -- same as release."""
     assert Mode.RELEASE_PREVIOUS in cli._RUN_ONCE_MODES
     assert Mode.RELEASE_PREVIOUS not in cli.DESTRUCTIVE_MODES
 
@@ -139,15 +139,30 @@ def test_build_config_ipv6_and_request_options():
 
 
 def test_destructive_modes_take_no_authorization_flags():
-    """The gate is gone: release/garp parse with just an interface, and --scope is optional."""
-    for cmd in ("release", "garp"):
-        cfg = cli.build_config(cli.build_parser().parse_args([cmd, "eth1"]))
-        assert cfg.scope_cidrs is None
-        assert cfg.rate_limit_pps == 7
+    """The gate is gone: release parses with just an interface, and --scope is optional."""
+    cfg = cli.build_config(cli.build_parser().parse_args(["release", "eth1"]))
+    assert cfg.scope_cidrs is None
+    assert cfg.rate_limit_pps == 7
     cfg = cli.build_config(
-        cli.build_parser().parse_args(["garp", "eth1", "--scope", "10.0.0.0/24"])
+        cli.build_parser().parse_args(["release", "eth1", "--scope", "10.0.0.0/24"])
     )
     assert cfg.scope_cidrs == ["10.0.0.0/24"]
+
+
+def test_garp_subcommand_removed():
+    """(2.3) GARP_DOS was retired as a standalone mode; ARP-conflict eviction now runs as part
+    of exhaust/release instead of being invoked on its own."""
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["garp", "eth1"])
+    assert not hasattr(Mode, "GARP_DOS")
+
+
+def test_legacy_garp_flag_falls_back_to_plain_exhaust():
+    """-g/--neighbors-attack-garp had no direct replacement once garp mode was retired (2.3);
+    it now falls through like any other unusual legacy flag."""
+    argv = compat.translate(["-g", "eth1"])
+    assert argv[0] == "exhaust"
+    assert "eth1" in argv
 
 
 def test_ifaces_command_runs():

