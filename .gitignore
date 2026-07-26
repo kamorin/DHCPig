@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# venvs
+.venv/
+venv/
+
+# test / lint caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# OS
+.DS_Store
+
+# reports produced by runs
+*.report.json
+run.json
+inventory.json
+
+# packet captures — these contain real MACs/IPs from the network under test
+*.pcap
+*.pcapng
