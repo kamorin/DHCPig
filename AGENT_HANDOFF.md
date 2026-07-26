@@ -135,8 +135,10 @@ not real pool exhaustion.** Three pieces address this, in `_exhaust_prelude()` o
 2. **Windowed sender** (`_exhaust_sender`, `_inflight`, `self._window`). Replaces the open-loop
    DISCOVER flood with a bounded pipeline: at most `self._window` (starts at
    `cfg.window_initial=8`) DISCOVER/REQUEST transactions in flight at once. **Only an ACK counts
-   as a held address** (`_grow_window`) — NAKs, timeouts, and duplicate offers all shrink the
-   window (`_shrink_window`) instead of being pushed through. `--rate` is **gone from exhaust**
+   as a held address** (`_grow_window`) — growth is half-rate (`self._window_growth_accum`
+   banks 0.5 per clean ACK; two in a row to widen the window by one) — NAKs, timeouts, and
+   duplicate offers all shrink the window immediately and wipe the accumulator
+   (`_shrink_window`) instead of being pushed through. `--rate` is **gone from exhaust**
    (the window paces it now; `rate_limit_pps` is fixed at `EXHAUST_DEFAULT_RATE_PPS=500` so the
    limiter doesn't bind) but unchanged on `release`/`garp`/`active-scan`, which have no window of
    their own — **do not remove `RateLimiter` globally.**

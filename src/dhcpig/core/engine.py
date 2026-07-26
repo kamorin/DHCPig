@@ -102,6 +102,10 @@ class DhcpEngine:
         # windowed handshake pipeline (exhaust): bounded in-flight DISCOVER/REQUEST transactions
         # rather than an open-loop packet flood. xid -> {mac, sent_at, state}.
         self._window = cfg.window_initial
+        # half-rate ramp: a clean ACK only earns half a slot, so it takes two clean ACKs in a
+        # row to actually grow the window by one -- ramps back up more cautiously after any
+        # earlier throttling instead of snapping straight back to a full flood.
+        self._window_growth_accum = 0.0
         self._inflight: dict[int, dict] = {}
         self._inflight_lock = threading.Lock()
         self.timeouts_seen = 0
@@ -885,12 +889,19 @@ class DhcpEngine:
         self._finish_in_background(f"control detected: {signal} — {detail}")
 
     def _grow_window(self) -> None:
+        """Grow at half the naive rate: each clean ACK only adds 0.5 to an accumulator, so it
+        takes two clean ACKs to actually widen the window by one slot."""
         with self._inflight_lock:
+            self._window_growth_accum += 0.5
+            if self._window_growth_accum < 1.0:
+                return
+            self._window_growth_accum -= 1.0
             w = self._window = min(self.cfg.window_max, self._window + 1)
         self._debug(f"window -> {w} (clean ACK)")
 
     def _shrink_window(self, trigger: str) -> None:
         with self._inflight_lock:
+            self._window_growth_accum = 0.0
             old = self._window
             w = self._window = max(1, self._window // 2)
         if w != old:
