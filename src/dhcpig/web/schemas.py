@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from ..core.exceptions import ConfigError
 from ..core.models import EXHAUST_DEFAULT_RATE_PPS, IPVersion, Mode, SessionConfig
 
@@ -36,11 +38,16 @@ def config_from_payload(payload: dict) -> SessionConfig:
         raise ConfigError("scope_cidrs must be a list")
 
     # exhaust has no rate control of its own — the windowed handshake pipeline paces it.
+    # release-previous defaults faster than every other mode: it runs during an outage the
+    # operator is trying to end, and its frames are unicast to one server, not sprayed at the
+    # segment.
+    default_rate = 50 if mode is Mode.RELEASE_PREVIOUS else 7
     rate = (
         EXHAUST_DEFAULT_RATE_PPS
         if mode is Mode.EXHAUST
-        else _as_int(payload.get("rate", 7), "rate", lo=1, hi=100000)
+        else _as_int(payload.get("rate", default_rate), "rate", lo=1, hi=100000)
     )
+    journal_path = payload.get("journal_path")
     return SessionConfig(
         interface=iface,
         mode=mode,
@@ -53,6 +60,10 @@ def config_from_payload(payload: dict) -> SessionConfig:
         arp_sweep=bool(payload.get("arp_sweep", True)),
         release_neighbors=bool(payload.get("release_neighbors", True)),
         status_interval=float(payload.get("status_interval", 5.0) or 0),
+        journal_path=Path(journal_path) if journal_path else None,
+        max_age_days=float(payload.get("max_age_days", 7.0) or 0),
+        require_same_server=bool(payload.get("require_same_server", True)),
+        release_passes=_as_int(payload.get("release_passes", 2), "release_passes", lo=1, hi=20),
         verbosity=_as_int(payload.get("verbosity", 2), "verbosity", lo=0, hi=3),
     )
 
@@ -73,4 +84,13 @@ def as_cli(cfg: SessionConfig) -> str:
         parts.append("--no-arp-scan")
     if not cfg.release_neighbors and cfg.mode is Mode.EXHAUST:
         parts.append("--no-release")
+    if cfg.mode is Mode.RELEASE_PREVIOUS:
+        if cfg.journal_path:
+            parts += ["--journal", str(cfg.journal_path)]
+        if cfg.max_age_days != 7.0:
+            parts += ["--max-age", str(cfg.max_age_days)]
+        if not cfg.require_same_server:
+            parts.append("--any-server")
+        if cfg.release_passes != 2:
+            parts += ["--passes", str(cfg.release_passes)]
     return " ".join(parts)

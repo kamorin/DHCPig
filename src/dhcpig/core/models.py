@@ -18,6 +18,10 @@ class Mode(Enum):
     ACTIVE_SCAN = "active-scan"  # active discovery: ARP sweep + DHCP INFORM (scope required)
     RELEASE_NEIGHBORS = "release"
     GARP_DOS = "garp"
+    # Recovery: replay the lease journal to release phantom leases this tool (or an earlier run
+    # of it) acquired within the current network. Not in DESTRUCTIVE_MODES -- it only releases
+    # leases the journal proves this tool took, so it adds no offensive capability.
+    RELEASE_PREVIOUS = "release-previous"
 
 
 # Modes that disrupt live clients. Used for labelling and reporting only — they are no longer
@@ -85,6 +89,16 @@ class SessionConfig:
     # `journal_path=None` resolves to `journal.default_path(interface)` at engine construction.
     journal: bool = True
     journal_path: Path | None = None
+    # release-previous only: how far back a journal entry may be before it's ignored (an
+    # optimisation, not a safety measure -- see EXECUTION-PLAN-release-previous.md §Phase 2).
+    max_age_days: float = 7.0
+    # release-previous only: skip journal entries recorded against a different DHCP server than
+    # the one currently reachable -- guards against a journal carried between engagements on
+    # the same laptop/interface name producing release targets for the wrong network.
+    require_same_server: bool = True
+    # release-previous only: RELEASE has no reply (RFC 2131), so a dropped frame is silent —
+    # resend the whole selected set this many times as cheap insurance.
+    release_passes: int = 2
     timeouts: Timeouts = field(default_factory=Timeouts)
     verbosity: int = 2
 

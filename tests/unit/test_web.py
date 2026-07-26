@@ -192,6 +192,52 @@ def test_exhaust_ignores_rate_payload_and_as_cli_omits_it():
     assert "--rate" not in schemas.as_cli(cfg)
 
 
+def test_release_previous_config_from_payload_defaults():
+    cfg = schemas.config_from_payload({"interface": "eth1", "mode": "release-previous"})
+    assert cfg.rate_limit_pps == 50  # faster default than every other mode
+    assert cfg.max_age_days == 7.0
+    assert cfg.require_same_server is True
+    assert cfg.release_passes == 2
+    assert cfg.journal_path is None
+
+
+def test_release_previous_config_from_payload_overrides():
+    cfg = schemas.config_from_payload(
+        {
+            "interface": "eth1",
+            "mode": "release-previous",
+            "journal_path": "/tmp/j.jsonl",
+            "max_age_days": 2.0,
+            "require_same_server": False,
+            "release_passes": 4,
+            "rate": 15,
+        }
+    )
+    assert str(cfg.journal_path) == "/tmp/j.jsonl"
+    assert cfg.max_age_days == 2.0
+    assert cfg.require_same_server is False
+    assert cfg.release_passes == 4
+    assert cfg.rate_limit_pps == 15
+
+
+def test_release_previous_as_cli_roundtrip():
+    cfg = schemas.config_from_payload(
+        {
+            "interface": "eth1",
+            "mode": "release-previous",
+            "max_age_days": 3.0,
+            "require_same_server": False,
+            "release_passes": 5,
+        }
+    )
+    line = schemas.as_cli(cfg)
+    assert line.startswith("dhcpig release-previous eth1")
+    assert "--rate 50" in line
+    assert "--max-age 3.0" in line
+    assert "--any-server" in line
+    assert "--passes 5" in line
+
+
 def test_token_helpers():
     assert auth.token_ok("abc", "abc")
     assert not auth.token_ok("abc", "xyz")

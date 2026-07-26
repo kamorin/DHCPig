@@ -50,6 +50,54 @@ def test_rate_flag_still_present_on_release_and_garp_and_active_scan():
         assert cli.build_config(args).rate_limit_pps == 42
 
 
+def test_release_previous_defaults():
+    args = cli.build_parser().parse_args(["release-previous", "eth1"])
+    cfg = cli.build_config(args)
+    assert cfg.mode is Mode.RELEASE_PREVIOUS
+    assert cfg.rate_limit_pps == 50  # faster than the 7pps used elsewhere -- see main.py
+    assert cfg.max_age_days == 7.0
+    assert cfg.require_same_server is True
+    assert cfg.release_passes == 2
+    assert cfg.journal_path is None  # resolves to journal.default_path() at engine construction
+    assert cfg.mode not in cli.DESTRUCTIVE_MODES  # it only releases what the journal proves
+
+
+def test_release_previous_flags():
+    args = cli.build_parser().parse_args(
+        [
+            "release-previous",
+            "eth1",
+            "--journal",
+            "/tmp/custom-journal.jsonl",
+            "--scope",
+            "172.20.0.0/24",
+            "--max-age",
+            "3.5",
+            "--any-server",
+            "--rate",
+            "10",
+            "--passes",
+            "5",
+            "--dry-run",
+        ]
+    )
+    cfg = cli.build_config(args)
+    assert str(cfg.journal_path) == "/tmp/custom-journal.jsonl"
+    assert cfg.scope_cidrs == ["172.20.0.0/24"]
+    assert cfg.max_age_days == 3.5
+    assert cfg.require_same_server is False
+    assert cfg.rate_limit_pps == 10
+    assert cfg.release_passes == 5
+    assert cfg.dry_run is True
+
+
+def test_release_previous_appears_in_run_once_completion_modes():
+    """release-previous is not DESTRUCTIVE, but it still needs the CLI's polling loop to
+    recognize a finished worker thread as 'this run is done' -- same as release/garp."""
+    assert Mode.RELEASE_PREVIOUS in cli._RUN_ONCE_MODES
+    assert Mode.RELEASE_PREVIOUS not in cli.DESTRUCTIVE_MODES
+
+
 def test_build_config_release_neighbors_default_on_and_opt_out():
     args = cli.build_parser().parse_args(["exhaust", "eth1"])
     assert cli.build_config(args).release_neighbors is True

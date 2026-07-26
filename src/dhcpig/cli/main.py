@@ -33,7 +33,15 @@ _MODE_BY_CMD = {
     "active-scan": Mode.ACTIVE_SCAN,
     "release": Mode.RELEASE_NEIGHBORS,
     "garp": Mode.GARP_DOS,
+    "release-previous": Mode.RELEASE_PREVIOUS,
 }
+
+# Modes whose work happens once in a worker thread rather than running until Stop/Ctrl-C:
+# _run_session()'s polling loop treats "no more worker threads alive" as "this run is done".
+# release-previous is not in DESTRUCTIVE_MODES (it only releases leases the journal proves this
+# tool took), but it is still a run-once-and-finish worker, so it needs the same completion
+# signal.
+_RUN_ONCE_MODES = DESTRUCTIVE_MODES | {Mode.RELEASE_PREVIOUS}
 
 
 # --------------------------------------------------------------------------- parsing
@@ -143,6 +151,50 @@ def build_parser() -> argparse.ArgumentParser:
         d.add_argument("--rate", type=int, default=7)
         d.add_argument("--dry-run", action="store_true")
 
+    rp2 = sub.add_parser(
+        "release-previous",
+        help="recover a drained pool by replaying the lease journal (not destructive)",
+    )
+    common(rp2)
+    rp2.add_argument(
+        "--journal",
+        metavar="PATH",
+        help="override the journal location (default: the resolved per-interface path)",
+    )
+    rp2.add_argument(
+        "--scope",
+        action="append",
+        dest="scope_cidrs",
+        metavar="CIDR",
+        help="network(s) to recover; defaults to the interface's own network",
+    )
+    rp2.add_argument(
+        "--max-age",
+        type=float,
+        default=7.0,
+        metavar="DAYS",
+        help="ignore journal entries older than this many days (default 7)",
+    )
+    rp2.add_argument(
+        "--any-server",
+        dest="any_server",
+        action="store_true",
+        help="release even when the current server differs from the one recorded in the "
+        "journal (default: skip mismatches, to avoid releasing on the wrong network)",
+    )
+    # unlike every other mode's 7pps default: this runs during an outage the operator is
+    # trying to end, and the frames are unicast to one server rather than sprayed at the
+    # segment, so a faster default is the right trade-off here specifically.
+    rp2.add_argument("--rate", type=int, default=50)
+    rp2.add_argument(
+        "--passes",
+        type=int,
+        default=2,
+        help="RELEASE has no reply (RFC 2131), so resend the selected set this many times "
+        "as cheap insurance against a dropped frame (default 2)",
+    )
+    rp2.add_argument("--dry-run", action="store_true")
+
     rs = sub.add_parser("restore", help="release leases acquired by a prior run")
     rs.add_argument("interface")
 
@@ -188,6 +240,10 @@ def build_config(args) -> SessionConfig:
         arp_sweep=not getattr(args, "no_arp_scan", False),
         release_neighbors=not getattr(args, "no_release", False),
         status_interval=getattr(args, "status_interval", 5.0),
+        journal_path=Path(args.journal) if getattr(args, "journal", None) else None,
+        max_age_days=getattr(args, "max_age", 7.0),
+        require_same_server=not getattr(args, "any_server", False),
+        release_passes=getattr(args, "passes", 2),
         timeouts=Timeouts(),
         verbosity=getattr(args, "verbosity", 2),
     )
@@ -250,7 +306,7 @@ def _run_session(cfg: SessionConfig) -> int:
                 print("[XX] no DHCP server detected — aborting", file=sys.stderr)
                 rc = EXIT_NOSERVER
                 break
-            if cfg.mode in DESTRUCTIVE_MODES and not any(t.is_alive() for t in engine._threads):
+            if cfg.mode in _RUN_ONCE_MODES and not any(t.is_alive() for t in engine._threads):
                 break
     except KeyboardInterrupt:
         rc = EXIT_INTERRUPT
