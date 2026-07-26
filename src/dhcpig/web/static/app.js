@@ -317,6 +317,9 @@ function handleEvent(e) {
     }
     case "FindingRaised":
       findings.push(e.finding); renderFindings();
+      // the Findings tab stays out of the way until there's actually a verdict to show,
+      // then it's the one thing worth interrupting the operator's current view for
+      if (findings.length === 1) activateTab("findings");
       logLine("finding",
         `[==] ${e.finding.verdict} — ${e.finding.title} (${e.finding.id})`, 0);
       break;
@@ -434,13 +437,14 @@ $("loadprofile").addEventListener("change", (ev) => {
 });
 
 // ---- tabs -----------------------------------------------------------------
+const TAB_NAMES = ["neighbors", "servers", "leases", "findings"];
+function activateTab(name) {
+  document.querySelectorAll(".tab").forEach((t) =>
+    t.classList.toggle("active", t.dataset.tab === name));
+  for (const n of TAB_NAMES) $("t-" + n).classList.toggle("hidden", n !== name);
+}
 document.querySelectorAll(".tab").forEach((t) =>
-  t.addEventListener("click", () => {
-    document.querySelectorAll(".tab").forEach((x) => x.classList.remove("active"));
-    t.classList.add("active");
-    for (const name of ["servers", "neighbors", "leases"])
-      $("t-" + name).classList.toggle("hidden", name !== t.dataset.tab);
-  }));
+  t.addEventListener("click", () => activateTab(t.dataset.tab)));
 
 $("mode").addEventListener("change", onModeChange);
 $("iface").addEventListener("change", autofillScope);

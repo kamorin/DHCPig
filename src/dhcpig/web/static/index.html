@@ -81,17 +81,12 @@ already free. Needs a known server (from the control transaction) to work.">
 
     <section class="panel tables">
       <div class="tabs">
-        <button class="tab active" data-tab="findings">Findings</button>
-        <button class="tab" data-tab="neighbors">Neighbors / Hosts</button>
+        <button class="tab active" data-tab="neighbors">Neighbors / Hosts</button>
         <button class="tab" data-tab="servers">Servers</button>
         <button class="tab" data-tab="leases">Leases</button>
+        <button class="tab" data-tab="findings">Findings</button>
       </div>
-      <div id="t-findings" class="tab-body findings">
-        <p class="hint">Verdicts appear here when the run ends. A control transaction (a normal
-          DHCP request from this machine's real MAC) runs before and after the test so a failed
-          run can be read as "the network blocked us" rather than "the test was misconfigured".</p>
-      </div>
-      <div id="t-neighbors" class="tab-body neighbors hidden">
+      <div id="t-neighbors" class="tab-body neighbors">
         <table>
           <thead><tr><th>Host</th><th>MAC</th><th>OS / Device</th><th>Conf</th></tr></thead>
           <tbody></tbody>
@@ -103,6 +98,11 @@ already free. Needs a known server (from the control transaction) to work.">
       <table id="t-leases" class="tab-body hidden">
         <thead><tr><th>IP</th><th>MAC</th><th>Server</th></tr></thead>
         <tbody></tbody></table>
+      <div id="t-findings" class="tab-body findings hidden">
+        <p class="hint">Verdicts appear here when the run ends. A control transaction (a normal
+          DHCP request from this machine's real MAC) runs before and after the test so a failed
+          run can be read as "the network blocked us" rather than "the test was misconfigured".</p>
+      </div>
     </section>
   </main>
 
