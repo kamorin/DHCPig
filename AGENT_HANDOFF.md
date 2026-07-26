@@ -41,6 +41,7 @@ Both front ends drive the SAME `DhcpEngine` and never touch scapy directly.
 | `core/oui.py` | MAC → hardware vendor. `data/mac-vendor.txt` supplement (longest prefix wins) then scapy's bundled Wireshark/IEEE `manuf` DB (~50k); locally-administered MACs labelled as randomised. No bundled IEEE copy needed — scapy already ships one. |
 | `core/reporting.py` | `SessionRecorder` → JSON/CSV/HTML (`render()` / `export()`). Neighbors deduped by MAC. Tracks `final_status` from `SessionEnded` to surface the pool estimate in reports. |
 | `core/netutils.py` | iface enumeration, `iface_network_cidr()` (scope auto-fill), `default_gateway()` (garp/release-phase exclusion), `link_is_up()` (carrier poll for `link_down` halt detection — `None` fail-open, see §5c), IP math, `random_mac()`. |
+| `core/journal.py` | Lease journal for recovery (2.2, §5e): append-only JSONL, `default_path()` (XDG state dir, never `/var/lib`), `record_ack`/`record_released`, `load_open_leases()` (never raises — crash-tolerant). Powers `Mode.RELEASE_PREVIOUS`. |
 | `core/exceptions.py` | `DhcpigError`, `ConfigError`, `OutOfScope`, `SessionConflict`. |
 | `data/combined_dhcp_os_lookup.json` | Static PacketFence + Huginn-Muninn merge (594 fingerprints), built by `data/fingerprint-merge.py` (also a standalone lookup CLI). `data/fingerprints.json` builtin fallback. `data/DATA_ATTRIBUTION.md`. |
 
@@ -170,18 +171,69 @@ Replaces four retired findings (`DHCP_STARVATION_POSSIBLE`, `DHCP_STARVATION_BLO
   report) must show `source`/`detail` alongside the number. `POOL_HEADROOM_LOW` is a separate,
   independent finding raised when the *pre-test* ARP baseline already shows ≥80% utilization.
 
+## 5e. Lease journal + `release-previous` (2.2)
+`restore()` only releases leases the *currently running* engine object acquired, from memory —
+useless once the process is killed, the box reboots, or you're back days later on a different
+machine. 2.2 adds a recovery path for that:
+
+- **`core/journal.py`** — append-only JSONL, two record kinds (`ack` opens a lease, `released`
+  closes it), folded at read time. `load_open_leases()` **never raises** on a bad file — a
+  truncated final line (the exact killed-mid-write case this exists for), malformed JSON, or an
+  unknown record kind is skipped with a warning. `default_path()` resolves under
+  `$XDG_STATE_HOME` (or `~/.local/state`, via the effective user's passwd entry, not `$HOME` —
+  `sudo` doesn't always reset it) — **never `/var/lib` or another system-owned path**; this is
+  per-engagement data, not system state (see SECURITY.md). `SessionConfig.journal` (default
+  `True`) / `--no-journal` opts out. `_handle_ack()` writes an `ack`; `restore()` and
+  `_release_bindings()` write a `released`. Writes are best-effort (`OSError` → `ev.Debug`,
+  never kills the run); `dry_run` suppresses journal writes the same as it suppresses packets.
+- **`Mode.RELEASE_PREVIOUS`** (`_run_release_previous`/`_release_previous_worker` in
+  `engine.py`) replays the journal for the *current* network: filters by interface, current
+  CIDR (`--scope`, else the interface network — **refuses to run** if neither resolves; an
+  unbounded sweep is exactly what this prevents), same-server (only evaluable when the
+  pre-flight control actually learned a server identity — **it usually won't** on a genuinely
+  exhausted pool, since no OFFER means no `server_id`; falls back to CIDR-only rather than
+  silently excluding everything), then age (`--max-age`, default 7d — an optimisation, not a
+  safety measure: a stale entry's MAC simply won't match the server's current binding per RFC
+  2131 identity matching, so it's harmless either way — **do not add an ARP-liveness check**,
+  it isn't needed and would skip legitimate targets). Groups releases by
+  `(server_ip, server_mac)` before calling `_release_bindings()` — a journal can span multiple
+  servers on one segment. `--passes` (default 2) resends the whole selected set since RELEASE
+  has no reply (RFC 2131).
+- Needs **no ARP sweep, no server discovery, no leasequery** — the journal already carries
+  everything. The pre/post `_control_transaction(phase, client="new")` probes exist purely to
+  produce a trustworthy verdict, stored in **`self._rp_pre_control`/`self._rp_post_control`**,
+  deliberately *not* `self.control_pre`/`self.control_post` — those are read by the generic
+  exhaust `_finalize_findings()`, and keeping them untouched is what makes that method a safe
+  no-op for this mode. Findings raised directly in the worker (same pattern as
+  `_release_phase()`), not through `_finalize_findings()`: `NO_RECOVERY_NEEDED`,
+  `NO_JOURNAL_DATA`, `RELEASE_PREVIOUS_SCOPE_REQUIRED`, `POOL_RECOVERED`,
+  `POOL_RECOVERY_PARTIAL`, `POOL_RECOVERY_FAILED` — reporting **addresses observed recovered**
+  (re-folding the journal post-release), never just frames sent, same discipline as
+  `_reprobe_released()`.
+- **Not in `DESTRUCTIVE_MODES`** — it only releases leases the journal proves this tool took, so
+  it adds no capability beyond what `exhaust` already used. It *is* in `cli/main.py`'s
+  `_RUN_ONCE_MODES` (`DESTRUCTIVE_MODES | {RELEASE_PREVIOUS}`), which is what the CLI's polling
+  loop uses to detect a worker-thread run finishing — don't confuse the two sets.
+- Default `--rate` is **50**, not 7 — see the inline comment in `cli/main.py`; this is the one
+  mode where a faster default is the right call (unicast to one server, run during an active
+  outage).
+- Design rationale in full: `EXECUTION-PLAN-release-previous.md` (the executed plan) and
+  `EXECUTION-PLAN-release-all.md` (background — broader strategies considered and narrowed away
+  from: leasequery, blind sweeps, ARP-derived targets — don't re-add them without re-reading why).
+
 ## 6. Modes (`Mode` enum)
 `EXHAUST` (default; now runs an internal release phase before its windowed sender — see §5c),
 `SCAN` (passive, read-only), `ACTIVE_SCAN` (ARP sweep + one DHCP INFORM; non-destructive, scope
 required), `RELEASE_NEIGHBORS` (destructive, also usable standalone), `GARP_DOS` (destructive,
-standalone — no exhaustion phase).
+standalone — no exhaustion phase), `RELEASE_PREVIOUS` (recovery; replays the lease journal —
+see §5e; not destructive).
 
 ## 7. How to run tests / lint (IMPORTANT sandbox quirks)
 Sandbox Python is **3.10**, but the package targets **3.11+**, so **do NOT `pip install -e .`
 in the sandbox** — run against the source path instead:
 ```
 cd /sessions/<id>/mnt/DHCPig
-PYTHONPATH=src python3 -m pytest -q          # 152 pass, 1 integration deselected
+PYTHONPATH=src python3 -m pytest -q          # 200 pass, 1 integration deselected
 python3 -m ruff check src tests
 python3 -m ruff format --check src tests
 ```
@@ -234,8 +286,9 @@ python3 -m ruff format --check src tests
   DHCP matches (75–98) so it can never be mistaken for one, and keep `os=None` for these.
 - **`--rate` is exhaust-specific removal, not a global one.** It's gone from the `exhaust`
   CLI/web surface (the window paces it — §5c) but still required on `release`/`garp`/
-  `active-scan`, which have no window of their own. Don't remove `RateLimiter`/`rate.acquire()`
-  from `_send()` — it's still the only thing pacing three of the five modes.
+  `active-scan`/`release-previous`, none of which have a window of their own. Don't remove
+  `RateLimiter`/`rate.acquire()` from `_send()` — it's still the only thing pacing four of the
+  six modes (the fifth, `scan`, sends nothing at all).
 - **Halt-on-control never releases leases.** `_trigger_halt()` stops the sender but leaves
   `Cleanup` untouched; `restore_on_exit` defaults `False` for the same reason as always (§5). If
   you're tempted to auto-release on halt, don't — the post-controls need the leases held to be
@@ -249,13 +302,14 @@ python3 -m ruff format --check src tests
 Roadmap V1.0 (CLI), V1.1 (web Exhaust), V2.0 (web all modes + packaging) are all **done**, plus
 these later additions: combined-DB fingerprinting (replacing FingerBank), distinct-MAC default,
 debug logging + verbosity dropdown, `active-scan`, neighbor↔fingerprint correlation by MAC,
-MAC-vendor fallback identification, pre-run ARP inventory, effective sustained garp, and the full
+MAC-vendor fallback identification, pre-run ARP inventory, effective sustained garp, the full
 2.1 release (§5c/§5d: release-first exhaust, windowed/adaptive sender, halt-on-control, headroom,
-verdict rename). **152 unit tests pass; ruff clean.** The user validated a real exhaust run on
-their Kali VM against a live `/22` (pcap reviewed) — that run is what exposed the pending-offer
-saturation bug §5c fixes and the renewal-vs-fresh-allocation control-transaction bug §5a fixes.
-**The 2.1 changes (release phase, windowing, halt detection, headroom, verdict rename) have not
-yet been exercised against real hardware** — that's the next validation step.
+verdict rename), and 2.2 (§5e: lease journal + `release-previous` recovery). **200 unit tests
+pass; ruff clean.** The user validated a real exhaust run on their Kali VM against a live `/22`
+(pcap reviewed) — that run is what exposed the pending-offer saturation bug §5c fixes and the
+renewal-vs-fresh-allocation control-transaction bug §5a fixes. **Neither the 2.1 changes (release
+phase, windowing, halt detection, headroom, verdict rename) nor 2.2 (journal, release-previous)
+have been exercised against real hardware yet** — that's the next validation step.
 
 ## 10. Open follow-ups (not yet done)
 - **IPv6**: `IPVersion.V6` is a seam only; v6 packet builders/flows are NOT implemented. The v4
@@ -267,6 +321,17 @@ yet been exercised against real hardware** — that's the next validation step.
 - **Active-scan** fingerprints the DHCP *server* via the INFORM reply; ARP-only neighbours now
   get MAC-vendor identification (`core/oui.py`), but never an OS — that needs DHCP evidence.
 - **Integration coverage** only exercises exhaust; add netns cases for release/garp/active-scan.
+  `release-previous` also needs one, but it requires rewriting the `FakeDhcpServer` fixture in
+  `tests/integration/test_exhaust_live.py` first — it currently has an unbounded address pool
+  and never NAKs, so it can't simulate an exhausted-then-recovered pool at all. Give it a bounded
+  pool, NAK-when-full behavior, and RELEASE handling that actually frees a binding, then: exhaust
+  to drain it, destroy the engine object (simulating a killed process), run `release-previous
+  --journal <path>` on a fresh engine, assert a new MAC gets an address afterward.
+- **Web UI** exposes `release-previous` mode selection, scope, and rate, but not
+  `--journal`/`--max-age`/`--any-server`/`--passes` as dedicated controls yet (the backend/schema
+  round-trip already supports them — see `web/schemas.py` — just no HTML inputs). Add a config
+  sub-panel following the `#ratecfg`/`#destcfg` show/hide pattern in `app.js`'s `onModeChange()`
+  if the web UI needs full parity with the CLI.
 - **Packaging** `.deb`/`.desktop` exist under `packaging/` but haven't been built/tested on a
   real Kali box yet.
 

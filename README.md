@@ -43,6 +43,7 @@ Safety flags:
     --scope CIDR         restrict targets to these networks (repeatable; optional)
     --no-release         skip releasing ARP-discovered neighbors before exhausting
     --no-arp-scan        skip the pre-run ARP inventory
+    --no-journal         don't record acquired leases to the recovery journal (see RECOVERY)
     --restore-on-exit    release the acquired leases when the run ends
     --status-interval N  periodic status line, default every 5s (0 disables)
 
@@ -125,13 +126,48 @@ JSON/HTML report) renders the source alongside it. A separate `POOL_HEADROOM_LOW
 when the *pre-test* ARP baseline already shows the scope at ≥80% utilization — independent of
 whether exhausting the pool succeeded.
 
+RECOVERY
+--------
+
+`exhaust` leaves the network broken on purpose — that's the point of a successful run. The
+usual way back is `dhcpig restore eth1`, which releases exactly the leases the *currently
+running* engine acquired, from its own memory. That covers the happy path and nothing else: if
+the process was killed, the box rebooted, or you're back at this days later from a different
+machine, `restore` has nothing to work with.
+
+`release-previous` is the recovery path for that. Every lease `exhaust` acquires is recorded to
+an on-disk **lease journal** the moment the ACK lands (`--no-journal` to opt out, though there's
+rarely a reason to), so recovery survives however badly the run ended:
+
+    sudo dhcpig release-previous eth1
+
+It replays the journal for the current network only: it loads every still-open entry, keeps the
+ones inside `--scope` (or the interface's own network), keeps the ones recorded against the
+DHCP server that's actually reachable right now (guards against a journal carried between
+engagements on the same laptop producing release targets on the wrong network — `--any-server`
+overrides), drops anything older than `--max-age` days (default 7), and sends DHCPRELEASE for
+what's left. It runs a "can a new client get an address?" probe before starting (skips entirely
+if the pool isn't actually exhausted) and again after, so the result is a verdict
+(`POOL_RECOVERED` / `POOL_RECOVERY_PARTIAL` / `POOL_RECOVERY_FAILED`), not just a packet count.
+
+It needs no ARP sweep and no server discovery: the journal already carries the MAC, IP, and
+server identity for every lease, so recovery works from disk alone. It's also not gated behind
+`DESTRUCTIVE_MODES` — it only ever releases leases the journal proves this tool took, so it adds
+no capability beyond what `exhaust` already used. Default `--rate` is 50, not the usual 7: this
+runs during an outage you're trying to end, and the frames are unicast to one server rather than
+sprayed at the segment.
+
+The journal lives at `$XDG_STATE_HOME/dhcpig/leases-<iface>.jsonl` (falling back to
+`~/.local/state/dhcpig/`) — never under `/var/lib` or another system path, since it's
+per-engagement data, not system state. See SECURITY.md for what it contains and how to clear it.
+
 WEB UI
 ------
 
     sudo dhcpig-web            # prints a tokenized loopback URL; open it in a browser
 
 The web UI (`dhcpig-web`) is Python-stdlib only (no framework, no build step). It is bound to
-`127.0.0.1`, requires the printed bearer token, and enforces same-origin. All four modes are
+`127.0.0.1`, requires the printed bearer token, and enforces same-origin. All modes are
 available with a live dashboard (including the headroom counter for exhaust), OS-inventory
 tables, JSON/CSV/HTML export, "Copy as CLI", and profile save/load. For a headless VM, reach it
 from your host with:
@@ -147,6 +183,8 @@ MODES
                     servers. Non-destructive; requires `--scope` (auto-filled from the interface).
 * __release__     — DHCPRELEASE for neighbors (DESTRUCTIVE; scope defaults to the iface network).
 * __garp__        — sustained ARP cache poisoning, no exhaustion phase (DESTRUCTIVE). See below.
+* __release-previous__ — recovers a pool this tool previously drained, by replaying the lease
+                    journal (not destructive — see RECOVERY below).
 
 ARP-GARP DoS
 ------------

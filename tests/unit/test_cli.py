@@ -91,6 +91,13 @@ def test_release_previous_flags():
     assert cfg.dry_run is True
 
 
+def test_exhaust_journal_default_on_and_opt_out():
+    args = cli.build_parser().parse_args(["exhaust", "eth1"])
+    assert cli.build_config(args).journal is True
+    args = cli.build_parser().parse_args(["exhaust", "eth1", "--no-journal"])
+    assert cli.build_config(args).journal is False
+
+
 def test_release_previous_appears_in_run_once_completion_modes():
     """release-previous is not DESTRUCTIVE, but it still needs the CLI's polling loop to
     recognize a finished worker thread as 'this run is done' -- same as release/garp."""

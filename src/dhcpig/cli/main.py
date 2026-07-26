@@ -117,6 +117,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="skip releasing ARP-discovered neighbors' leases before exhausting (default: on)",
     )
+    ex.add_argument(
+        "--no-journal",
+        dest="no_journal",
+        action="store_true",
+        help="don't record acquired leases to the recovery journal (default: on) -- without "
+        "it, 'dhcpig release-previous' has nothing to recover with if this run is interrupted",
+    )
 
     sc = sub.add_parser("scan", help="passive ARP + DHCP fingerprint (read-only)")
     common(sc)
@@ -240,6 +247,7 @@ def build_config(args) -> SessionConfig:
         arp_sweep=not getattr(args, "no_arp_scan", False),
         release_neighbors=not getattr(args, "no_release", False),
         status_interval=getattr(args, "status_interval", 5.0),
+        journal=not getattr(args, "no_journal", False),
         journal_path=Path(args.journal) if getattr(args, "journal", None) else None,
         max_age_days=getattr(args, "max_age", 7.0),
         require_same_server=not getattr(args, "any_server", False),

@@ -23,7 +23,7 @@ const rate = { last: 0, series: [] };
 const servers = new Map();
 const neighbors = new Map();
 const leases = [];
-const SCOPE_MODES = new Set(["release", "garp", "active-scan"]);
+const SCOPE_MODES = new Set(["release", "garp", "active-scan", "release-previous"]);
 const ifaceCidr = {};       // iface name -> network cidr (for scope auto-fill)
 let lastAutoScope = "";     // remember what we auto-filled so we don't clobber user edits
 
@@ -75,6 +75,11 @@ function onModeChange() {
   const isExhaust = mode === "exhaust";
   $("ratecfg").classList.toggle("hidden", isExhaust);
   $("ratehint").classList.toggle("hidden", !isExhaust);
+  // release-previous defaults to 50pps, not the 7pps every other mode uses -- it runs during
+  // an outage the operator is trying to end, and its frames are unicast to one server rather
+  // than sprayed at the segment. Only nudge the field if it's still sitting at a default.
+  if (mode === "release-previous" && +$("rate").value === 7) $("rate").value = 50;
+  else if (mode !== "release-previous" && +$("rate").value === 50) $("rate").value = 7;
   autofillScope();
   const labels = {
     exhaust: ["leases", "servers", "pps"],
@@ -82,6 +87,7 @@ function onModeChange() {
     "active-scan": ["hosts", "servers", "resolved"],
     release: ["released", "neighbors", "pps"],
     garp: ["gARP sent", "neighbors", "pps"],
+    "release-previous": ["released", "servers", "pps"],
   }[mode];
   $("l-a").textContent = labels[0];
   $("l-b").textContent = labels[1];
@@ -337,7 +343,8 @@ async function pollStatus() {
     const mode = $("mode").value;
     const scanlike = mode === "scan" || mode === "active-scan";
     const primary = { exhaust: status.leases, scan: neighbors.size,
-      "active-scan": neighbors.size, release: status.releases, garp: status.garps }[mode] ?? 0;
+      "active-scan": neighbors.size, release: status.releases, garp: status.garps,
+      "release-previous": status.releases }[mode] ?? 0;
     const pps = Math.max(0, (status.discovers ?? 0) - rate.last);
     rate.last = status.discovers ?? 0;
     $("c-a").textContent = primary;
