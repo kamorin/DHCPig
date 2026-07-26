@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased — fingerprint/OUI data simplified to single-source
+
+`src/dhcpig/data/` now ships exactly two sources: PacketFence DHCP fingerprints and scapy's
+bundled OUI database. Dropped: the Huginn-Muninn fingerprint merge, the custom
+`fingerprints.json` builtin fallback table (option-60 vendor-class / representative-PRL / OUI
+hints), and the `mac-vendor.txt` supplement vendored from arp-scan.
+
+- `combined_dhcp_os_lookup.json` (PacketFence + Huginn-Muninn, 594 fingerprints) replaced by
+  `packetfence_dhcp_fingerprints.json` (PacketFence only, 535 fingerprints). Same lookup
+  semantics (exact, order-sensitive option-55 match; ambiguous multi-candidate entries flagged
+  and reported at lower confidence).
+- `core/fingerprint.py`: removed `_builtin()`/`_resolve_from_builtin()`; a miss on the
+  PacketFence DB now falls straight through to `from_mac()` OUI-only identification.
+- `core/oui.py`: removed the `mac-vendor.txt` supplement and its longest-prefix-wins merge
+  logic; MAC vendor lookup is scapy's bundled Wireshark `manuf` DB only, with the
+  locally-administered-bit fallback kept (it's a computed check, not vendored data).
+- `data/DATA_ATTRIBUTION.md` rewritten to reflect single-source provenance for both fingerprints
+  and OUI.
+
 ## 2.2.0 (unreleased) — lease journal + release-previous recovery
 
 `dhcpig restore` only ever released leases held in the memory of the currently-running engine —

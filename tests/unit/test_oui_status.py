@@ -24,18 +24,15 @@ def test_lookup_is_separator_and_case_insensitive():
         assert oui.lookup(form) == want
 
 
-def test_supplement_beats_ieee_for_virtualisation_macs():
-    """QEMU/HSRP/VRRP prefixes are deliberately absent from the IEEE registry."""
-    assert oui.lookup("52:54:00:12:34:56") == "QEMU"
-    assert "HSRP" in (oui.lookup("00:00:0c:07:ac:01") or "")
-    assert "VRRP" in (oui.lookup("00:00:5e:00:01:2a") or "")
-    assert oui.lookup("ff:ff:ff:ff:ff:ff") == "Broadcast"
-
-
-def test_longest_prefix_wins():
-    # 00:00:0c is Cisco in the IEEE db; 00:00:0c:07:ac is HSRP in the supplement
+def test_ieee_registered_prefix_resolved_without_supplement():
+    # 00:00:0c is Cisco in the IEEE db -- resolved straight from scapy, no local supplement
     assert "Cisco" in (oui.lookup("00:00:0c:11:22:33") or "")
-    assert "HSRP" in (oui.lookup("00:00:0c:07:ac:05") or "")
+
+
+def test_qemu_prefix_unknown_to_scapy_falls_back_to_locally_administered():
+    # QEMU's 52:54:00 prefix isn't in the IEEE registry; its locally-administered bit is set,
+    # so we still label it rather than leaving it blank
+    assert oui.lookup("52:54:00:12:34:56") == oui.LOCALLY_ADMINISTERED
 
 
 def test_locally_administered_mac_is_labelled_not_blank():

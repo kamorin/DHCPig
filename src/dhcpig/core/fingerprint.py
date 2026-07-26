@@ -1,12 +1,12 @@
 """Passive DHCP/host fingerprinting — resolve OS/device for every host on the segment.
 
-Primary signal: option 55 (parameter-request-list) *exact, order-sensitive* match against the
-bundled static `combined_dhcp_os_lookup.json` (see `data/DATA_ATTRIBUTION.md`) — a merge of the
-PacketFence and Huginn-Muninn DHCP fingerprint sets, built by `data/fingerprint-merge.py`.
-Fully offline, no API keys, no network calls.
+Signal: option 55 (parameter-request-list) *exact, order-sensitive* match against the bundled
+static `packetfence_dhcp_fingerprints.json` (see `data/DATA_ATTRIBUTION.md`), sourced entirely
+from the PacketFence project's DHCP fingerprint database. Fully offline, no API keys, no network
+calls.
 
-Fallback signal: a small builtin table (option 60 vendor-class substring + MAC OUI) for signals
-the combined DB doesn't carry, plus a couple of representative option-55 orders of its own.
+If there's no exact option-55 match, we fall back to MAC OUI identification alone (see `oui.py`)
+— weak evidence, but better than a blank row.
 
 The matching semantics (normalize the option-55 list, exact dict lookup, flag ambiguous
 multi-candidate fingerprints) mirror `data/fingerprint-merge.py`'s `identify()` so a lookup
@@ -24,7 +24,7 @@ from . import oui
 from .models import HostFingerprint
 from .packets import dhcp_option
 
-COMBINED_DB_FILE = "combined_dhcp_os_lookup.json"
+DB_FILE = "packetfence_dhcp_fingerprints.json"
 
 
 @dataclass
@@ -37,23 +37,18 @@ class Signature:
     oui: str = ""  # first 3 MAC octets, lowercase, colon-joined
 
 
-def _builtin() -> list[dict]:
-    with resources.files("dhcpig.data").joinpath("fingerprints.json").open() as fh:
-        return json.load(fh)["entries"]
-
-
 @lru_cache(maxsize=1)
-def _combined() -> dict:
-    """The bundled combined_dhcp_os_lookup.json, loaded once."""
+def _db() -> dict:
+    """The bundled packetfence_dhcp_fingerprints.json, loaded once."""
     try:
-        with resources.files("dhcpig.data").joinpath(COMBINED_DB_FILE).open(encoding="utf-8") as fh:
+        with resources.files("dhcpig.data").joinpath(DB_FILE).open(encoding="utf-8") as fh:
             return json.load(fh)
     except (FileNotFoundError, ModuleNotFoundError, json.JSONDecodeError):
         return {"fingerprints": {}, "sources": {}, "statistics": {}}
 
 
-def _combined_fingerprints() -> dict[str, list[dict]]:
-    return _combined().get("fingerprints", {})
+def _fingerprints() -> dict[str, list[dict]]:
+    return _db().get("fingerprints", {})
 
 
 def _normalize_prl_key(prl: list[int]) -> str:
@@ -62,10 +57,9 @@ def _normalize_prl_key(prl: list[int]) -> str:
 
 
 def _db_version() -> str:
-    stats = _combined().get("statistics", {})
-    n = stats.get("combined_fingerprints", len(_combined_fingerprints()))
-    sources = ",".join(_combined().get("sources", {}).keys()) or "none"
-    return f"combined_dhcp_os_lookup({n} fp; sources={sources})+builtin"
+    stats = _db().get("statistics", {})
+    n = stats.get("packetfence_fingerprints", len(_fingerprints()))
+    return f"packetfence_dhcp_fingerprints({n} fp)"
 
 
 DB_VERSION = _db_version()
@@ -114,12 +108,12 @@ def extract_signature(pkt, role: str = "client") -> Signature:
     )
 
 
-def _resolve_from_combined(sig: Signature, role: str) -> HostFingerprint | None:
-    """Exact, order-sensitive option-55 lookup against combined_dhcp_os_lookup.json."""
+def _resolve_from_db(sig: Signature, role: str) -> HostFingerprint | None:
+    """Exact, order-sensitive option-55 lookup against packetfence_dhcp_fingerprints.json."""
     if not sig.prl:
         return None
     key = _normalize_prl_key(sig.prl)
-    candidates = _combined_fingerprints().get(key)
+    candidates = _fingerprints().get(key)
     if not candidates:
         return None
     names = sorted({c.get("name", "") for c in candidates if c.get("name")})
@@ -141,65 +135,13 @@ def _resolve_from_combined(sig: Signature, role: str) -> HostFingerprint | None:
     )
 
 
-def _resolve_from_builtin(sig: Signature, role: str) -> HostFingerprint | None:
-    """Fallback: builtin vendor-class / OUI / representative-PRL table."""
-    best: HostFingerprint | None = None
-    for entry in _builtin():
-        if entry.get("prl") and sig.prl and list(entry["prl"]) == sig.prl:
-            cand = HostFingerprint(
-                mac=sig.mac,
-                ip=sig.ip,
-                role=role,
-                os=entry.get("os"),
-                device=entry.get("device"),
-                vendor=entry.get("vendor"),
-                confidence=int(entry.get("confidence", 95)),
-                matched_via=f"opt55:{_normalize_prl_key(sig.prl)}",
-                raw_prl=sig.prl,
-            )
-            if best is None or cand.confidence > best.confidence:
-                best = cand
-        vc = entry.get("vendor_class")
-        if vc and sig.vendor_class and vc.lower() in sig.vendor_class.lower():
-            cand = HostFingerprint(
-                mac=sig.mac,
-                ip=sig.ip,
-                role=role,
-                os=entry.get("os"),
-                device=entry.get("device"),
-                vendor=entry.get("vendor"),
-                confidence=int(entry.get("confidence", 90)) - 5,
-                matched_via=f'opt60:"{sig.vendor_class}"',
-                raw_prl=sig.prl,
-            )
-            if best is None or cand.confidence > best.confidence:
-                best = cand
-        for entry_oui in entry.get("oui", []):
-            if sig.oui and sig.oui == entry_oui.lower():
-                cand = HostFingerprint(
-                    mac=sig.mac,
-                    ip=sig.ip,
-                    role=role,
-                    os=None,
-                    device=entry.get("device"),
-                    vendor=entry.get("vendor"),
-                    confidence=55,
-                    matched_via=f"oui:{sig.oui}",
-                    raw_prl=sig.prl,
-                )
-                if best is None or cand.confidence > best.confidence:
-                    best = cand
-    return best
-
-
 def resolve(sig: Signature, role: str = "client") -> HostFingerprint:
     """Map a Signature to an OS/device label with a confidence score.
 
-    1) exact option-55 order match against combined_dhcp_os_lookup.json (strongest signal)
-    2) builtin fallback: representative option-55 order, then vendor-class substring, then OUI
-    3) MAC OUI only — no DHCP evidence, but at least says who made the hardware
+    1) exact option-55 order match against packetfence_dhcp_fingerprints.json (strongest signal)
+    2) MAC OUI only — no DHCP evidence, but at least says who made the hardware
     """
-    fp = _resolve_from_combined(sig, role) or _resolve_from_builtin(sig, role)
+    fp = _resolve_from_db(sig, role)
     if fp is not None:
         if not fp.vendor:  # fill in the hardware vendor the DHCP data didn't carry
             fp.vendor = oui.lookup(sig.mac)
