@@ -18,9 +18,11 @@ pool exhaustion.**
   raises `NEIGHBOR_LEASES_RELEASED` reporting observed effect, not frames sent.
 - **Windowed, adaptive handshake pipeline replaces the open-loop DISCOVER flood.** At most
   `window_initial` (8) DISCOVER/REQUEST transactions in flight; a clean ACK grows the window
-  (to `window_max`, 64), a NAK/timeout/duplicate-offer halves it. Only an ACK counts as a held
-  address. `--rate` is **removed from `exhaust`** (the window paces it now) but unchanged on
-  `release`/`garp`/`active-scan`.
+  half a slot at a time — two clean ACKs in a row to widen it by one, up to `window_max` (64) —
+  and a NAK/timeout/duplicate-offer halves it instantly (and wipes any banked half-slot, so
+  ramping back up after a throttle is just as cautious as ramping up cold). Only an ACK counts
+  as a held address. `--rate` is **removed from `exhaust`** (the window paces it now) but
+  unchanged on `release`/`garp`/`active-scan`.
 - **Halt-and-report.** On the first of five signals — a NAK burst, offers going quiet, link
   carrier loss (port-security err-disable), a timeout storm, or the same address offered to two
   of our MACs — sending stops immediately, but leases already held are **kept** and both

@@ -59,8 +59,9 @@ ARP-discovered neighbor, so the pool has addresses to give up rather than only w
 already free — `--no-release` to skip), then the sender.
 
 The sender is a **windowed, adaptive pipeline**, not an open-loop flood: a handful of
-DISCOVER/REQUEST transactions are in flight at once, growing on a clean ACK and halving on a
-NAK, timeout, or duplicate offer. Flooding faster than handshakes can complete saturates the
+DISCOVER/REQUEST transactions are in flight at once, growing on clean ACKs (half a slot per
+ACK — two clean ACKs in a row to widen the window by one) and halving instantly on a NAK,
+timeout, or duplicate offer. Flooding faster than handshakes can complete saturates the
 server's pending-offer table — which looks like exhaustion but isn't, and produced a false
 result on a real `/22` (the server re-offered the same address to two of our MACs, then NAKed,
 then went silent at 56/~1000 addresses). This is why `exhaust` has no `--rate`: the window paces

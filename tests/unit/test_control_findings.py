@@ -349,6 +349,9 @@ def test_window_never_exceeds_its_configured_cap(monkeypatch):
 
 def test_ack_grows_window_nak_and_timeout_halve_it(monkeypatch):
     eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST, window_initial=8, window_max=64)
+    # half-rate ramp: the first clean ACK only banks half a slot, the second one cashes it in
+    eng._grow_window()
+    assert eng._window == 8
     eng._grow_window()
     assert eng._window == 9
     eng._shrink_window("nak")
@@ -356,6 +359,19 @@ def test_ack_grows_window_nak_and_timeout_halve_it(monkeypatch):
     eng._window = 8
     eng._shrink_window("timeout")
     assert eng._window == 4
+
+
+def test_growth_accumulator_resets_on_shrink(monkeypatch):
+    """A banked half-slot from before a NAK/timeout shouldn't give the very next ACK after
+    the shrink a free head start -- ramping back up should be just as cautious as ramping
+    up cold."""
+    eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST, window_initial=8, window_max=64)
+    eng._grow_window()  # banks 0.5, window still 8
+    eng._shrink_window("nak")  # window -> 4, accumulator wiped
+    eng._grow_window()  # banks 0.5 again, not 1.0 -- should NOT grow yet
+    assert eng._window == 4
+    eng._grow_window()
+    assert eng._window == 5
 
 
 def test_only_acks_increment_the_lease_counter_not_timeouts(monkeypatch):
