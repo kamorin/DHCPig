@@ -7,13 +7,13 @@ SUMMARY
 -------
 
 DHCPig is a whitehat network-hardening validation tool. It exercises DHCP starvation,
-lease-hijack, forced lease release, gratuitous-ARP disruption, and passive host
-fingerprinting so security engineers can confirm a network is defended (DHCP snooping,
-port security, etc.).
+lease-hijack, forced lease release with targeted re-acquisition, RFC 5227 ARP-conflict
+eviction, and passive host fingerprinting so security engineers can confirm a network is
+defended (DHCP snooping, port security, Dynamic ARP Inspection, etc.).
 
 `dhcpig` 2.x is a refactor of the original single-file `pig.py` into an installable,
-tested package. It requires `scapy>=2.5` and root/CAP_NET_RAW. Destructive modes
-(`release`/`garp`) are opt-in by subcommand, take an optional `--scope`, and are rate-limited
+tested package. It requires `scapy>=2.5` and root/CAP_NET_RAW. The destructive mode
+(`release`) is opt-in by subcommand, takes an optional `--scope`, and is rate-limited
 and reversible (`dhcpig restore`) — there is no separate authorization gate; see DISCLAIMER.
 
 INSTALL
@@ -27,24 +27,39 @@ USAGE (CLI)
     sudo dhcpig exhaust eth1 --report run.json
     sudo dhcpig scan eth1 --report inventory.json          # passive, read-only
     sudo dhcpig release eth1 --scope 172.20.0.0/16 --rate 20  # DESTRUCTIVE
-    sudo dhcpig garp    eth1 --scope 172.20.0.0/16 --rate 20  # DESTRUCTIVE
     sudo dhcpig restore eth1                               # release leases we grabbed
     dhcpig ifaces
 
-`release` and `garp` disrupt live clients. They take no confirmation step — `--scope` is
-optional and **defaults to the interface's own network**, so `dhcpig garp eth1` will target
-every host on the segment. Pass `--scope` to bound it.
+`release` disrupts live clients — it runs the same phase chain `exhaust` does (see RELEASE
+below), including RFC 5227 ARP-conflict eviction. It takes no confirmation step — `--scope`
+is optional and **defaults to the interface's own network**, so `dhcpig release eth1` will
+target every host on the segment. Pass `--scope` to bound it.
 
 Safety flags:
 
-    --dry-run            build + log packets, send nothing on the wire
-    --rate N             cap packets/sec — release/garp/active-scan only, default 7
-                          (exhaust has no --rate; see EXHAUST PIPELINE below)
+    --dry-run            reconnaissance pass: ARP sweep and control transactions run for
+                          real, everything mutating (release, re-acquisition, the sender,
+                          eviction) is logged but not sent — needs root, not a no-op (see
+                          DRY-RUN below)
+    --rate N             cap packets/sec — release/active-scan/release-previous only,
+                          default 7 (exhaust has no --rate; see EXHAUST PIPELINE below)
     --scope CIDR         restrict targets to these networks (repeatable; optional)
     --no-release         skip releasing ARP-discovered neighbors before exhausting
     --no-arp-scan        skip the pre-run ARP inventory
     --no-journal         don't record acquired leases to the recovery journal (see RECOVERY)
+    --no-evict           skip RFC 5227 ARP-conflict eviction (exhaust and release; see EVICTION)
     --status-interval N  periodic status line, default every 5s (0 disables)
+
+DRY-RUN
+-------
+
+`--dry-run` is a genuine reconnaissance pass, not a shape-only preview: the pre-run ARP sweep
+and the pre/post control transactions (an ordinary DHCP cycle from the real NIC MAC, released
+immediately) all run for real, because they self-clean and cost the target network nothing.
+Only **mutating** sends are suppressed — the release phase, targeted re-acquisition, the
+windowed exhaust sender, and eviction are built and logged but never touch the wire. Because
+the ARP sweep and control transactions are real traffic, `--dry-run` needs a raw-capable
+interface and root, the same as a live run.
 
 Leases are **always kept** after the run so the exhausted state can be observed and verified.
 There is no auto-restore-on-exit — release them explicitly with `sudo dhcpig restore eth1` (or
@@ -54,19 +69,25 @@ the Restore button in the web UI) if the same process/session is still around, o
 EXHAUST PIPELINE
 -----------------
 
-`exhaust` runs four phases before the sender starts: an ARP sweep (pre-run inventory), a
-control transaction (baseline reachability), a **release phase** (DHCPRELEASE for every
-ARP-discovered neighbor, so the pool has addresses to give up rather than only whatever was
-already free — `--no-release` to skip), then the sender.
+`exhaust` runs a shared prelude before the sender starts (`_common_prelude()`, also used by
+`release` — see RELEASE below): an ARP sweep (pre-run inventory), a control transaction
+(baseline reachability), a **release phase** (DHCPRELEASE for every ARP-discovered neighbor, so
+the pool has addresses to give up rather than only whatever was already free — `--no-release` to
+skip), and **targeted re-acquisition** (a DISCOVER carrying DHCP option 50 for each freed
+address specifically, so the release phase's effect is actually confirmed rather than assumed —
+see RECOVERY/`NEIGHBOR_LEASES_RELEASED` below). Then the sender starts; after it finishes,
+**eviction** runs (see EVICTION below) before the verdict is produced.
 
 The sender is a **windowed, adaptive pipeline**, not an open-loop flood: a handful of
-DISCOVER/REQUEST transactions are in flight at once, growing on clean ACKs (half a slot per
-ACK — two clean ACKs in a row to widen the window by one) and halving instantly on a NAK,
-timeout, or duplicate offer. Flooding faster than handshakes can complete saturates the
+DISCOVER/REQUEST transactions are in flight at once, growing slowly on clean ACKs (0.01 of a
+slot per ACK — **100** clean ACKs in a row to widen the window by one) and halving instantly on
+a NAK, timeout, or duplicate offer. Flooding faster than handshakes can complete saturates the
 server's pending-offer table — which looks like exhaustion but isn't, and produced a false
 result on a real `/22` (the server re-offered the same address to two of our MACs, then NAKed,
-then went silent at 56/~1000 addresses). This is why `exhaust` has no `--rate`: the window paces
-it, and backs off automatically.
+then went silent at 56/~1000 addresses). Growth is deliberately far slower than shrink, so a
+window that's been knocked down stays down rather than climbing back — a small, steady window is
+the whole point. This is why `exhaust` has no `--rate`: the window paces it, and backs off
+automatically.
 
 If a defensive control fires mid-run — a NAK burst, offers going quiet, the link going down
 (port-security err-disable), a timeout storm, or the same address offered to two of our MACs —
@@ -177,37 +198,84 @@ from your host with:
 MODES
 -----
 
-* __exhaust__     — DISCOVER/OFFER/REQUEST loop that consumes the address pool (non-destructive).
-* __scan__        — passive ARP + DHCP capture; fingerprints every host (OS/device/vendor).
+* __exhaust__     — DISCOVER/OFFER/REQUEST loop that consumes the address pool (non-destructive
+                    until you count what it does to *other* hosts' current leases — see RELEASE
+                    and EVICTION below). Web UI label: "DHCP Exhaustion".
+* __scan__        — passive ARP + DHCP capture; fingerprints every host (OS/device/vendor). Not
+                    offered in the web UI dropdown (still a valid CLI subcommand / API mode).
 * __active-scan__ — active discovery: ARP sweep of the scope + a DHCP INFORM to find/fingerprint
                     servers. Non-destructive; requires `--scope` (auto-filled from the interface).
-* __release__     — DHCPRELEASE for neighbors (DESTRUCTIVE; scope defaults to the iface network).
-* __garp__        — sustained ARP cache poisoning, no exhaustion phase (DESTRUCTIVE). See below.
+                    Web UI label: "Find Neighbors".
+* __release__     — runs the same phase chain as `exhaust` minus the windowed sender: ARP
+                    inventory, release, targeted re-acquisition, and RFC 5227 ARP-conflict
+                    eviction (DESTRUCTIVE; scope defaults to the iface network — see RELEASE and
+                    EVICTION below). Web UI label: "DHCP Release Active Clients".
 * __release-previous__ — recovers a pool this tool previously drained, by replaying the lease
-                    journal (not destructive — see RECOVERY below).
+                    journal (not destructive — see RECOVERY below). Web UI label:
+                    "Reset / Recover DHCP Records".
 
-ARP-GARP DoS
-------------
+RELEASE
+-------
 
-Per target, each round sends three frames:
+`release` is not just "send RELEASE and stop" — it runs the same chain `exhaust` runs before its
+sender: an ARP sweep, a control transaction (real-NIC-MAC leg only — it does not run the
+new-client leg `exhaust` uses for its starvation verdict, since that verdict is meaningless
+here), the release phase, targeted re-acquisition of every freed address, and then RFC 5227
+ARP-conflict eviction (see EVICTION below) against whatever it just re-acquired.
 
-1. a broadcast gratuitous ARP **request** claiming the victim's own IP,
-2. a broadcast gratuitous ARP **reply** making the same claim,
-3. a **unicast** ARP reply to the victim putting the **default gateway** at an unused MAC.
+That means `release` can force a *currently connected* client both off its lease **and** off its
+address at the link layer, then watch whether it comes back cleanly. This is a materially bigger
+blast radius than the name suggests on its own — see SECURITY.md. `--no-evict` skips just the
+eviction step; there's no equivalent `--no-release` for the `release` subcommand, since skipping
+the release step is the entire point of `release` mode existing.
 
-(3) is what actually costs a host connectivity. (1) and (2) only trip duplicate-address
-detection — a well-behaved host defends its address and carries on, which is why announcements
-alone look like they do nothing. Rounds repeat every `garp_interval` (2s) until you stop,
-because hosts re-ARP within seconds and the legitimate owner re-answers, undoing a single pass.
+`release` never triggers `DHCP_STARVATION_ATTAINED`/`_NOT_ATTAINED` — those are exhaust's
+verdict, derived from a control leg `release` doesn't run. Its own findings are
+`NEIGHBOR_LEASES_RELEASED` and the eviction findings below.
 
-The forged MAC is always a **bogus, unused address**, so poisoned traffic is blackholed. DHCPig
-deliberately never points a forged mapping at its own MAC — that would be traffic interception
-rather than a denial-of-service check, and is out of scope for this tool.
+EVICTION
+--------
 
-While poisoning, DHCPig watches ARP and records which targets re-announce their address. A host
-defending itself proves the forged frame was *delivered* (so Dynamic ARP Inspection is not
-filtering the port). It does **not** prove the gateway entry survived — confirm with `arp -a` /
-`ip neigh` on a target, or DAI drop counters on the switch.
+After re-acquiring a freed address (RELEASE / EXHAUST PIPELINE above), both `exhaust`
+and `release` contest the real owner's claim to it via forged broadcast ARP, per **RFC 5227 §2.4
+address conflict detection** — the same mechanism a host uses to defend itself against an
+accidental duplicate assignment, turned into a way to force it off an address it no longer holds
+a DHCP binding for. `--no-evict` skips this phase entirely.
+
+Per target per round, two frames (`ARP_REQUEST` + `ARP_REPLY` forms — stacks differ in which
+they honour), claiming the target's own IP at a fresh, always-bogus MAC. **The forged MAC is
+never our own** — a bogus MAC blackholes the claim; our own MAC would instead intercept the
+victim's traffic, which is out of scope for this tool. By default 4 rounds, spaced 3 seconds
+apart (`timeouts.evict_interval`, must stay under RFC 5227's 10-second `DEFEND_INTERVAL` — a
+host defends once, then must give up on a *second* conflict inside that window; spaced further
+apart, each round looks like a fresh, independently-defensible conflict and the host never gives
+up the address). After the last round, DHCPig waits 8 seconds (`evict_settle`) for a
+DECLINE/restart/APIPA to land, then measures.
+
+**Outcome ladder** (each target's *highest* rung reached wins):
+
+| Rung | Signal | Meaning |
+|------|--------|---------|
+| `no_reaction` | nothing | frame may not have been delivered, or the stack ignores ACD |
+| `defended` | ARP announcement from the victim's real MAC | our frame arrived — DAI isn't filtering this port |
+| `declined` | DHCPDECLINE from the victim | the host gave up the address — gold-standard proof |
+| `rediscovered` | fresh DISCOVER from the victim | it restarted at INIT |
+| `discover_unanswered` | that DISCOVER got no OFFER | real denial of service |
+| `apipa` | victim's MAC now sourcing ARP from `169.254.0.0/16` | full eviction — DHCP totally failed |
+
+Findings are **mode-aware**, because "success" means different things in the two modes: under
+`exhaust` the pool is meant to be drained, so even a plain `rediscovered` (the DISCOVER got
+answered) is already evidence the address was taken by force — `declined` and above raises
+`CLIENTS_EVICTED_FROM_ADDRESSES` (FAIL, high). Under `release` the pool is never drained, so a
+clean restart-and-immediate-reacquire is the *expected*, low-harm result of the mode, not a
+denial — only `discover_unanswered`/`apipa` count as FAIL there; `declined`/`rediscovered` land
+in `CLIENTS_DEFENDED_ADDRESSES` (INCONCLUSIVE) instead, alongside targets that merely defended.
+Nothing reacting at all is `ARP_CONFLICTS_UNANSWERED` (INCONCLUSIVE) — a filtered switch port and
+a network that simply ignored the conflict look identical from this vantage point, so no PASS
+verdict is offered here; check DAI drop counters to tell them apart.
+
+Under `--dry-run` the phase still runs and logs its target list and round count, but sends
+nothing — `DRY_RUN_SUMMARY`'s `would_evict` count covers that case instead of the findings above.
 
 STATUS OUTPUT
 -------------
