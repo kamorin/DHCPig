@@ -71,11 +71,46 @@ def test_do_garp_only_in_scope(sent):
     bus, events = _bus_collect()
     cfg = SessionConfig(interface="lo", mode=Mode.GARP_DOS, scope_cidrs=["172.20.0.0/16"])
     eng = DhcpEngine(cfg, bus)
-    n = eng._do_garp(["172.20.0.7", "10.9.9.9", "172.20.0.8"])
-    assert n == 2
-    assert len(sent) == 2
-    assert sum(isinstance(e, ev.GarpSent) for e in events) == 2
+    targets = [
+        Neighbor("de:ad:00:00:00:01", "172.20.0.7"),
+        Neighbor("de:ad:00:00:00:02", "10.9.9.9"),  # out of scope
+        Neighbor("de:ad:00:00:00:03", "172.20.0.8"),
+    ]
+    n = eng._do_garp(targets)
+    # two in-scope targets x (GARP request + GARP reply); no gateway given, so no unicast poison
+    assert n == 4
+    assert len(sent) == 4
     assert any(isinstance(e, ev.Skipped) for e in events)
+
+
+def test_do_garp_adds_gateway_blackhole_per_target(sent):
+    """The unicast gateway poison is the frame that actually costs a victim connectivity."""
+    from dhcpig.core import packets as pk
+
+    bus, _ = _bus_collect()
+    cfg = SessionConfig(interface="lo", mode=Mode.GARP_DOS, scope_cidrs=["172.20.0.0/16"])
+    eng = DhcpEngine(cfg, bus)
+    n = eng._do_garp([Neighbor("de:ad:00:00:00:01", "172.20.0.7")], gateway="172.20.0.1")
+    assert n == 3  # request + reply + unicast gateway poison
+    poison = sent[-1]
+    assert poison[pk.ARP].op == pk.ARP_REPLY
+    assert poison[pk.ARP].psrc == "172.20.0.1"  # claims to be the gateway
+    assert poison[pk.ARP].pdst == "172.20.0.7"  # directed at the victim
+    assert poison.dst == "de:ad:00:00:00:01"  # unicast, not broadcast
+    # blackhole, never our own MAC: the forged MAC must not be a real host on the segment
+    assert poison[pk.ARP].hwsrc not in ("172.20.0.1", eng.cfg.interface)
+
+
+def test_garp_sends_both_arp_forms(sent):
+    from dhcpig.core import packets as pk
+
+    bus, _ = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.GARP_DOS), bus)
+    eng._do_garp([Neighbor("de:ad:00:00:00:01", "10.0.0.7")])
+    ops = [p[pk.ARP].op for p in sent]
+    assert ops == [pk.ARP_REQUEST, pk.ARP_REPLY]
+    for p in sent:  # announcement form: psrc == pdst == the claimed address
+        assert p[pk.ARP].psrc == p[pk.ARP].pdst == "10.0.0.7"
 
 
 def test_do_release_only_in_scope(sent):

@@ -35,6 +35,9 @@ class Timeouts:
     dhcp_request: float = 2.0  # legacy -z
     control: float = 5.0  # per-leg wait for the control transaction's OFFER / ACK
     offer_silence: float = 10.0  # offers must stop this long before we suspect exhaustion
+    # garp re-poisoning period. Hosts re-ARP within seconds and the real owner answers, so a
+    # single pass is undone almost immediately — the mapping only sticks if it is refreshed.
+    garp_interval: float = 2.0
 
 
 @dataclass
@@ -49,7 +52,6 @@ class SessionConfig:
     spoof_ethernet_src: bool = True
     request_options: list[int] = field(default_factory=lambda: list(range(80)))
     fuzz: bool = False
-    threads: int = 1
     rate_limit_pps: int = 10  # the bound on how fast a run can consume a pool
     v6_rapid_commit: bool = False
     dry_run: bool = False

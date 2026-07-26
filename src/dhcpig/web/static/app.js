@@ -34,7 +34,6 @@ function currentConfig() {
     interface: $("iface").value,
     mode: $("mode").value,
     rate: +$("rate").value,
-    threads: +$("threads").value,
     dry_run: $("dryrun").checked,
     scope_cidrs: scope.length ? scope : null,
     spoof_eth_src: $("spoofeth").checked,
@@ -50,7 +49,6 @@ function applyConfig(c) {
   if (c.interface) $("iface").value = c.interface;
   if (c.mode) $("mode").value = c.mode;
   if (c.rate != null) $("rate").value = c.rate;
-  if (c.threads != null) $("threads").value = c.threads;
   if (c.dry_run != null) $("dryrun").checked = c.dry_run;
   if (c.spoof_eth_src != null) $("spoofeth").checked = c.spoof_eth_src;
   if (c.control != null) $("control").checked = c.control;
@@ -64,8 +62,7 @@ function setRunning(on) {
   running = on;
   $("start").disabled = on;
   $("stop").disabled = !on;
-  $("restore").disabled = on;
-  ["iface", "mode", "rate", "threads", "dryrun", "norestore", "scope",
+  ["iface", "mode", "rate", "dryrun", "norestore", "scope",
     "spoofeth", "control", "arpscan"].forEach((id) => ($(id).disabled = on));
 }
 
@@ -356,10 +353,6 @@ $("start").addEventListener("click", () => {
 $("stop").addEventListener("click", async () => {
   try { await api("/api/session/stop", "POST", {}); } catch (_) {}
   setRunning(false);
-});
-$("restore").addEventListener("click", async () => {
-  try { await api("/api/session/restore", "POST", {}); logLine("note", "[--] restore done"); }
-  catch (err) { logLine("alert", "[XX] " + err.message); }
 });
 
 // ---- export / copy-cli / profiles ----------------------------------------

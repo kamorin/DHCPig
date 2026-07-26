@@ -40,7 +40,6 @@ def config_from_payload(payload: dict) -> SessionConfig:
         mode=mode,
         ip_version=IPVersion.V6 if payload.get("ipv6") else IPVersion.V4,
         rate_limit_pps=_as_int(payload.get("rate", 10), "rate", lo=1, hi=100000),
-        threads=_as_int(payload.get("threads", 1), "threads", lo=1, hi=64),
         dry_run=bool(payload.get("dry_run", False)),
         scope_cidrs=scope,
         spoof_ethernet_src=bool(payload.get("spoof_eth_src", True)),

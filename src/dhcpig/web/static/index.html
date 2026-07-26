@@ -21,7 +21,6 @@
     </label>
     <button id="start">▶ Start</button>
     <button id="stop" disabled>■ Stop</button>
-    <button id="restore" disabled>↺ Restore</button>
     <span class="exportgrp">⤓
       <button data-fmt="json">JSON</button><button data-fmt="csv">CSV</button><button data-fmt="html">HTML</button>
     </span>
@@ -49,14 +48,13 @@ the test, so a null result can be told apart from a broken test">
     <section class="panel config">
       <h2>Config</h2>
       <label>Rate (pps) <input type="number" id="rate" value="10" min="1" /></label>
-      <label>Threads <input type="number" id="threads" value="1" min="1" max="64" /></label>
       <div id="destcfg" class="destcfg hidden">
         <label>Scope CIDRs <input type="text" id="scope"
           placeholder="defaults to the interface network" /></label>
       </div>
       <label class="chk"><input type="checkbox" id="spoofeth" checked /> spoof eth src (distinct MACs)</label>
       <label class="chk" title="Leave the acquired leases in place after the run so the exhausted
-state can be verified. Use the Restore button when you are done.">
+state can be verified. Run `dhcpig restore <iface>` when you are done.">
         <input type="checkbox" id="norestore" checked /> disable auto-restore</label>
       <label class="chk" title="ARP-sweep the segment before exhausting, to record which hosts
 were present beforehand.">

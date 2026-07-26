@@ -72,7 +72,7 @@ def translate(argv: list[str]) -> list[str]:
         elif o in ("-S", "--ethernet-mac"):
             out.append("--spoof-eth-src")
         elif o in ("-t", "--threads"):
-            out += ["--threads", a]
+            pass  # legacy no-op: --rate is the pacing control now, there is one sender
         elif o in ("-O", "--request-options"):
             out += ["--request-option", a]
         elif o in ("-s", "--client-src"):
