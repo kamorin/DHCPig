@@ -1,5 +1,74 @@
 # Changelog
 
+## 2.3.0 (unreleased) — targeted re-acquisition, RFC 5227 ARP-conflict eviction, restructured `release`
+
+Design doc: `EXECUTION-PLAN-eviction.md`. Prompted by four goals: force a still-connected client
+off an address it holds (not just a free one), do it via RFC 5227 address-conflict detection
+rather than a blunt gateway-blackhole ARP flood, observe third-party DHCP traffic during a run as
+direct evidence of client-visible outage, and give `release` the same phase discipline `exhaust`
+already had rather than its own thinner, buggier path.
+
+- **`dry_run`/`offline` split into genuinely different concerns.** `offline` is now the hard
+  "never touch a socket" switch (no sniffer, no `sendp`, no `srp()`) — what makes web/CLI tests
+  and a no-root preview possible. `dry_run` alone now runs the ARP sweep and the control
+  transaction's own DISCOVER/REQUEST/RELEASE **for real** (they self-clean and cost the target
+  nothing) and only suppresses **mutating** sends: release, re-acquisition, the windowed exhaust
+  sender, eviction. Mechanism: `_send(pkt, probe=False)` — `probe=True` bypasses dry-run
+  suppression (never `offline`) at exactly two call sites, the ARP sweep and the control
+  transaction. `--dry-run` now needs a raw-capable interface and root, the same as a live run.
+- **Sniffer BPF widened** from server→client only (`src port 67 and dst port 68`) to both
+  directions (`port 67 or port 68`) — needed to observe foreign DISCOVERs/DHCPDECLINEs, which are
+  client→server and were invisible before. A self-filter (`_is_own_traffic()`) drops our own
+  echoed DISCOVER/REQUEST/RELEASE before it reaches foreign-DISCOVER handling.
+- **`Mode.GARP_DOS` retired.** Removed from the UI and CLI (`build_arp_poison()`, `_garp_worker()`,
+  `_on_garp_arp()`, both `ARP_FORGERIES_*` findings gone from `src/`). Its frame-building core
+  survives, rewritten: `_do_garp()` → `_do_arp_conflict()` — no more unicast gateway-blackhole
+  third frame, now the mechanism eviction (below) uses.
+- **Foreign DISCOVER observation.** Every DISCOVER from a MAC that isn't ours is now tracked
+  (first sighting per MAC emits `ForeignDiscover`; every sighting is tracked so a later OFFER can
+  mark it answered), with `foreign_discovers`/`foreign_discovers_unanswered` counters reaching
+  status/StatusTick/CLI/web. New findings: `FOREIGN_DISCOVERS_UNANSWERED` (FAIL, high — "other
+  people's machines asked for an address and got nothing," the most direct evidence of
+  client-visible outage this tool can produce) / `FOREIGN_DISCOVERS_ANSWERED` (INFO).
+- **Targeted re-acquisition.** After the release phase frees addresses, `exhaust`/`release` now
+  push one DISCOVER per freed `(mac, ip)` carrying DHCP option 50 (`requested_addr`) into the
+  existing windowed pipeline — no parallel sender — and classify each outcome as `granted` /
+  `offered_different` / `naked` / `no_response`. **Fixes a real unsoundness**:
+  `NEIGHBOR_LEASES_RELEASED`'s evidence used to be an ARP re-probe, which reads 0 even on a fully
+  successful RELEASE (a released victim keeps using its old address until its own lease's T1,
+  with no way to know it was released) — evidence is now the re-acquisition `granted` count.
+- **RFC 5227 §2.4 ARP-conflict eviction.** After re-acquiring a freed address, contest the real
+  owner's claim to it via forged broadcast ARP (`ARP_REQUEST` + `ARP_REPLY`, bogus MAC, never our
+  own), by default 4 rounds spaced 3s apart (`evict_rounds`/`timeouts.evict_interval`, validated
+  at config build against RFC 5227's 10s `DEFEND_INTERVAL` — `ConfigError` if violated), then an
+  8s settle (`evict_settle`) before measuring the outcome ladder: `no_reaction` < `defended` <
+  `declined` < `rediscovered` < `discover_unanswered` < `apipa`. New `--no-evict` (default on).
+  New findings `CLIENTS_EVICTED_FROM_ADDRESSES` (FAIL, high) / `CLIENTS_DEFENDED_ADDRESSES`
+  (INCONCLUSIVE) / `ARP_CONFLICTS_UNANSWERED` (INCONCLUSIVE) — deliberately no PASS, since
+  "nobody reacted" can't be told apart from "the frames never arrived." **Findings are
+  mode-aware**: under `exhaust` the pool is meant to be drained, so `declined` and above counts
+  as evicted; under `release` the pool is never drained, so a clean restart-and-reacquire
+  (`rediscovered`) is the expected, low-harm result and only `discover_unanswered`/`apipa` count.
+- **`release` restructured onto the shared prelude.** Runs the same chain as `exhaust` minus the
+  windowed sender: ARP inventory → control/self → release → re-acquisition → eviction → findings,
+  via a new `_common_prelude()` extracted from `_exhaust_prelude()`. **Fixes a second real bug**:
+  the old `_release_worker()` ran a control transaction to learn the server identity but never
+  started a sniffer, so the OFFER/ACK reply could never arrive and the control always failed.
+  `release`'s control outcome is stored separately (`self._rel_pre_control`, never
+  `self.control_pre`) so it can never trigger `DHCP_STARVATION_*` — that verdict is exhaust's
+  alone, derived from a control leg `release` doesn't run.
+- **Window growth ratchet slowed 50× (0.5 → 0.01 per clean ACK).** 100 clean ACKs now widen the
+  window by one slot instead of 2 — on any realistic pool the window now stays close to
+  `window_initial` (8) for the whole run, keeping the server's pending-offer table from
+  saturating. New `SessionConfig.window_growth_per_ack` (config-driven, not hardcoded). Growth is
+  now ~5000× slower than `_shrink_window()`'s halving, so a noisy run trends toward the floor of
+  1 rather than climbing back — a deliberate trade-off, see `_grow_window()`'s docstring.
+- **Web UI mode labels relabeled**: "DHCP Exhaustion" / "DHCP Release Active Clients" /
+  "Reset / Recover DHCP Records" / "Find Neighbors". Passive `scan` removed from the dropdown
+  (still a valid CLI subcommand / API mode — `config_from_payload()` unchanged).
+- 264 unit tests passing (up from 200 at the start of 2.3); ruff clean. **Not yet exercised
+  against real hardware** — see AGENT_HANDOFF.md §9/§10.
+
 ## Unreleased — auto-restore-on-exit removed
 
 `--restore-on-exit`/`restore_on_exit` is gone. `release-previous`'s lease journal is now the
