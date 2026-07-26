@@ -258,6 +258,12 @@ def test_evict_flag_from_payload_and_as_cli():
     assert "--no-evict" in schemas.as_cli(cfg)
 
 
+def test_evict_flag_as_cli_also_covers_release_mode():
+    """(2.3, Phase 5) release now runs eviction too -- as_cli() must surface --no-evict there."""
+    cfg = schemas.config_from_payload({"interface": "eth1", "mode": "release", "evict": False})
+    assert "--no-evict" in schemas.as_cli(cfg)
+
+
 def test_token_helpers():
     assert auth.token_ok("abc", "abc")
     assert not auth.token_ok("abc", "xyz")

@@ -89,7 +89,7 @@ def as_cli(cfg: SessionConfig) -> str:
         parts.append("--no-release")
     if not cfg.journal and cfg.mode is Mode.EXHAUST:
         parts.append("--no-journal")
-    if not cfg.evict and cfg.mode is Mode.EXHAUST:
+    if not cfg.evict and cfg.mode in (Mode.EXHAUST, Mode.RELEASE_NEIGHBORS):
         parts.append("--no-evict")
     if cfg.mode is Mode.RELEASE_PREVIOUS:
         if cfg.journal_path:
