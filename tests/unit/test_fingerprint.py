@@ -9,11 +9,22 @@ def test_vendor_class_match():
     assert fp.confidence > 0
 
 
-def test_unknown_signature_is_low_confidence_not_crash():
-    sig = Signature(mac="de:ad:be:ef:00:09", ip="1.1.1.3", prl=[200, 201])
+def test_unknown_signature_falls_back_to_mac_vendor():
+    """No DHCP match -> OUI identification, at a confidence that can't be mistaken for one."""
+    sig = Signature(mac="00:0c:29:be:ef:09", ip="1.1.1.3", prl=[200, 201])
     fp = resolve(sig)
-    assert fp.confidence == 0
-    assert fp.matched_via == "unknown"
+    assert fp.os is None  # no OS claim from a MAC alone
+    assert "VMware" in (fp.vendor or "")
+    assert "VMware" in (fp.device or "") and "MAC vendor" in fp.device
+    assert fp.confidence == 15
+    assert fp.matched_via.startswith("oui:")
+
+
+def test_unknown_signature_and_unknown_oui_is_zero_confidence():
+    sig = Signature(mac="00:00:00:00:00:00", ip="1.1.1.3", prl=[200, 201])
+    fp = resolve(sig)
+    assert fp.confidence in (0, 15)  # 0 if the OUI is unknown too
+    assert fp.os is None
 
 
 # ---------------------------------------------------------------- combined_dhcp_os_lookup.json

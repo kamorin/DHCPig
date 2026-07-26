@@ -91,7 +91,7 @@ def test_dry_run_exhaust_streams_and_sends_nothing(server, monkeypatch):
         "POST",
         "/api/session/start",
         token="TESTTOKEN",
-        body={"interface": "lo", "mode": "exhaust", "rate": 100, "max_leases": 5, "dry_run": True},
+        body={"interface": "lo", "mode": "exhaust", "rate": 100, "dry_run": True},
         origin=f"http://{addr[0]}:{addr[1]}",
     )
     assert status == 200
@@ -115,7 +115,7 @@ def test_dry_run_exhaust_streams_and_sends_nothing(server, monkeypatch):
 def test_single_session_guard(server):
     app, addr = server
     o = f"http://{addr[0]}:{addr[1]}"
-    b = {"interface": "lo", "mode": "exhaust", "dry_run": True, "max_leases": 100}
+    b = {"interface": "lo", "mode": "exhaust", "dry_run": True}
     assert _req(addr, "POST", "/api/session/start", token="TESTTOKEN", body=b, origin=o)[0] == 200
     assert _req(addr, "POST", "/api/session/start", token="TESTTOKEN", body=b, origin=o)[0] == 409
     _req(addr, "POST", "/api/session/stop", token="TESTTOKEN", body={}, origin=o)
@@ -124,7 +124,7 @@ def test_single_session_guard(server):
 def test_report_download_csv(server):
     app, addr = server
     o = f"http://{addr[0]}:{addr[1]}"
-    b = {"interface": "lo", "mode": "exhaust", "dry_run": True, "max_leases": 100}
+    b = {"interface": "lo", "mode": "exhaust", "dry_run": True}
     _req(addr, "POST", "/api/session/start", token="TESTTOKEN", body=b, origin=o)
     conn = HTTPConnection(addr[0], addr[1], timeout=5)
     conn.request(
@@ -194,7 +194,7 @@ def test_sse_serializes_events_with_enums_and_nested_dataclasses():
 # ---------------------------------------------------------------- schemas
 def test_as_cli_roundtrip():
     cfg = schemas.config_from_payload({"interface": "eth1", "mode": "exhaust", "rate": 30})
-    assert schemas.as_cli(cfg) == "dhcpig exhaust eth1 --rate 30 --max-leases 1000"
+    assert schemas.as_cli(cfg) == "dhcpig exhaust eth1 --rate 30"
 
 
 def test_token_helpers():

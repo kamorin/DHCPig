@@ -15,7 +15,15 @@ from dhcpig.core import events as ev
 from dhcpig.core import packets
 from dhcpig.core.engine import DhcpEngine
 from dhcpig.core.events import EventBus
-from dhcpig.core.models import FAIL, INCONCLUSIVE, PASS, ControlOutcome, Lease, Mode, SessionConfig
+from dhcpig.core.models import (
+    FAIL,
+    INCONCLUSIVE,
+    PASS,
+    ControlOutcome,
+    Lease,
+    Mode,
+    SessionConfig,
+)
 
 SERVER = "172.20.15.1"
 
@@ -227,13 +235,63 @@ def test_no_findings_in_dry_run(monkeypatch):
 # ---------------------------------------------------------------- pacing (--rate authoritative)
 def test_sender_does_not_add_fixed_sleep(monkeypatch):
     """--rate is the only pacing mechanism; a 0.4s per-packet sleep would break this."""
-    eng, _, _ = _engine(monkeypatch, dry_run=True, rate_limit_pps=1000, max_leases=None)
+    eng, _, _ = _engine(monkeypatch, dry_run=True, rate_limit_pps=1000)
     # dry-run gets no ACKs, so stop the loop on a timer rather than on a lease count
     threading.Timer(0.5, eng._stop.set).start()
     eng._exhaust_sender()
     # at 1000 pps a half-second window should comfortably clear 25; the old fixed 0.4s
     # sleep capped it at ~2/sec no matter what --rate said
     assert eng.discovers > 25, f"only {eng.discovers} discovers in 0.5s — is a fixed sleep back?"
+
+
+# ---------------------------------------------------------------- auto-finalize
+def test_run_finalizes_itself_when_offers_cease(monkeypatch):
+    """Regression: the run used to sit idle after the pool drained until Stop was pressed.
+
+    The senders exited on EXHAUSTED but nothing called stop(), so no post-control ran and no
+    verdict was ever produced. The engine must now finish the job on its own.
+    """
+    eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST, dry_run=True)
+    eng._started = time.time()
+    eng.cfg.timeouts.offer_silence = 0.2
+    eng.acks = 12
+    eng._offers_seen_any = True
+    eng._last_offer_ts = time.time() - 5.0
+
+    eng._exhaust_sender()
+    for _ in range(200):  # the finisher runs off-thread
+        if eng.state == "DONE":
+            break
+        time.sleep(0.01)
+
+    assert eng.state == "DONE", "engine did not finalize itself"
+    assert any(isinstance(e, ev.PoolExhausted) for e in events)
+    assert any(isinstance(e, ev.SessionEnded) for e in events)
+
+
+def test_offers_ceasing_emits_progress_before_the_verdict(monkeypatch):
+    """The quiet window should report progress, not look like a hang."""
+    eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST, dry_run=True)
+    eng._started = time.time()
+    eng.cfg.timeouts.offer_silence = 30.0  # long window, so we stay in the quiet period
+    eng._offers_seen_any = True
+    eng._last_offer_ts = time.time() - 3.0  # quiet for 3s: past the 2s notice, short of 30s
+    threading.Timer(0.3, eng._stop.set).start()
+
+    eng._exhaust_sender()
+
+    ceased = [e for e in events if isinstance(e, ev.OffersCeased)]
+    assert len(ceased) == 1, "expected exactly one progress notice while offers were quiet"
+    assert ceased[0].deadline == 30.0
+    assert not any(isinstance(e, ev.PoolExhausted) for e in events)  # not yet
+
+
+def test_finish_in_background_is_idempotent(monkeypatch):
+    eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST, dry_run=True)
+    eng._started = time.time()
+    eng._finish_in_background("first")
+    eng._finish_in_background("second")  # must not spawn a second finisher
+    assert eng._finishing.is_set()
 
 
 # ---------------------------------------------------------------- report surface
@@ -258,11 +316,9 @@ def test_report_carries_findings_and_controls():
             outcome=ControlOutcome(phase="pre", attempted=True, success=True, offered_ip="10.0.0.5")
         )
     )
-    rec.handle(ev.LimitReached(leases=5, elapsed=1.0))
     data = rec.to_dict()
     assert data["findings"][0]["id"] == "DHCP_STARVATION_POSSIBLE"
     assert data["control_transactions"][0]["phase"] == "pre"
-    assert data["limit_reached"] is True
     assert data["pool_exhausted"] is False
 
     text, _ = rec.render("html")

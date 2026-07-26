@@ -5,7 +5,7 @@ from scapy.all import ARP, BOOTP, DHCP, IP, UDP, Ether, mac2str
 from dhcpig.core import engine as engine_mod
 from dhcpig.core import events as ev
 from dhcpig.core import netutils, packets
-from dhcpig.core.engine import LIMIT_REACHED, DhcpEngine
+from dhcpig.core.engine import EXHAUSTED, DhcpEngine
 from dhcpig.core.events import EventBus, to_dict
 from dhcpig.core.fingerprint import extract_signature, resolve
 from dhcpig.core.models import IPVersion, Lease, Mode, SessionConfig
@@ -101,13 +101,22 @@ def test_engine_offer_then_ack_flow(monkeypatch):
     assert any(isinstance(e, ev.RequestSent) for e in events)
 
 
-def test_exhaust_sender_hits_max_leases(monkeypatch):
-    eng, events, _ = _engine(monkeypatch, max_leases=0)
-    eng._exhaust_sender()  # returns immediately: acks(0) >= max_leases(0)
-    # hitting our own cap is LIMIT_REACHED, never a claim about the server's pool
-    assert eng.state == LIMIT_REACHED
-    assert any(isinstance(e, ev.LimitReached) for e in events)
-    assert not any(isinstance(e, ev.PoolExhausted) for e in events)
+def test_exhaust_sender_stops_when_offers_cease(monkeypatch):
+    """The only self-terminating condition is the *server* going quiet — there is no lease cap."""
+    import time as _t
+
+    eng, events, _ = _engine(monkeypatch)
+    eng._started = _t.time()
+    eng.cfg.timeouts.offer_silence = 0.2
+    eng._offers_seen_any = True  # offers flowed...
+    eng._last_offer_ts = _t.time() - 5.0  # ...and then stopped 5s ago
+    eng._exhaust_sender()
+    # EXHAUSTED, or already DONE if the background finisher beat us here — both are correct
+    assert eng.state in (EXHAUSTED, "DONE")
+    exhausted = [e for e in events if isinstance(e, ev.PoolExhausted)]
+    assert len(exhausted) == 1
+    assert exhausted[0].confirmed is False  # provisional until the post-control confirms
+    assert eng._finishing.is_set()  # finalizes itself, no operator Stop required
 
 
 def test_status_shape(monkeypatch):
@@ -149,9 +158,11 @@ def test_neighbor_carries_fingerprint_when_dhcp_seen_before_arp(monkeypatch):
 def test_neighbor_fingerprint_backfilled_when_dhcp_seen_after_arp(monkeypatch):
     eng, events, _ = _engine(monkeypatch, mode=Mode.SCAN)
     mac = "de:ad:be:ef:00:04"
-    eng._on_scan(_arp_is_at(mac, "172.20.0.51"))  # ARP first, no fingerprint yet
+    eng._on_scan(_arp_is_at(mac, "172.20.0.51"))  # ARP first: OUI-only, no DHCP evidence yet
     first = [e.neighbor for e in events if isinstance(e, ev.NeighborFound)][-1]
-    assert first.fingerprint is None
+    assert first.fingerprint is not None
+    assert first.fingerprint.os is None  # OUI alone never claims an OS
+    assert first.fingerprint.confidence <= 15
     eng._on_scan(packets.build_discover_v4(mac, 4, mac))  # DHCP arrives -> backfills the row
     neighbor_events = [e for e in events if isinstance(e, ev.NeighborFound)]
     assert len(neighbor_events) == 2  # initial ARP sighting + the fingerprint-triggered refresh

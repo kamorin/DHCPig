@@ -124,7 +124,11 @@ def test_exhaust_grants_then_releases(veth_pair):
 
     bus = EventBus()
     cfg = SessionConfig(
-        interface=VETH_A, mode=Mode.EXHAUST, rate_limit_pps=200, max_leases=3, restore_on_exit=True
+        interface=VETH_A,
+        mode=Mode.EXHAUST,
+        rate_limit_pps=200,
+        restore_on_exit=True,
+        control=False,  # the fake server has no notion of a "real" NIC MAC baseline
     )
     engine = DhcpEngine(cfg, bus)
     engine.start()

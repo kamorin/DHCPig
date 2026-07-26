@@ -41,7 +41,6 @@ class SessionRecorder:
         self.naks: list[dict] = []
         self.exhausted = False
         self.exhaustion_confirmed = False
-        self.limit_reached = False
 
     def handle(self, event: ev.Event) -> None:
         if isinstance(event, ev.ServerDiscovered):
@@ -60,8 +59,6 @@ class SessionRecorder:
             self.findings.append(asdict(event.finding))
         elif isinstance(event, ev.ControlFinished):
             self.controls.append(asdict(event.outcome))
-        elif isinstance(event, ev.LimitReached):
-            self.limit_reached = True
         elif isinstance(event, ev.PoolExhausted):
             self.exhausted = True
             if event.confirmed:
@@ -99,7 +96,6 @@ class SessionRecorder:
                 # the verdicts, and the control transactions that make them trustworthy
                 "findings": self.findings,
                 "control_transactions": self.controls,
-                "limit_reached": self.limit_reached,
                 "pool_exhausted": self.exhausted,
                 "pool_exhaustion_confirmed": self.exhaustion_confirmed,
             }
@@ -274,7 +270,6 @@ font-size:13px;text-align:left}}th{{background:#f2f2f2}}
 <b>Mode:</b> {escape(str(data.get("mode")))} &nbsp;
 <b>Exhausted:</b> {escape(str(data.get("pool_exhausted")))}
 (confirmed: {escape(str(data.get("pool_exhaustion_confirmed")))}) &nbsp;
-<b>Limit reached:</b> {escape(str(data.get("limit_reached")))} &nbsp;
 <b>Scope:</b> {escape(str(data.get("scope_cidrs")))} &nbsp;
 <b>Fingerprint DB:</b> {escape(str(data.get("fingerprint_db")))}</p>
 <h2>Findings</h2>

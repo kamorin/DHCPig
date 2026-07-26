@@ -22,6 +22,27 @@ device is reported with lower confidence and flagged ambiguous in `matched_via`.
 To refresh coverage, regenerate `combined_dhcp_os_lookup.json` from newer source exports and
 drop it in this directory — `dhcpig.core.fingerprint` loads whatever is present.
 
+## MAC vendor (OUI) data
+
+Hosts with no usable DHCP fingerprint — ARP-only neighbours especially — are identified by the
+hardware vendor of their MAC. Two offline sources, no API:
+
+- **IEEE OUI registry**, via **scapy's bundled Wireshark `manuf` database** (~50,000 MA-L/MA-M/
+  MA-S assignments). scapy is already DHCPig's only runtime dependency, so this ships for free
+  and needs no separate copy of the registry. Wireshark's `manuf` is GPL-2.0-or-later, same as
+  this project, and is refreshed with each scapy release.
+- **`mac-vendor.txt`** — vendored from [arp-scan](https://github.com/royhills/arp-scan) (GPLv3).
+  A deliberately small supplement of prefixes the IEEE registry does *not* contain: QEMU, Bochs,
+  Cisco HSRP, VRRP/CARP, Microsoft WLBS, OpenBSD randomised MACs, broadcast. Longest prefix
+  wins, so these override the IEEE match (e.g. `00:00:0c:07:ac:*` is HSRP, not plain Cisco).
+
+Unresolved MACs are checked for the locally-administered bit and labelled as randomised/spoofed
+rather than left blank — that covers modern phone MAC randomisation and DHCPig's own clients.
+
+To bundle a standalone copy of the IEEE registry instead of relying on scapy's, fetch
+`https://standards-oui.ieee.org/oui/oui.csv` and teach `core/oui.py` to read it; the lookup
+order is already structured for it.
+
 `fingerprints.json` is a small original fallback table (authored for DHCPig, GPL-2.0-or-later)
 used only when the combined DB has no exact option-55 match: a couple of representative
 option-55 orders plus option-60 vendor-class-substring and MAC-OUI hints for signals the

@@ -11,7 +11,7 @@ import sys
 import time
 from pathlib import Path
 
-from ..core.engine import DONE, EXHAUSTED, LIMIT_REACHED, DhcpEngine
+from ..core.engine import DONE, EXHAUSTED, DhcpEngine
 from ..core.events import EventBus
 from ..core.exceptions import ConfigError, Unauthorized
 from ..core.models import IPVersion, Mode, SessionConfig, Timeouts
@@ -54,11 +54,17 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--ipv6", action="store_true", help="DHCPv6 (default v4)")
         sp.add_argument("--report", metavar="FILE", help="write a JSON session report")
         sp.add_argument("-v", "--verbosity", type=int, default=2, help="0..3")
+        sp.add_argument(
+            "--status-interval",
+            type=float,
+            default=5.0,
+            metavar="SEC",
+            help="periodic status line with running stats (default 5s; 0 disables)",
+        )
 
     ex = sub.add_parser("exhaust", help="consume the DHCP pool (non-destructive)")
     common(ex)
     ex.add_argument("--rate", type=int, default=50, help="max packets/sec (safety cap)")
-    ex.add_argument("--max-leases", type=int, default=1000)
     ex.add_argument("--threads", type=int, default=1)
     ex.add_argument("--request-option", default=None, help="e.g. 12,14-19,23")
     ex.add_argument("--client-mac", action="append", dest="client_macs")
@@ -77,7 +83,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ex.add_argument("--fuzz", action="store_true")
     ex.add_argument("--dry-run", action="store_true")
-    ex.add_argument("--no-restore", action="store_true")
+    # leases are kept by default so the exhausted state can be observed/verified
+    ex.add_argument(
+        "--restore-on-exit",
+        dest="restore_on_exit",
+        action="store_true",
+        help="release acquired leases when the run ends (default: keep them, then "
+        "`dhcpig restore <iface>` when you are done)",
+    )
+    ex.add_argument("--no-restore", action="store_true", help=argparse.SUPPRESS)  # legacy no-op
     ex.add_argument(
         "--no-control",
         dest="no_control",
@@ -112,7 +126,6 @@ def build_parser() -> argparse.ArgumentParser:
         d.add_argument("--i-am-authorized", action="store_true", dest="authorized")
         d.add_argument("--yes", action="store_true", help="skip interactive confirmation")
         d.add_argument("--rate", type=int, default=20)
-        d.add_argument("--max-leases", type=int, default=100)
         d.add_argument("--dry-run", action="store_true")
 
     rs = sub.add_parser("restore", help="release leases acquired by a prior run")
@@ -148,13 +161,15 @@ def build_config(args) -> SessionConfig:
         fuzz=getattr(args, "fuzz", False),
         threads=getattr(args, "threads", 1),
         rate_limit_pps=getattr(args, "rate", 50),
-        max_leases=getattr(args, "max_leases", 1000),
         dry_run=getattr(args, "dry_run", False),
         authorized=getattr(args, "authorized", False),
         scope_cidrs=scope,
-        restore_on_exit=not getattr(args, "no_restore", False),
+        restore_on_exit=(
+            getattr(args, "restore_on_exit", False) and not getattr(args, "no_restore", False)
+        ),
         report_path=Path(args.report) if getattr(args, "report", None) else None,
         control=not getattr(args, "no_control", False),
+        status_interval=getattr(args, "status_interval", 5.0),
         timeouts=Timeouts(),
         verbosity=getattr(args, "verbosity", 2),
     )
@@ -227,7 +242,7 @@ def _run_session(cfg: SessionConfig, yes: bool = False) -> int:
         deadline_noserver = time.time() + max(20.0, cfg.timeouts.dhcp_request * 20)
         while True:
             time.sleep(0.5)
-            if engine.state in (EXHAUSTED, LIMIT_REACHED, DONE):
+            if engine.state in (EXHAUSTED, DONE):
                 break
             if (
                 cfg.mode is Mode.EXHAUST

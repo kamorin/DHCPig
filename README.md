@@ -23,7 +23,7 @@ INSTALL
 USAGE (V1.0 — CLI)
 ------------------
 
-    sudo dhcpig exhaust eth1 --rate 50 --max-leases 500 --report run.json
+    sudo dhcpig exhaust eth1 --rate 50 --report run.json
     sudo dhcpig scan eth1 --report inventory.json          # passive, read-only
     sudo dhcpig release eth1 --scope 172.20.0.0/16 --i-am-authorized   # DESTRUCTIVE
     sudo dhcpig garp    eth1 --scope 172.20.0.0/16 --i-am-authorized   # DESTRUCTIVE
@@ -34,10 +34,15 @@ Safety flags:
 
     --dry-run            build + log packets, send nothing on the wire
     --rate N             cap packets/sec (authoritative — the only pacing mechanism)
-    --max-leases N       hard cap on leases consumed
     --scope CIDR         restrict destructive actions to these networks (repeatable)
     --i-am-authorized    required for release/garp; you attest you have permission
     --no-control         skip the control transaction (see below; not recommended)
+    --restore-on-exit    release the acquired leases when the run ends
+    --status-interval N  periodic status line, default every 5s (0 disables)
+
+Leases are **kept by default** so the exhausted state can be observed and verified after the
+run. Release them with `sudo dhcpig restore eth1` (or the Restore button in the web UI) when
+you are done. `--rate` is the remaining bound on how fast a run can consume a pool.
 
 CONTROL TRANSACTION & FINDINGS
 ------------------------------
@@ -57,8 +62,12 @@ This is what makes a null result meaningful:
 
 Runs end with **findings** — an ID, verdict, severity, the evidence behind it, and a
 recommendation — printed by the CLI, shown in the web UI's Findings tab, and included in the
-JSON/HTML reports. Note that `LIMIT REACHED` (your `--max-leases` cap) and `POOL EXHAUSTED`
-(the server stopped serving) are reported as different things and must not be confused.
+JSON/HTML reports.
+
+A run **ends by itself**: once offers stop arriving for `offer_silence` seconds (10s by
+default) the pool is treated as drained, and the engine runs the post-control and produces the
+verdict without waiting for you to press Stop. `POOL EXHAUSTED` therefore only ever refers to
+the server ceasing to serve — there is no self-imposed lease cap that could be mistaken for it.
 
 Legacy `./pig.py eth1` still works via a deprecated shim.
 
@@ -85,6 +94,18 @@ MODES
 * __release__     — DHCPRELEASE for in-scope neighbors (DESTRUCTIVE, gated).
 * __garp__        — standalone gratuitous-ARP flood, no exhaustion phase (DESTRUCTIVE, gated).
 
+STATUS OUTPUT
+-------------
+
+At normal verbosity a status line is printed every 5 seconds with running totals, the change
+over the last window, and rates — so you can tell a working run from a stalled one:
+
+    [##] t=220s  RUNNING  leases 1022 (+0 in 5s, 0.0/s)  discovers 4300 (+250 in 5s, 50.0/s)
+         offers 1030 (+0 in 5s)  servers 1  last offer 6s ago
+
+Leases flat while discovers keep climbing, with `last offer` growing, is the pool draining.
+Counters that are idle are left out. Use `--status-interval 0` to switch it off.
+
 FINGERPRINTING
 --------------
 
@@ -98,6 +119,12 @@ confidence and flagged ambiguous. Drop a refreshed `combined_dhcp_os_lookup.json
 `src/dhcpig/data/` to update coverage; see `data/DATA_ATTRIBUTION.md`. In `scan`/`active-scan`,
 neighbors discovered via ARP are automatically paired with any DHCP fingerprint seen for the
 same MAC, so the Neighbors table shows OS/Device whichever signal arrives first.
+
+Hosts with **no** usable DHCP fingerprint fall back to **MAC vendor** identification, so the
+OS/Device column is never blank: scapy's bundled IEEE/Wireshark OUI database (~50k entries,
+offline) plus a small `mac-vendor.txt` from arp-scan for prefixes the IEEE registry omits
+(QEMU, HSRP, VRRP/CARP, WLBS). These are shown as `Vendor (MAC vendor)` at low confidence —
+a NIC manufacturer is not an OS. Randomised/locally-administered MACs are labelled as such.
 
 DEFENSE
 -------

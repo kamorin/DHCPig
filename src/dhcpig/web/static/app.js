@@ -35,7 +35,6 @@ function currentConfig() {
     interface: $("iface").value,
     mode: $("mode").value,
     rate: +$("rate").value,
-    max_leases: +$("maxleases").value,
     threads: +$("threads").value,
     dry_run: $("dryrun").checked,
     authorized: $("authorized").checked,
@@ -52,7 +51,6 @@ function applyConfig(c) {
   if (c.interface) $("iface").value = c.interface;
   if (c.mode) $("mode").value = c.mode;
   if (c.rate != null) $("rate").value = c.rate;
-  if (c.max_leases != null) $("maxleases").value = c.max_leases;
   if (c.threads != null) $("threads").value = c.threads;
   if (c.dry_run != null) $("dryrun").checked = c.dry_run;
   if (c.authorized != null) $("authorized").checked = c.authorized;
@@ -68,7 +66,7 @@ function setRunning(on) {
   $("start").disabled = on;
   $("stop").disabled = !on;
   $("restore").disabled = on;
-  ["iface", "mode", "rate", "maxleases", "threads", "dryrun", "norestore", "scope",
+  ["iface", "mode", "rate", "threads", "dryrun", "norestore", "scope",
     "authorized", "spoofeth", "control"].forEach((id) => ($(id).disabled = on));
 }
 
@@ -135,7 +133,7 @@ function renderServers() {
     const fp = s.fingerprint || {};
     tb.insertAdjacentHTML("beforeend",
       `<tr><td>${s.server_id}</td><td>${s.offers_seen}</td>` +
-      `<td>${fp.os || fp.device || ""}</td><td>${fp.confidence ?? ""}</td></tr>`);
+      `<td>${fp.os || fp.device || fp.vendor || ""}</td><td>${fp.confidence ?? ""}</td></tr>`);
   }
 }
 function renderNeighbors() {
@@ -145,7 +143,7 @@ function renderNeighbors() {
     const fp = n.fp || {};
     tb.insertAdjacentHTML("beforeend",
       `<tr><td>${n.ip}</td><td>${n.mac}</td>` +
-      `<td>${fp.os || fp.device || ""}</td><td>${fp.confidence ?? ""}</td></tr>`);
+      `<td>${fp.os || fp.device || fp.vendor || ""}</td><td>${fp.confidence ?? ""}</td></tr>`);
   }
 }
 const findings = [];
@@ -255,10 +253,30 @@ function handleEvent(e) {
     case "LeaseReleased": logLine("out", `[->] DHCPRELEASE  ${e.lease.ip}`, 2); break;
     case "GarpSent": logLine("out", `[->] Gratuitous_ARP knock offline ${e.ip}`, 2); break;
     case "Skipped": logLine("alert", `[!!] SKIPPED ${e.ip}  ${e.reason}`, 1); break;
-    case "LimitReached":
+    case "StatusTick": {
+      const s = e.stats, w = Math.round(s.window || 0);
+      const bits = [`t=${Math.round(s.elapsed || 0)}s`, s.state];
+      const col = (label, key, rateKey) => {
+        const total = s[key] || 0, d = s["d_" + key] || 0;
+        if (!total && !d) return;
+        const rate = rateKey && s[rateKey] != null ? `, ${s[rateKey]}/s` : "";
+        bits.push(`${label} ${total} (+${d} in ${w}s${rate})`);
+      };
+      col("leases", "leases", "lease_pps");
+      col("discovers", "discovers", "discover_pps");
+      col("offers", "offers"); col("naks", "naks");
+      col("releases", "releases"); col("garps", "garps");
+      if (s.servers) bits.push(`servers ${s.servers}`);
+      if (s.neighbors) bits.push(`neighbors ${s.neighbors}`);
+      if (s.since_last_offer != null) bits.push(`last offer ${Math.round(s.since_last_offer)}s ago`);
+      logLine("stat", "[##] " + bits.join("  "), 2);
+      break;
+    }
+    case "OffersCeased":
       logLine("note",
-        `[--] LIMIT REACHED leases=${e.leases} (your max-leases cap, not the server's pool)`, 1);
-      $("state").textContent = "LIMIT_REACHED"; break;
+        `[--] offers quiet ${e.quiet_for.toFixed(0)}s after ${e.leases} lease(s) — ` +
+        `declaring exhaustion at ${e.deadline.toFixed(0)}s`, 1);
+      $("state").textContent = "DRAINING?"; break;
     case "PoolExhausted":
       logLine("alert",
         `[!!] POOL EXHAUSTED leases=${e.leases} ` +
@@ -390,10 +408,12 @@ $("copycli").addEventListener("click", async () => {
 });
 function cliFromConfig() {
   const c = currentConfig();
-  let s = `dhcpig ${c.mode} ${c.interface} --rate ${c.rate} --max-leases ${c.max_leases}`;
+  let s = `dhcpig ${c.mode} ${c.interface} --rate ${c.rate}`;
+  if (c.restore_on_exit) s += " --restore-on-exit";
   (c.scope_cidrs || []).forEach((x) => (s += ` --scope ${x}`));
   if (c.authorized) s += " --i-am-authorized";
   if (c.dry_run) s += " --dry-run";
+  if (!c.control && c.mode === "exhaust") s += " --no-control";
   return s;
 }
 

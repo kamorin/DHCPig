@@ -60,6 +60,7 @@ th { color: var(--muted); font-weight: 600; }
 #log .note { color: var(--muted); } #log .alert { color: var(--bad); }
 #log .dbg { color: #b48ead; }  /* purple debug */
 #log .ctl { color: #4ec9b0; }  /* control transaction */
+#log .stat { color: #6ab0ff; font-weight: 600; }  /* periodic status heartbeat */
 #log .finding { color: var(--fg); font-weight: 700; }
 
 /* findings tab */

@@ -16,6 +16,7 @@ _COLORS = {
     "DBG": "\033[35m",  # purple debug
     "CTL": "\033[1;36m",  # bright cyan — control transaction
     "==": "\033[1;37m",  # bright white — findings/verdicts
+    "##": "\033[1;34m",  # bright blue — periodic status
 }
 _RESET = "\033[0m"
 
@@ -37,9 +38,16 @@ class Renderer:
             return
         if self.verbosity == 1:
             sys.stdout.write(
-                {"->": ".", "<-": ";", "--": "N", "!!": "!", "??": "?", "XX": "E", "DBG": "D"}.get(
-                    tag, "."
-                )
+                {
+                    "->": ".",
+                    "<-": ";",
+                    "--": "N",
+                    "!!": "!",
+                    "??": "?",
+                    "XX": "E",
+                    "DBG": "D",
+                    "##": "S",
+                }.get(tag, ".")
             )
             sys.stdout.flush()
             return
@@ -79,10 +87,12 @@ class Renderer:
             tail = f"  fp={fp.os or fp.device or 'unknown'}" if fp else ""
             self._line("--", f"DHCP server {e.server.server_id}{tail}")
         elif isinstance(e, ev.NeighborFound):
-            self._line("<-", f"ARP {e.neighbor.ip} : {e.neighbor.mac}")
+            fp = e.neighbor.fingerprint
+            who = f"  {fp.os or fp.device or fp.vendor}" if fp and (fp.os or fp.device) else ""
+            self._line("<-", f"ARP {e.neighbor.ip} : {e.neighbor.mac}{who}")
         elif isinstance(e, ev.HostFingerprinted):
             fp = e.fp
-            label = fp.os or fp.device or "unknown"
+            label = fp.os or fp.device or fp.vendor or "unknown"
             self._line("--", f"host {fp.mac}  {label}  conf {fp.confidence}%  via {fp.matched_via}")
         elif isinstance(e, ev.LeaseReleased):
             self._line("->", f"DHCPRELEASE  {e.lease.ip}   (in scope)")
@@ -90,11 +100,14 @@ class Renderer:
             self._line("->", f"Gratuitous_ARP  knock offline {e.ip}   (in scope)")
         elif isinstance(e, ev.Skipped):
             self._line("!!", f"SKIPPED      {e.ip}   {e.reason}")
-        elif isinstance(e, ev.LimitReached):
+        elif isinstance(e, ev.StatusTick):
+            if self.verbosity >= 2:  # normal level: this is the run's pulse
+                self._line("##", status_summary(e.stats))
+        elif isinstance(e, ev.OffersCeased):
             self._line(
                 "--",
-                f"LIMIT REACHED   leases={e.leases}  in {e.elapsed:.0f}s "
-                f"(your --max-leases cap, not the server's pool)",
+                f"offers quiet for {e.quiet_for:.0f}s after {e.leases} lease(s) — "
+                f"declaring exhaustion at {e.deadline:.0f}s of silence",
             )
         elif isinstance(e, ev.PoolExhausted):
             suffix = (
@@ -114,6 +127,41 @@ class Renderer:
         elif isinstance(e, ev.Debug):
             if self.verbosity >= 3:  # debug detail only at highest verbosity
                 self._line("DBG", e.message)
+
+
+def status_summary(s: dict) -> str:
+    """One-line run pulse: totals with per-window deltas, so a stalled run is obvious.
+
+    Only counters that are actually moving (or non-zero) are shown, so a scan run doesn't
+    carry empty lease/garp columns around.
+    """
+    w = s.get("window", 0)
+    parts = [f"t={s.get('elapsed', 0):.0f}s", str(s.get("state", ""))]
+
+    def col(label: str, total_key: str, rate: str | None = None) -> None:
+        total = s.get(total_key, 0)
+        delta = s.get(f"d_{total_key}", 0)
+        if not total and not delta:
+            return
+        chunk = f"{label} {total} (+{delta} in {w:.0f}s"
+        if rate and s.get(rate) is not None:
+            chunk += f", {s[rate]}/s"
+        parts.append(chunk + ")")
+
+    col("leases", "leases", "lease_pps")
+    col("discovers", "discovers", "discover_pps")
+    col("offers", "offers")
+    col("naks", "naks")
+    col("releases", "releases")
+    col("garps", "garps")
+    if s.get("servers"):
+        parts.append(f"servers {s['servers']}")
+    if s.get("neighbors"):
+        parts.append(f"neighbors {s['neighbors']}")
+    quiet = s.get("since_last_offer")
+    if quiet is not None:
+        parts.append(f"last offer {quiet:.0f}s ago")
+    return "  ".join(parts)
 
 
 def _control_summary(out) -> str:
