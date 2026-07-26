@@ -46,6 +46,7 @@ def config_from_payload(payload: dict) -> SessionConfig:
         restore_on_exit=bool(payload.get("restore_on_exit", False)),
         control=bool(payload.get("control", True)),
         arp_sweep=bool(payload.get("arp_sweep", True)),
+        release_neighbors=bool(payload.get("release_neighbors", True)),
         status_interval=float(payload.get("status_interval", 5.0) or 0),
         verbosity=_as_int(payload.get("verbosity", 2), "verbosity", lo=0, hi=3),
     )
@@ -64,4 +65,8 @@ def as_cli(cfg: SessionConfig) -> str:
         parts.append("--dry-run")
     if not cfg.control and cfg.mode is Mode.EXHAUST:
         parts.append("--no-control")
+    if not cfg.arp_sweep and cfg.mode is Mode.EXHAUST:
+        parts.append("--no-arp-scan")
+    if not cfg.release_neighbors and cfg.mode is Mode.EXHAUST:
+        parts.append("--no-release")
     return " ".join(parts)

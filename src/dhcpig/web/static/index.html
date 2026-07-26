@@ -59,6 +59,10 @@ state can be verified. Run `dhcpig restore <iface>` when you are done.">
       <label class="chk" title="ARP-sweep the segment before exhausting, to record which hosts
 were present beforehand.">
         <input type="checkbox" id="arpscan" checked /> ARP scan before run</label>
+      <label class="chk" title="Send DHCPRELEASE for every ARP-discovered neighbor before
+exhausting, so the pool actually has addresses to give up rather than only whatever was
+already free. Needs a known server (from the control transaction) to work.">
+        <input type="checkbox" id="releasefirst" checked /> release neighbours first</label>
     </section>
 
     <section class="panel dashboard">

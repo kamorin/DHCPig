@@ -86,9 +86,26 @@ def build_request_v4(offer, src_mac: str) -> Ether:
     )
 
 
-def build_release_v4(mac: str, ip: str, server_ip: str, xid: int) -> IP:
+def build_release_v4(
+    mac: str,
+    ip: str,
+    server_ip: str,
+    xid: int,
+    server_mac: str | None = None,
+    src_mac: str | None = None,
+) -> Ether:
+    """RELEASE is sent via `_send()`, which is an L2 `sendp()` — so it needs an Ether layer.
+
+    (BUG FIX, 2.1) Earlier builds returned an L3-only packet here, so every RELEASE this tool
+    ever sent was malformed on the wire. RFC 2131 has RELEASE unicast to the server; if the
+    server's MAC isn't known yet, fall back to broadcast rather than fail outright — some
+    stacks still accept it.
+
+    `src_mac` defaults to `mac` (the releasing client's own hardware address).
+    """
     return (
-        IP(src=ip, dst=server_ip)
+        Ether(src=src_mac or mac, dst=server_mac or "ff:ff:ff:ff:ff:ff")
+        / IP(src=ip, dst=server_ip)
         / UDP(sport=68, dport=67)
         / BOOTP(ciaddr=ip, chaddr=[mac2str(mac)], xid=xid)
         / DHCP(

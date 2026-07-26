@@ -307,8 +307,8 @@ def test_sender_does_not_add_fixed_sleep(monkeypatch):
 
 
 # ---------------------------------------------------------------- pre-run ARP sweep
-def test_prelude_sweeps_then_controls_then_senders(monkeypatch):
-    """Baseline inventory and controls must both precede the first DISCOVER."""
+def test_prelude_sweeps_then_controls_then_release_then_senders(monkeypatch):
+    """Baseline inventory, controls, and the release phase must all precede the first DISCOVER."""
     eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
     order = []
     monkeypatch.setattr(eng, "_baseline_arp_scan", lambda: order.append("arp"))
@@ -319,9 +319,10 @@ def test_prelude_sweeps_then_controls_then_senders(monkeypatch):
             order.append(f"ctl-{phase}-{client}") or ControlOutcome(phase=phase, client=client)
         ),
     )
+    monkeypatch.setattr(eng, "_release_phase", lambda: order.append("release"))
     monkeypatch.setattr(eng, "_start_senders", lambda: order.append("senders"))
     eng._exhaust_prelude()
-    assert order == ["arp", "ctl-pre-self", "ctl-pre-new", "senders"]
+    assert order == ["arp", "ctl-pre-self", "ctl-pre-new", "release", "senders"]
 
 
 def test_arp_sweep_can_be_disabled(monkeypatch):
@@ -361,6 +362,94 @@ def test_destructive_discovery_is_not_widened_by_the_sweep_fallback(monkeypatch)
     monkeypatch.setattr("scapy.all.srp", fake_srp)
     eng._discover_neighbors()  # no cidrs argument -> scope only
     assert all(t.startswith("10.9.9.") for t in seen["targets"])
+
+
+# ---------------------------------------------------------------- release phase (exhaust)
+from dhcpig.core.models import Neighbor  # noqa: E402
+
+
+def test_release_phase_skipped_without_a_known_server(monkeypatch):
+    """BUG FIX (2.1): must never fall back to server_id=0.0.0.0 — skip instead."""
+    eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
+    eng._neighbors_by_mac["de:ad:00:00:00:01"] = Neighbor("de:ad:00:00:00:01", "10.0.0.5")
+    called = []
+    monkeypatch.setattr(eng, "_do_release", lambda *a, **k: called.append(a) or 0)
+    assert eng.control_pre is None
+    eng._release_phase()
+    assert called == []
+    assert any(isinstance(e, ev.Debug) and "skipped" in e.message for e in events)
+
+
+def test_release_phase_disabled_by_config(monkeypatch):
+    eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST, release_neighbors=False)
+    eng.control_pre = ControlOutcome(
+        phase="pre", client="self", attempted=True, success=True, server_id="10.0.0.1"
+    )
+    called = []
+    monkeypatch.setattr(eng, "_do_release", lambda *a, **k: called.append(a) or 0)
+    eng._release_phase()
+    assert called == []
+
+
+def test_release_phase_uses_server_from_pre_control(monkeypatch):
+    """The server identity comes from control_pre, never a guess — this is the actual bug fix."""
+    eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
+    eng.control_pre = ControlOutcome(
+        phase="pre",
+        client="self",
+        attempted=True,
+        success=True,
+        server_id="10.0.0.1",
+        server_mac="aa:bb:cc:dd:ee:ff",
+    )
+    eng._neighbors_by_mac["de:ad:00:00:00:01"] = Neighbor("de:ad:00:00:00:01", "10.0.0.5")
+    captured = {}
+
+    def fake_do_release(neighbors, server_ip, server_mac=None):
+        captured["neighbors"] = neighbors
+        captured["server_ip"] = server_ip
+        captured["server_mac"] = server_mac
+        return len(neighbors)
+
+    monkeypatch.setattr(eng, "_do_release", fake_do_release)
+    monkeypatch.setattr(eng, "_reprobe_released", lambda neighbors: 0)
+    monkeypatch.setattr(eng, "_release_gateway", lambda: None)
+    eng._release_phase()
+    assert captured["server_ip"] == "10.0.0.1"
+    assert captured["server_ip"] != "0.0.0.0"
+    assert captured["server_mac"] == "aa:bb:cc:dd:ee:ff"
+    ids = [e.finding.id for e in events if isinstance(e, ev.FindingRaised)]
+    assert "NEIGHBOR_LEASES_RELEASED" in ids
+
+
+def test_release_phase_excludes_gateway_and_server(monkeypatch):
+    """Releasing the gateway's own lease is disruption out of proportion to the address gained."""
+    eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
+    eng.control_pre = ControlOutcome(
+        phase="pre", client="self", attempted=True, success=True, server_id="10.0.0.1"
+    )
+    eng._neighbors_by_mac = {
+        "de:ad:00:00:00:01": Neighbor("de:ad:00:00:00:01", "10.0.0.1"),  # the DHCP server itself
+        "de:ad:00:00:00:02": Neighbor("de:ad:00:00:00:02", "10.0.0.254"),  # gateway
+        "de:ad:00:00:00:03": Neighbor("de:ad:00:00:00:03", "10.0.0.5"),  # ordinary host
+    }
+    captured = {}
+
+    def fake_do_release(neighbors, sid, server_mac=None):
+        captured["neighbors"] = neighbors
+        return 0
+
+    monkeypatch.setattr(eng, "_do_release", fake_do_release)
+    monkeypatch.setattr(eng, "_reprobe_released", lambda neighbors: 0)
+    monkeypatch.setattr(eng, "_release_gateway", lambda: "10.0.0.254")
+    eng._release_phase()
+    ips = {n.ip for n in captured["neighbors"]}
+    assert ips == {"10.0.0.5"}
+
+
+def test_release_phase_dry_run_reprobe_sends_nothing(monkeypatch):
+    eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST, dry_run=True)
+    assert eng._reprobe_released([Neighbor("de:ad:00:00:00:01", "10.0.0.5")]) == 0
 
 
 # ---------------------------------------------------------------- auto-finalize

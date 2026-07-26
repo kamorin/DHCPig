@@ -103,6 +103,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="skip the pre-run ARP sweep that inventories who was on the segment beforehand",
     )
+    ex.add_argument(
+        "--no-release",
+        dest="no_release",
+        action="store_true",
+        help="skip releasing ARP-discovered neighbors' leases before exhausting (default: on)",
+    )
 
     sc = sub.add_parser("scan", help="passive ARP + DHCP fingerprint (read-only)")
     common(sc)
@@ -177,6 +183,7 @@ def build_config(args) -> SessionConfig:
         report_path=Path(args.report) if getattr(args, "report", None) else None,
         control=not getattr(args, "no_control", False),
         arp_sweep=not getattr(args, "no_arp_scan", False),
+        release_neighbors=not getattr(args, "no_release", False),
         status_interval=getattr(args, "status_interval", 5.0),
         timeouts=Timeouts(),
         verbosity=getattr(args, "verbosity", 2),
