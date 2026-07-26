@@ -15,8 +15,9 @@ from ..core.engine import DONE, EXHAUSTED, DhcpEngine
 from ..core.events import EventBus
 from ..core.exceptions import ConfigError
 from ..core.models import (
-    DESTRUCTIVE_MODES,
+    DESTRUCTIVE_MODES,  # noqa: F401 -- re-exported: tests assert against cli.DESTRUCTIVE_MODES
     EXHAUST_DEFAULT_RATE_PPS,
+    RUN_ONCE_MODES,
     IPVersion,
     Mode,
     SessionConfig,
@@ -35,12 +36,9 @@ _MODE_BY_CMD = {
     "release-previous": Mode.RELEASE_PREVIOUS,
 }
 
-# Modes whose work happens once in a worker thread rather than running until Stop/Ctrl-C:
-# _run_session()'s polling loop treats "no more worker threads alive" as "this run is done".
-# release-previous is not in DESTRUCTIVE_MODES (it only releases leases the journal proves this
-# tool took), but it is still a run-once-and-finish worker, so it needs the same completion
-# signal.
-_RUN_ONCE_MODES = DESTRUCTIVE_MODES | {Mode.RELEASE_PREVIOUS}
+# _run_session()'s polling loop treats "no more worker threads alive" as "this run is done" for
+# these modes. Canonical definition now lives in core.models (the web control plane needs it too).
+_RUN_ONCE_MODES = RUN_ONCE_MODES
 
 
 # --------------------------------------------------------------------------- parsing

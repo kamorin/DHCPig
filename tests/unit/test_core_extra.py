@@ -8,7 +8,24 @@ from dhcpig.core import netutils, packets
 from dhcpig.core.engine import EXHAUSTED, DhcpEngine
 from dhcpig.core.events import EventBus, to_dict
 from dhcpig.core.fingerprint import extract_signature, resolve
-from dhcpig.core.models import IPVersion, Lease, Mode, SessionConfig
+from dhcpig.core.models import (
+    DESTRUCTIVE_MODES,
+    RUN_ONCE_MODES,
+    IPVersion,
+    Lease,
+    Mode,
+    SessionConfig,
+)
+
+
+# ---------------------------------------------------------------- models
+def test_run_once_modes_is_destructive_plus_release_previous():
+    """Canonical set both control planes (CLI, web) key off to auto-finalize a run-once mode.
+    release-previous is deliberately not DESTRUCTIVE (see models.py) but must still be here."""
+    assert RUN_ONCE_MODES == DESTRUCTIVE_MODES | {Mode.RELEASE_PREVIOUS}
+    assert Mode.RELEASE_PREVIOUS in RUN_ONCE_MODES
+    assert Mode.RELEASE_PREVIOUS not in DESTRUCTIVE_MODES
+    assert Mode.EXHAUST not in RUN_ONCE_MODES  # runs until stop/halt, not a run-once worker
 
 
 # ---------------------------------------------------------------- netutils

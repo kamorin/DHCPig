@@ -30,6 +30,16 @@ DESTRUCTIVE_MODES: set[Mode] = {Mode.RELEASE_NEIGHBORS}
 # active-scan still requires an explicit scope so its sweep can't be unbounded
 SCOPE_REQUIRED_MODES: set[Mode] = {Mode.ACTIVE_SCAN}
 
+# Modes whose work happens once in a worker thread rather than running until Stop/Ctrl-C: "no
+# more worker threads alive" is the completion signal both control planes use to auto-finalize
+# these runs (CLI's _run_session() polling loop, web's WebApp._reap_when_done()). Canonical here
+# so both stay in sync -- this used to live only in cli/main.py, which is how the web UI ended up
+# without an equivalent and just sat in RUNNING after a release finished (bug found live, 2.3).
+# release-previous is not in DESTRUCTIVE_MODES (it only releases leases the journal proves this
+# tool took), but it is still a run-once-and-finish worker, so it needs the same completion
+# signal.
+RUN_ONCE_MODES: set[Mode] = DESTRUCTIVE_MODES | {Mode.RELEASE_PREVIOUS}
+
 # Exhaust no longer takes --rate: the windowed handshake pipeline (window_initial/window_max)
 # is the pacing mechanism now. rate_limit_pps is set high enough here that the token bucket
 # never binds; it stays wired through _send() so the invariant "everything funnels through the

@@ -235,6 +235,23 @@ def is_nak(pkt) -> bool:
     return message_type(pkt) == NAK
 
 
+def packet_hostname(pkt) -> str | None:
+    """Decode DHCP option 12 (hostname) off a packet we built or received, if present.
+
+    Shared by the info-level DiscoverSent/RequestSent logging (our own outbound packets always
+    carry one, from `_hostname()`) and foreign-DISCOVER handling (a real client's hostname, if it
+    sent one -- entirely optional on the wire).
+    """
+    if DHCP not in pkt:
+        return None
+    raw = dhcp_option(pkt[DHCP].options, "hostname")
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="replace")
+    if isinstance(raw, str):
+        return raw
+    return None
+
+
 def parse_offer(pkt) -> tuple[str, str, str, str | None]:
     """Return (server_id, server_mac, offered_ip, subnet) from an OFFER packet."""
     server_id = server_identifier(pkt[BOOTP].siaddr, pkt[DHCP].options)
