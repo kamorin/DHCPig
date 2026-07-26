@@ -31,16 +31,16 @@ Both front ends drive the SAME `DhcpEngine` and never touch scapy directly.
 ### Core files
 | File | Role |
 |------|------|
-| `core/models.py` | dataclasses/enums: `SessionConfig`, `Lease`, `ServerInfo`, `Neighbor`, `HostFingerprint`, `Mode`, `IPVersion`, `Timeouts`. `DESTRUCTIVE_MODES`, `SCOPE_REQUIRED_MODES`. |
-| `core/packets.py` | **pure** scapy builders/parsers (no I/O). `build_discover_v4`, `build_request_v4`, `build_release_v4`, `build_inform_v4`, `build_garp` (op=1/2), `build_arp_poison`, `server_identifier`, `client_mac_from_offer`, `parse_offer`, `is_offer`/`is_ack`, `dhcp_option`. |
-| `core/engine.py` | `DhcpEngine(cfg, bus)`: `start/stop/status/restore`. One state machine, `threading.Event` stop, worker threads + sniffer. **Every outbound frame goes through `_send()`** (the single chokepoint). Control transaction + findings derivation live here too (§5a). Debug via `_debug()`. |
-| `core/events.py` | `EventBus` (thread-safe), event dataclasses, `to_dict()` + `jsonable()` (recursively converts enums/bytes/Path so JSON never breaks). |
-| `core/safety.py` | `ScopeGuard`, `RateLimiter` (token bucket), `Cleanup` (tracks leases for restore). No `authorize()` — the gate was removed, see §5. |
+| `core/models.py` | dataclasses/enums: `SessionConfig`, `Lease`, `ServerInfo`, `Neighbor`, `HostFingerprint`, `PoolEstimate`, `Mode`, `IPVersion`, `Timeouts`. `DESTRUCTIVE_MODES`, `SCOPE_REQUIRED_MODES`, `EXHAUST_DEFAULT_RATE_PPS`. `ControlOutcome` carries `server_mac`; `Lease` carries `server_mac`. |
+| `core/packets.py` | **pure** scapy builders/parsers (no I/O). `build_discover_v4`, `build_request_v4`, `build_release_v4` (now emits an `Ether` layer — see §5c), `build_inform_v4`, `build_garp` (op=1/2), `build_arp_poison`, `server_identifier`, `client_mac_from_offer`, `parse_offer`, `is_offer`/`is_ack`, `dhcp_option`. |
+| `core/engine.py` | `DhcpEngine(cfg, bus)`: `start/stop/status/restore`. One state machine, `threading.Event` stop, worker threads + sniffer. **Every outbound frame goes through `_send()`** (the single chokepoint). Control transaction, release phase, windowed sender, halt detection, pool estimate, and findings derivation all live here (§5a–§5d). Debug via `_debug()`. |
+| `core/events.py` | `EventBus` (thread-safe), event dataclasses (including `ControlDetected`), `to_dict()` + `jsonable()` (recursively converts enums/bytes/Path so JSON never breaks). |
+| `core/safety.py` | `ScopeGuard`, `RateLimiter` (token bucket — still wired through `_send()` for every mode; see §5c for why exhaust no longer takes `--rate`), `Cleanup` (tracks leases for restore). No `authorize()` — the gate was removed, see §5. |
 | `core/sniffer.py` | thin `AsyncSniffer` wrapper. |
 | `core/fingerprint.py` | `extract_signature()` + `resolve()`: exact option-55 match against `data/combined_dhcp_os_lookup.json`, else builtin vendor-class/PRL table, else `from_mac()` OUI-only. `DB_VERSION`. |
 | `core/oui.py` | MAC → hardware vendor. `data/mac-vendor.txt` supplement (longest prefix wins) then scapy's bundled Wireshark/IEEE `manuf` DB (~50k); locally-administered MACs labelled as randomised. No bundled IEEE copy needed — scapy already ships one. |
-| `core/reporting.py` | `SessionRecorder` → JSON/CSV/HTML (`render()` / `export()`). Neighbors deduped by MAC. |
-| `core/netutils.py` | iface enumeration, `iface_network_cidr()` (scope auto-fill), `default_gateway()` (garp), IP math, `random_mac()`. |
+| `core/reporting.py` | `SessionRecorder` → JSON/CSV/HTML (`render()` / `export()`). Neighbors deduped by MAC. Tracks `final_status` from `SessionEnded` to surface the pool estimate in reports. |
+| `core/netutils.py` | iface enumeration, `iface_network_cidr()` (scope auto-fill), `default_gateway()` (garp/release-phase exclusion), `link_is_up()` (carrier poll for `link_down` halt detection — `None` fail-open, see §5c), IP math, `random_mac()`. |
 | `core/exceptions.py` | `DhcpigError`, `ConfigError`, `OutOfScope`, `SessionConflict`. |
 | `data/combined_dhcp_os_lookup.json` | Static PacketFence + Huginn-Muninn merge (594 fingerprints), built by `data/fingerprint-merge.py` (also a standalone lookup CLI). `data/fingerprints.json` builtin fallback. `data/DATA_ATTRIBUTION.md`. |
 
@@ -62,8 +62,9 @@ the browser's `EventSource` updates the DOM. **Handlers must be cheap/non-blocki
   `--scope` is optional for `release`/`garp` — with none given they fall back to the interface's
   own network via `_sweep_cidrs()`. **`dhcpig garp eth0` will target the whole segment.** Don't
   re-add the gate without asking, and don't quietly remove what's left below either.
-- What still bounds a run: `--rate` (default 10 pps), `--dry-run`, `ScopeGuard` when a scope
-  *is* supplied, and `Cleanup`/`restore()` for lease reversal.
+- What still bounds a run: the windowed handshake pipeline for `exhaust` (§5c), `--rate` (default
+  10 pps) for every other mode, `--dry-run`, `ScopeGuard` when a scope *is* supplied, and
+  `Cleanup`/`restore()` for lease reversal.
 - `active-scan` is non-destructive but **requires `--scope`** (`ConfigError` if missing) — this
   is the one remaining hard requirement, so its sweep can't be unbounded.
 - **`_send()` is the chokepoint**: scope check (drops out-of-scope, emits `Skipped`), rate limit,
@@ -75,8 +76,8 @@ the browser's `EventSource` updates the DOM. **Handlers must be cheap/non-blocki
   `--restore-on-exit`. Don't silently flip this back — retention is deliberate.
 
 ## 5a. Confidence model — why the tool can be believed
-The engine reports **verdicts backed by evidence**, not just counters. Three pieces work together
-and should be kept together:
+The engine reports **verdicts backed by evidence**, not just counters. Several pieces work
+together and should be kept together:
 - **Control transaction** (`_control_transaction`, `ControlOutcome`): a legitimate DHCP cycle,
   run `pre` (in `_exhaust_prelude`) and `post` (in `stop()`, deliberately **before** `restore()`
   so leases are still held). Replies route by xid via `_consume_control()` so control traffic
@@ -84,21 +85,25 @@ and should be kept together:
   **Two legs, and the distinction is load-bearing:** `client="self"` uses the real NIC MAC, which
   the server usually already has a binding for — it is a *renewal* and will succeed on a drained
   pool. `client="new"` uses a fresh unseen MAC that must come off the free list. **Exhaustion is
-  judged only on the `new` leg** (this was a real bug: the self leg reported POOL_NOT_EXHAUSTED
-  on a network where offers had stopped). A failed `pre/self` means the test was broken, not that
-  a defense worked; a failed `pre/new` with a good `pre/self` means L2 admission control.
+  judged only on the `new` leg.** A failed `pre/self` means the test was broken, not that a
+  defense worked; a failed `pre/new` with a good `pre/self` means L2 admission control.
+  `ControlOutcome.server_mac` (learned from the OFFER's Ethernet source) is what lets the release
+  phase (§5c) unicast RELEASE to the real server instead of broadcasting blind.
 - **`EXHAUSTED` means the server stopped serving — nothing else.** There is no lease cap
   (`--max-leases` was removed precisely so nothing self-imposed could be mistaken for
-  exhaustion); `--rate` is the only self-imposed bound. Exhaustion needs offers to have flowed
-  then stopped (`_offers_seen_any` + `offer_silence`) and is only `confirmed=True` once the post
-  control is also denied.
+  exhaustion). Exhaustion needs offers to have flowed then stopped (`_offers_seen_any` +
+  `offer_silence`) and is only `confirmed=True` once the post control is also denied.
+- **`HALTED` means a defensive control fired mid-run** (§5c) — distinct from `EXHAUSTED`. Both
+  route through the same `_trigger_halt()` → `_finish_in_background()` path.
 - **Runs finalize themselves.** `_finish_in_background()` spawns a finisher thread that calls
   `stop()` when a terminal condition hits. This is required, not cosmetic: `stop()` joins the
   worker threads, so the sender cannot call it directly, and without it the web UI sat idle
   after the pool drained (senders dead, no post-control, no verdict) until Stop was pressed.
   `OffersCeased` reports the quiet-period countdown so the UI shows progress meanwhile.
 - **Findings** (`_finalize_findings`, `Finding`): id/verdict/severity/evidence/recommendation,
-  emitted as `FindingRaised`, collected into `report["findings"]`. Add new findings there.
+  emitted as `FindingRaised`, collected into `report["findings"]`. Add new findings there. The
+  exhaustion verdict is `DHCP_STARVATION_ATTAINED` (FAIL) / `DHCP_STARVATION_NOT_ATTAINED` (PASS)
+  — see §5d. **`verdict` is what the UI colors off, never `id`** — keep it that way.
 
 ## 5b. ARP-GARP DoS — why it is shaped the way it is
 A single broadcast GARP claiming the victim's own address does essentially nothing: it trips
@@ -110,9 +115,63 @@ the one that costs the victim connectivity. `_garp_worker()` repeats rounds ever
 The forged MAC is always bogus. **Never point it at our own MAC** — blackhole is DoS (in scope);
 redirecting traffic through us would be interception (out of scope, see §1).
 
+## 5c. Release phase, windowed sender, halt-on-control (2.1)
+This is the direct fix for a real run that stalled at 56/~1000 addresses on a `/22`. The capture
+showed the server re-offering the same address to two of our MACs, then NAKing, then going
+silent — **pending-offer table saturation from flooding faster than handshakes could complete,
+not real pool exhaustion.** Three pieces address this, in `_exhaust_prelude()` order:
+
+1. **Release phase** (`_release_phase()`, runs after `ctl-pre-new`, before senders). Sources the
+   server identity from `control_pre.server_id`/`server_mac` — **never** guess or fall back to
+   `0.0.0.0` (that was Bug 1: `_discover_neighbors()` is ARP-only and never learns a DHCP server,
+   so every RELEASE used to go to `0.0.0.0` and get dropped). Excludes the gateway and the DHCP
+   server from targets, re-probes by ARP afterward (`_reprobe_released`), and raises
+   `NEIGHBOR_LEASES_RELEASED` reporting *observed* effect (servers vary on whether they honour
+   unauthenticated RELEASE). `cfg.release_neighbors` (default True) / `--no-release` opt out.
+   Standalone `release` mode got the same server-discovery fix in `_release_worker()`.
+   `packets.build_release_v4()` also gained the `Ether` layer it was missing (Bug 2: it built an
+   L3-only packet despite being sent via L2 `sendp()` — every RELEASE this tool ever sent before
+   this fix was malformed on the wire, not just the exhaust-embedded ones).
+2. **Windowed sender** (`_exhaust_sender`, `_inflight`, `self._window`). Replaces the open-loop
+   DISCOVER flood with a bounded pipeline: at most `self._window` (starts at
+   `cfg.window_initial=8`) DISCOVER/REQUEST transactions in flight at once. **Only an ACK counts
+   as a held address** (`_grow_window`) — NAKs, timeouts, and duplicate offers all shrink the
+   window (`_shrink_window`) instead of being pushed through. `--rate` is **gone from exhaust**
+   (the window paces it now; `rate_limit_pps` is fixed at `EXHAUST_DEFAULT_RATE_PPS=500` so the
+   limiter doesn't bind) but unchanged on `release`/`garp`/`active-scan`, which have no window of
+   their own — **do not remove `RateLimiter` globally.**
+3. **Halt-on-control** (`_trigger_halt`, `ControlDetected`, `HALTED` state). On the first of five
+   signals — `nak_burst` (≥3/5s), `offer_silence` (existing), `link_down` (carrier poll in
+   `_status_ticker`, `netutils.link_is_up()`), `timeout_storm` (≥5 consecutive), `duplicate_offers`
+   (≥3 addresses offered to two of our MACs) — sending stops immediately but **leases already
+   held are kept**, and `stop()` still runs both post-controls so the report is complete. First
+   signal wins (`self._halt_signal` is set once). Don't make halt release leases or skip the
+   post-control — that would break the verdict (§5d).
+
+## 5d. Verdict: DHCP_STARVATION_ATTAINED / _NOT_ATTAINED (2.1)
+Replaces four retired findings (`DHCP_STARVATION_POSSIBLE`, `DHCP_STARVATION_BLOCKED`,
+`POOL_EXHAUSTED_CONFIRMED`, `POOL_NOT_EXHAUSTED` — must never reappear in `src/`) with two:
+- **`DHCP_STARVATION_ATTAINED`** (`FAIL`): `acks > 0` **and** the post-run **new-MAC** control
+  was denied **and** its own pre baseline succeeded. This is a failure of the network, not a
+  success of the run.
+- **`DHCP_STARVATION_NOT_ATTAINED`** (`PASS`): everything else, with `evidence["reason"]` — one
+  of `control_fired` (+ `signal`/`leases_at_halt` from `self._halt_signal`), `pool_headroom_remaining`
+  (+ `headroom`/`pool_size` from `_pool_headroom()`), `blocked_at_baseline`, or
+  `inconclusive_baseline`. **Because halt-on-control (§5c) stops the run on the first signal,
+  `ATTAINED` is now rare by construction on a defended network** — `NOT_ATTAINED +
+  control_fired` naming the control and the lease count it fired at is the expected, actionable
+  result, not a consolation prize.
+- **Pool estimate / headroom** (`PoolEstimate`, `_estimate_pool()`, `_pool_headroom()`): resolved
+  from an explicit `--scope` (deterministic host count) or, failing that, the first OFFER's
+  subnet (option 1) via `_note_offer_for_pool_estimate()`. `size=None` when neither is known —
+  **never fabricate a denominator**; every surface (status, StatusTick, CLI line, web counter,
+  report) must show `source`/`detail` alongside the number. `POOL_HEADROOM_LOW` is a separate,
+  independent finding raised when the *pre-test* ARP baseline already shows ≥80% utilization.
+
 ## 6. Modes (`Mode` enum)
-`EXHAUST` (default), `SCAN` (passive, read-only), `ACTIVE_SCAN` (ARP sweep + one DHCP INFORM;
-non-destructive, scope required), `RELEASE_NEIGHBORS` (destructive), `GARP_DOS` (destructive,
+`EXHAUST` (default; now runs an internal release phase before its windowed sender — see §5c),
+`SCAN` (passive, read-only), `ACTIVE_SCAN` (ARP sweep + one DHCP INFORM; non-destructive, scope
+required), `RELEASE_NEIGHBORS` (destructive, also usable standalone), `GARP_DOS` (destructive,
 standalone — no exhaustion phase).
 
 ## 7. How to run tests / lint (IMPORTANT sandbox quirks)
@@ -120,7 +179,7 @@ Sandbox Python is **3.10**, but the package targets **3.11+**, so **do NOT `pip 
 in the sandbox** — run against the source path instead:
 ```
 cd /sessions/<id>/mnt/DHCPig
-PYTHONPATH=src python3 -m pytest -q          # 73 pass, 1 integration deselected
+PYTHONPATH=src python3 -m pytest -q          # 152 pass, 1 integration deselected
 python3 -m ruff check src tests
 python3 -m ruff format --check src tests
 ```
@@ -171,15 +230,30 @@ python3 -m ruff format --check src tests
   that list as "work in progress" and a forever-thread there would stall destructive runs.
 - **OUI fallback confidence is 15 on purpose.** A NIC vendor is not an OS; keep it far below
   DHCP matches (75–98) so it can never be mistaken for one, and keep `os=None` for these.
+- **`--rate` is exhaust-specific removal, not a global one.** It's gone from the `exhaust`
+  CLI/web surface (the window paces it — §5c) but still required on `release`/`garp`/
+  `active-scan`, which have no window of their own. Don't remove `RateLimiter`/`rate.acquire()`
+  from `_send()` — it's still the only thing pacing three of the five modes.
+- **Halt-on-control never releases leases.** `_trigger_halt()` stops the sender but leaves
+  `Cleanup` untouched; `restore_on_exit` defaults `False` for the same reason as always (§5). If
+  you're tempted to auto-release on halt, don't — the post-controls need the leases held to be
+  meaningful.
+- **Pool-size estimates must never be presented as authoritative.** `PoolEstimate.size` is either
+  `None` (show `—`) or a number that must always render next to its `source`/`detail` — a
+  fabricated-looking denominator is exactly the kind of false confidence the two-leg control
+  work (§5a) was meant to eliminate. Don't cache/round it into something that loses that context.
 
 ## 9. Current status
 Roadmap V1.0 (CLI), V1.1 (web Exhaust), V2.0 (web all modes + packaging) are all **done**, plus
 these later additions: combined-DB fingerprinting (replacing FingerBank), distinct-MAC default,
-debug logging + verbosity dropdown, `active-scan`, and neighbor↔fingerprint correlation by MAC.
-**115 unit tests pass; ruff clean.** The user validated a real exhaust run on their Kali VM (pcap
-reviewed — worked; the single-MAC finding drove the spoof-default change). The confidence work
-in §5a (control transaction, limit-vs-exhaustion, NAKs, findings, `--rate` pacing fix) is done
-but has **not yet been exercised against real hardware** — that's the next validation step.
+debug logging + verbosity dropdown, `active-scan`, neighbor↔fingerprint correlation by MAC,
+MAC-vendor fallback identification, pre-run ARP inventory, effective sustained garp, and the full
+2.1 release (§5c/§5d: release-first exhaust, windowed/adaptive sender, halt-on-control, headroom,
+verdict rename). **152 unit tests pass; ruff clean.** The user validated a real exhaust run on
+their Kali VM against a live `/22` (pcap reviewed) — that run is what exposed the pending-offer
+saturation bug §5c fixes and the renewal-vs-fresh-allocation control-transaction bug §5a fixes.
+**The 2.1 changes (release phase, windowing, halt detection, headroom, verdict rename) have not
+yet been exercised against real hardware** — that's the next validation step.
 
 ## 10. Open follow-ups (not yet done)
 - **IPv6**: `IPVersion.V6` is a seam only; v6 packet builders/flows are NOT implemented. The v4
