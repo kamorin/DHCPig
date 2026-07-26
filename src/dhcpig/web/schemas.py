@@ -39,7 +39,7 @@ def config_from_payload(payload: dict) -> SessionConfig:
         interface=iface,
         mode=mode,
         ip_version=IPVersion.V6 if payload.get("ipv6") else IPVersion.V4,
-        rate_limit_pps=_as_int(payload.get("rate", 50), "rate", lo=1, hi=100000),
+        rate_limit_pps=_as_int(payload.get("rate", 20), "rate", lo=1, hi=100000),
         threads=_as_int(payload.get("threads", 1), "threads", lo=1, hi=64),
         dry_run=bool(payload.get("dry_run", False)),
         authorized=bool(payload.get("authorized", False)),
@@ -47,6 +47,7 @@ def config_from_payload(payload: dict) -> SessionConfig:
         spoof_ethernet_src=bool(payload.get("spoof_eth_src", True)),
         restore_on_exit=bool(payload.get("restore_on_exit", False)),
         control=bool(payload.get("control", True)),
+        arp_sweep=bool(payload.get("arp_sweep", True)),
         status_interval=float(payload.get("status_interval", 5.0) or 0),
         verbosity=_as_int(payload.get("verbosity", 2), "verbosity", lo=0, hi=3),
     )

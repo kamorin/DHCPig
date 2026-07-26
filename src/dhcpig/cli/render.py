@@ -117,9 +117,11 @@ class Renderer:
             )
             self._line("!!", f"POOL EXHAUSTED  leases={e.leases}  in {e.elapsed:.0f}s  [{suffix}]")
         elif isinstance(e, ev.ControlStarted):
-            self._line("CTL", f"CONTROL[{e.phase}] starting legitimate DHCP cycle (real NIC MAC)")
+            self._line("CTL", f"CONTROL[{e.phase}] starting legitimate DHCP cycle")
         elif isinstance(e, ev.ControlFinished):
-            self._line("CTL", f"CONTROL[{e.outcome.phase}] {_control_summary(e.outcome)}")
+            o = e.outcome
+            who = "own MAC/renewal" if o.client == "self" else "NEW client"
+            self._line("CTL", f"CONTROL[{o.phase}/{who}] {_control_summary(o)}")
         elif isinstance(e, ev.FindingRaised):
             self._finding(e.finding)
         elif isinstance(e, ev.ErrorEvent):

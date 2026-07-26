@@ -60,8 +60,10 @@ class DhcpEngine:
         self.releases = 0
         self.servers: dict[str, ServerInfo] = {}
         # control transactions (legitimate cycle from the real NIC MAC), pre and post run
-        self.control_pre: ControlOutcome | None = None
+        self.control_pre: ControlOutcome | None = None  # real NIC MAC (reachability/renewal)
         self.control_post: ControlOutcome | None = None
+        self.control_pre_new: ControlOutcome | None = None  # fresh MAC (can a NEW client join?)
+        self.control_post_new: ControlOutcome | None = None
         self.findings: list[Finding] = []
         self._control_lock = threading.Lock()
         self._control_xid: int | None = None
@@ -175,8 +177,11 @@ class DhcpEngine:
         # Post-run control runs BEFORE restore, while our leases are still held — that is what
         # makes "a real client can't get an address" a meaningful measurement.
         if self.cfg.mode is Mode.EXHAUST and self.cfg.control and self._sniffer is not None:
-            self.control_post = self._control_transaction("post")
-            if self.control_post.attempted and not self.control_post.success and self.acks > 0:
+            self.control_post = self._control_transaction("post", client="self")
+            # the leg that actually answers "is the pool drained?" — needs a fresh address
+            self.control_post_new = self._control_transaction("post", client="new")
+            denied = self.control_post_new
+            if denied.attempted and not denied.success and self.acks > 0:
                 self.state = EXHAUSTED
                 self.bus.emit(
                     ev.PoolExhausted(
@@ -272,16 +277,27 @@ class DhcpEngine:
             return True
         return False
 
-    def _control_transaction(self, phase: str) -> ControlOutcome:
-        """One legitimate DHCP cycle (DISCOVER/OFFER/REQUEST/ACK/RELEASE) from the real NIC MAC.
+    def _fresh_control_mac(self) -> str:
+        """A never-seen, locally administered MAC for the 'new client' control leg.
 
-        This is the experiment's control. `pre` establishes that a working DHCP service is
-        reachable at all, so that a failed exhaust run can be read as "a defense blocked us"
-        rather than "the test was pointed at the wrong VLAN". `post` runs while our leases are
-        still held, so a failure there is real evidence the pool is drained for genuine clients.
-        The lease it takes is released immediately, so the control leaves nothing behind.
+        Deliberately NOT the de:ad:* prefix the exhaust clients use, so a filter keyed on our
+        attack traffic doesn't catch the control too.
         """
-        out = ControlOutcome(phase=phase)
+        import random
+
+        return "02:" + ":".join(f"{random.randint(0, 255):02x}" for _ in range(5))
+
+    def _control_transaction(self, phase: str, client: str = "self") -> ControlOutcome:
+        """One legitimate DHCP cycle (DISCOVER/OFFER/REQUEST/ACK/RELEASE), released immediately.
+
+        Two client identities, because they answer different questions:
+          * `self` — this machine's real NIC MAC. The server most likely already has a binding
+            for it, so this is effectively a RENEWAL: it proves DHCP is reachable and we are on
+            the right VLAN, but it can succeed even when the free pool is completely drained.
+          * `new` — a MAC the server has never seen, which must come off the free list. This is
+            the only leg that can show whether a *new* client can still obtain an address.
+        """
+        out = ControlOutcome(phase=phase, client=client)
         if self.cfg.dry_run:
             out.reason = "skipped (dry-run)"
             self.bus.emit(ev.ControlFinished(outcome=out))
@@ -289,9 +305,12 @@ class DhcpEngine:
         from scapy.all import DHCP
 
         try:
-            from scapy.all import get_if_hwaddr
+            if client == "new":
+                mac = self._fresh_control_mac()
+            else:
+                from scapy.all import get_if_hwaddr
 
-            mac = get_if_hwaddr(self.cfg.interface)
+                mac = get_if_hwaddr(self.cfg.interface)
         except Exception as exc:
             out.reason = f"skipped (no hardware MAC: {exc!r})"
             self.bus.emit(ev.ControlFinished(outcome=out))
@@ -311,7 +330,8 @@ class DhcpEngine:
         self._control_ack_evt.clear()
         try:
             self._send(packets.build_discover_v4(mac, xid, mac))
-            self._debug(f"CONTROL[{phase}] DISCOVER xid=0x{xid:08x} chaddr={mac} (real NIC MAC)")
+            who = "real NIC MAC" if client == "self" else "fresh unseen MAC"
+            self._debug(f"CONTROL[{phase}/{client}] DISCOVER xid=0x{xid:08x} chaddr={mac} ({who})")
             if not self._control_offer_evt.wait(self.cfg.timeouts.control):
                 out.reason = "no OFFER within timeout"
                 return out
@@ -323,7 +343,7 @@ class DhcpEngine:
             out.offered_ip, out.server_id, out.subnet = offered_ip, sid, subnet
             lt = packets.dhcp_option(offer[DHCP].options, "lease_time")
             out.lease_time = int(lt) if isinstance(lt, int) else None
-            self._debug(f"CONTROL[{phase}] OFFER {offered_ip} from {sid} subnet={subnet}")
+            self._debug(f"CONTROL[{phase}/{client}] OFFER {offered_ip} from {sid} subnet={subnet}")
             self._send(packets.build_request_v4(offer, mac))
             if not self._control_ack_evt.wait(self.cfg.timeouts.control):
                 out.reason = f"OFFER {offered_ip} but no ACK within timeout"
@@ -332,10 +352,12 @@ class DhcpEngine:
                 out.reason = f"OFFER {offered_ip} then NAK"
                 return out
             out.success = True
-            self._debug(f"CONTROL[{phase}] ACK {offered_ip} — legitimate client can obtain a lease")
+            self._debug(
+                f"CONTROL[{phase}/{client}] ACK {offered_ip} — this client can obtain a lease"
+            )
             # give the address straight back; the control must not consume pool capacity
             self._send(packets.build_release_v4(mac, offered_ip, sid, xid))
-            self._debug(f"CONTROL[{phase}] RELEASE {offered_ip}")
+            self._debug(f"CONTROL[{phase}/{client}] RELEASE {offered_ip}")
         except Exception as exc:  # a broken control must never kill the run
             out.reason = f"error: {exc!r}"
         finally:
@@ -380,6 +402,31 @@ class DhcpEngine:
             )
 
         baseline_ok = pre is not None and pre.success
+        # A new client blocked at baseline while our own MAC works is the signature of an L2
+        # admission control (snooping / port security), not a broken test.
+        if (
+            baseline_ok
+            and self.control_pre_new is not None
+            and self.control_pre_new.attempted
+            and not self.control_pre_new.success
+        ):
+            self._raise(
+                Finding(
+                    id="NEW_CLIENT_BLOCKED_AT_BASELINE",
+                    title="An unknown MAC could not obtain an address even before testing",
+                    verdict=PASS,
+                    severity="info",
+                    evidence={
+                        "known_mac_ok": True,
+                        "new_client_reason": self.control_pre_new.reason,
+                    },
+                    recommendation=(
+                        "This machine's own MAC was served but an unseen MAC was not — "
+                        "consistent with DHCP snooping or port security. Exhaustion cannot be "
+                        "measured against this segment, which is itself the desired outcome."
+                    ),
+                )
+            )
         if self.cfg.mode is Mode.EXHAUST:
             if self.acks > 0:
                 self._raise(
@@ -423,43 +470,74 @@ class DhcpEngine:
                     )
                 )
 
-            # exhaustion, only claimed when the post-run control also came back empty
-            if post is not None and post.attempted:
-                if not post.success and self.acks > 0:
+            # Exhaustion is judged on the NEW-client leg. The self leg usually renews an
+            # existing binding, so it can succeed against a completely drained pool.
+            pre_new, post_new = self.control_pre_new, self.control_post_new
+            new_baseline_ok = pre_new is not None and pre_new.success
+            if post_new is not None and post_new.attempted:
+                if not post_new.success and self.acks > 0 and new_baseline_ok:
                     self._raise(
                         Finding(
                             id="POOL_EXHAUSTED_CONFIRMED",
-                            title="Legitimate client denied a lease while addresses were held",
+                            title="A new client was denied an address while ours were held",
                             verdict=FAIL,
                             severity="high",
                             evidence={
                                 "leases_held": self.acks,
-                                "post_control_reason": post.reason,
-                                "baseline_succeeded": baseline_ok,
+                                "new_client_reason": post_new.reason,
+                                "new_client_baseline_ip": pre_new.offered_ip if pre_new else None,
+                                "renewal_still_worked": bool(post and post.success),
                             },
                             recommendation=(
-                                "The pool was drained to the point of denying service. Rate-limit "
-                                "DHCP per port and enable snooping."
+                                "The pool was drained to the point of denying service to new "
+                                "clients. Rate-limit DHCP per port and enable snooping."
                             ),
                         )
                     )
-                elif post.success:
+                elif post_new.success:
                     self._raise(
                         Finding(
                             id="POOL_NOT_EXHAUSTED",
-                            title="Legitimate client still obtained a lease after the run",
+                            title="A new client could still obtain an address after the run",
                             verdict=INFO,
                             severity="info",
                             evidence={
                                 "leases_held": self.acks,
-                                "post_control_ip": post.offered_ip,
+                                "new_client_ip": post_new.offered_ip,
+                                "offers_ceased": self.state == EXHAUSTED,
                             },
                             recommendation=(
-                                "Service was not denied. Either the pool is larger than the "
-                                "leases taken, or a defense capped the run."
+                                "The pool was not drained. If offers stopped anyway, the server "
+                                "stopped answering *us* — see SERVER_STOPPED_SERVING_TEST_CLIENTS."
                             ),
                         )
                     )
+                    # offers stopped, yet a brand-new client is still served: that is the server
+                    # refusing our traffic specifically, not running out of addresses
+                    if self.state == EXHAUSTED:
+                        self._raise(
+                            Finding(
+                                id="SERVER_STOPPED_SERVING_TEST_CLIENTS",
+                                title="Server stopped answering the test clients while still "
+                                "serving a new client",
+                                verdict=INFO,
+                                severity="medium",
+                                evidence={
+                                    "leases_before_offers_ceased": self.acks,
+                                    "discovers": self.discovers,
+                                    "naks": self.naks,
+                                    "rate_pps": self.cfg.rate_limit_pps,
+                                    "new_client_ip": post_new.offered_ip,
+                                },
+                                recommendation=(
+                                    "Consistent with DHCP rate-limiting, offer-table saturation "
+                                    "or anti-starvation protection rather than pool exhaustion. "
+                                    "Re-run with a lower --rate to see whether allocation "
+                                    "resumes; a NAK burst just before offers ceased points at "
+                                    "the server re-offering already-pending addresses."
+                                ),
+                            )
+                        )
 
         if self.naks > 0:
             self._raise(
@@ -559,10 +637,54 @@ class DhcpEngine:
             self._sniffer = DhcpSniffer(self.cfg.interface, self.cfg.ip_version, self._on_dhcp)
             self._sniffer.start()
             self._debug(f"sniffer started on {self.cfg.interface} (filter: dhcp/arp/icmp)")
-            if self.cfg.control:
-                self.control_pre = self._control_transaction("pre")
-        else:
-            self._debug("dry-run: sniffer disabled (no packets sent or received)")
+            # Prelude (inventory + controls) runs off-thread so start() returns immediately and
+            # the UI streams progress instead of blocking the HTTP request for ~10s.
+            t = threading.Thread(target=self._exhaust_prelude, daemon=True)
+            t.start()
+            self._threads.append(t)
+            return
+        self._debug("dry-run: sniffer disabled (no packets sent or received)")
+        self._start_senders()
+
+    def _exhaust_prelude(self) -> None:
+        """Baseline the segment, then hand off to the senders.
+
+        Order matters: the ARP inventory records who was on the network *before* we touched it,
+        and the controls establish what a normal client could do beforehand. Without those
+        baselines a null result at the end can't be interpreted.
+        """
+        if self.cfg.arp_sweep:
+            self._baseline_arp_scan()
+        if self.cfg.control and not self._stop.is_set():
+            self.control_pre = self._control_transaction("pre", client="self")
+            self.control_pre_new = self._control_transaction("pre", client="new")
+        if not self._stop.is_set():
+            self._start_senders()
+
+    def _baseline_arp_scan(self) -> None:
+        """ARP-sweep the segment for a pre-run inventory of live hosts."""
+        cidrs = self._sweep_cidrs()
+        if not cidrs:
+            self._debug("arp sweep skipped: could not determine a network range for the interface")
+            return
+        self._debug(f"arp sweep starting over {', '.join(cidrs)} (pre-run inventory)")
+        found, _ = self._discover_neighbors(cidrs)
+        self._debug(f"arp sweep: {len(found)} host(s) present before exhausting")
+
+    def _sweep_cidrs(self) -> list[str]:
+        """Range for the *non-destructive* baseline sweep: explicit scope, else the iface network.
+
+        Destructive modes never use this — they stay pinned to cfg.scope_cidrs so their blast
+        radius can't be widened by an inferred range.
+        """
+        if self.cfg.scope_cidrs:
+            return list(self.cfg.scope_cidrs)
+        from .netutils import iface_network_cidr
+
+        cidr = iface_network_cidr(self.cfg.interface)
+        return [cidr] if cidr else []
+
+    def _start_senders(self) -> None:
         for _ in range(max(1, self.cfg.threads)):
             t = threading.Thread(target=self._exhaust_sender, daemon=True)
             t.start()
@@ -767,8 +889,14 @@ class DhcpEngine:
         self._debug(f"garp: {len(neighbors)} in-scope host(s) to knock offline")
         self._do_garp([n.ip for n in neighbors])
 
-    def _discover_neighbors(self) -> tuple[list[Neighbor], str | None]:
-        """ARP-sweep the scope for live neighbors (best effort; needs a real iface)."""
+    def _discover_neighbors(
+        self, cidrs: list[str] | None = None
+    ) -> tuple[list[Neighbor], str | None]:
+        """ARP-sweep for live neighbors (best effort; needs a real iface).
+
+        `cidrs` defaults to cfg.scope_cidrs. Destructive callers MUST leave it unset so their
+        targets stay pinned to the authorised scope.
+        """
         import ipaddress
 
         from scapy.all import ARP, Ether, srp
@@ -778,7 +906,7 @@ class DhcpEngine:
         found: dict[str, Neighbor] = {}
         src_ip = get_if_ip(self.cfg.interface) or "0.0.0.0"
         targets: list[str] = []
-        for cidr in self.cfg.scope_cidrs or []:
+        for cidr in (cidrs if cidrs is not None else self.cfg.scope_cidrs) or []:
             net = ipaddress.ip_network(cidr, strict=False)
             targets += [str(h) for h in list(net.hosts())[:1024]]
         if not targets or self.cfg.dry_run:
