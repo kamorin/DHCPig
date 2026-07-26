@@ -180,10 +180,13 @@ later `released` record closes it. `load_open_leases()` returns only the ones st
 
 ### Location
 
-`/var/lib/dhcpig/leases-<iface>.jsonl` when that directory is creatable and writable (exhaust
-always runs as root, so this is the normal case). Otherwise fall back in order to
-`$XDG_STATE_HOME/dhcpig/` then `~/.local/state/dhcpig/`. Resolve once and expose it — the CLI
-needs to print the path, and `release-previous --journal PATH` needs to override it.
+`$XDG_STATE_HOME/dhcpig/leases-<iface>.jsonl`, falling back to `~/.local/state/dhcpig/` when
+`$XDG_STATE_HOME` is unset. **Do not write to `/var/lib` or any other system-owned path** — the
+journal is per-operator engagement data, not a system service's state, and `exhaust` running as
+root should not be scribbling into paths a package manager might also claim. Resolve the home
+directory from the effective user (`pwd.getpwuid(os.geteuid()).pw_dir`) rather than trusting
+`$HOME` alone, since `sudo` does not always reset it. Resolve the path once and expose it — the
+CLI needs to print it, and `release-previous --journal PATH` needs to override it.
 
 One file per interface, appended across runs. That is what makes the command *previous*: it
 covers every prior run on that interface, not just the last one.
@@ -215,8 +218,8 @@ acceptable; losing the file is not.
 - `_handle_ack()` → `journal.record_ack(...)` right after `self.cleanup.register(lease)`.
 - `restore()` and `_release_bindings()` → `journal.record_released(...)` per released lease.
 - Journal writes are **best-effort**: wrap in `try/except OSError`, emit `ev.Debug` on failure,
-  and never let a journal problem kill a run. A read-only `/var/lib` must degrade to "no
-  recovery data", not "exhaust crashes".
+  and never let a journal problem kill a run. A read-only or missing state directory must
+  degrade to "no recovery data", not "exhaust crashes".
 - Add `SessionConfig.journal: bool = True` and `journal_path: Path | None = None`. Journaling is
   on by default — a recovery tool that only sometimes records is useless. `--no-journal` exists
   for the operator who does not want the artifact on disk.
@@ -234,7 +237,8 @@ a recovery run. Document it in `SECURITY.md` as engagement data with a real life
 - **Crash simulation:** append a truncated partial JSON line; the reader returns the good
   entries plus a warning and does not raise.
 - Malformed line, unknown `ev`, and missing required field are each skipped with a warning.
-- `default_path` falls back correctly when `/var/lib` is not writable (monkeypatch).
+- `default_path` resolves under `$XDG_STATE_HOME` when set, and under the effective user's home
+  (`~/.local/state/dhcpig/`) when it isn't (monkeypatch both).
 - Engine integration: driving a synthetic ACK through `_on_dhcp` (see `test_control_findings.py`
   for the existing pattern) writes an `ack` record to a `tmp_path` journal.
 - `dry_run=True` writes **nothing** — no packets, no journal records.
