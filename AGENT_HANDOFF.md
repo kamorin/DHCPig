@@ -330,7 +330,7 @@ Sandbox Python is **3.10**, but the package targets **3.11+**, so **do NOT `pip 
 in the sandbox** — run against the source path instead:
 ```
 cd /sessions/<id>/mnt/DHCPig
-PYTHONPATH=src python3 -m pytest -q          # 264 pass, 1 integration deselected
+PYTHONPATH=src python3 -m pytest -q          # 265 pass, 1 integration deselected
 python3 -m ruff check src tests
 python3 -m ruff format --check src tests
 ```
@@ -429,13 +429,13 @@ sniffer BPF widened + a self-filter to see foreign DISCOVER/DECLINE traffic,
 `Mode.GARP_DOS` retired in favor of targeted re-acquisition (option 50) + RFC 5227 §2.4
 ARP-conflict eviction shared by `exhaust` and a restructured `release` (both via
 `_common_prelude()`), mode-aware eviction findings, the web UI's mode labels relabeled (Phase 6),
-and the window-growth ratchet slowed from 0.5 to 0.01 per clean ACK (Phase 7). **264 unit tests
+and the window-growth ratchet slowed from 0.5 to 0.01 per clean ACK (Phase 7). **265 unit tests
 pass; ruff clean.** The user validated a real exhaust run on their Kali VM against a live `/22`
 (pcap reviewed) — that run is what exposed the pending-offer saturation bug §5c fixes and the
 renewal-vs-fresh-allocation control-transaction bug §5a fixes. **Neither 2.1, 2.2, nor 2.3 has
 been exercised against real hardware yet** — that's the next validation step, and 2.3 in
 particular (re-acquisition, eviction, the restructured `release` chain) is the least-proven of
-the three: it has 264 passing unit tests but zero live-network confirmation.
+the three: it has 265 passing unit tests but zero live-network confirmation.
 
 ## 10. Open follow-ups (not yet done)
 - **IPv6**: `IPVersion.V6` is a seam only; v6 packet builders/flows are NOT implemented. The v4

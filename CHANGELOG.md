@@ -66,7 +66,7 @@ already had rather than its own thinner, buggier path.
 - **Web UI mode labels relabeled**: "DHCP Exhaustion" / "DHCP Release Active Clients" /
   "Reset / Recover DHCP Records" / "Find Neighbors". Passive `scan` removed from the dropdown
   (still a valid CLI subcommand / API mode — `config_from_payload()` unchanged).
-- 264 unit tests passing (up from 200 at the start of 2.3); ruff clean. **Not yet exercised
+- 265 unit tests passing (up from 200 at the start of 2.3); ruff clean. **Not yet exercised
   against real hardware** — see AGENT_HANDOFF.md §9/§10.
 
 ## Unreleased — auto-restore-on-exit removed
