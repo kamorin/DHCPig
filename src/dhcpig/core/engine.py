@@ -138,6 +138,12 @@ class DhcpEngine:
         self._baseline_neighbor_count = 0
         # dry-run only: neighbor count the release phase would have released, for DRY_RUN_SUMMARY
         self._dry_run_would_release = 0
+        # targeted re-acquisition (2.3): xid -> requested IP (option 50) for every DISCOVER
+        # _reacquire_phase() pushes, and xid -> outcome ("granted"/"offered_different"/"naked"/
+        # "no_response") populated by hooks in _handle_ack()/_handle_nak()/_reap_timeouts(). Kept
+        # separate from _inflight, which is cleared as each transaction completes/times out.
+        self._reacquire_targets: dict[int, str] = {}
+        self._reacquire_outcomes: dict[int, str] = {}
         # lease journal (2.2): resolved once so the CLI/report can display the path used.
         # Never active for dry-run -- a dry run must not pollute the recovery record with
         # leases that were never actually acquired.
@@ -1036,6 +1042,9 @@ class DhcpEngine:
                 del self._inflight[xid]
         if not expired:
             return
+        for xid in expired:
+            if xid in self._reacquire_targets and xid not in self._reacquire_outcomes:
+                self._reacquire_outcomes[xid] = "no_response"
         self.timeouts_seen += len(expired)
         self._consecutive_timeouts += len(expired)
         self._shrink_window("timeout")
@@ -1091,7 +1100,7 @@ class DhcpEngine:
         self._threads.append(t)
 
     def _exhaust_prelude(self) -> None:
-        """Baseline the segment, release what's there, then hand off to the senders.
+        """Baseline the segment, release what's there, re-acquire it, then hand off to senders.
 
         Order matters:
           1. ARP inventory — who was on the network *before* we touched it.
@@ -1101,7 +1110,11 @@ class DhcpEngine:
           4. release phase — free the leases of hosts we just inventoried, so "take every
              address in the range" has somewhere to go rather than only mopping up whatever
              was already free.
-          5. senders.
+          5. re-acquisition (2.3) — target the freed addresses specifically (option 50), so
+             the release actually means something rather than returning to a pool the general
+             flood might not happen to touch. NEIGHBOR_LEASES_RELEASED is raised here, after
+             re-acquisition confirms whether the RELEASE actually took.
+          6. senders.
         Without the baselines a null result at the end can't be interpreted.
         """
         if self.cfg.arp_sweep:
@@ -1110,28 +1123,34 @@ class DhcpEngine:
             self.control_pre = self._control_transaction("pre", client="self")
             self.control_pre_new = self._control_transaction("pre", client="new")
         if not self._stop.is_set():
-            self._release_phase()
+            freed = self._release_phase()
+            self._finish_release(freed)
         if not self._stop.is_set():
             self._start_senders()
 
-    def _release_phase(self) -> None:
+    def _release_phase(self) -> list[tuple[str, str]]:
         """Release the leases of every ARP-discovered neighbor before exhausting.
 
         Needs a real server identity — sourced from `control_pre`, never guessed — or every
         RELEASE would carry server_id=0.0.0.0 and be silently dropped (the bug this phase
         exists to not repeat). Skips itself with a Debug, rather than sending garbage, when
         that identity isn't available.
+
+        Returns the (mac, ip) pairs actually RELEASEd -- empty when disabled, when there's no
+        confirmed server identity yet, when there's nothing to release, or under dry-run.
+        `_finish_release()` is what turns this into a finding now (2.3); this method no longer
+        raises one itself, since "sent" is not the same claim as "worked" (see Phase 3).
         """
         if not self.cfg.release_neighbors:
             self._debug("release phase skipped: release_neighbors is disabled")
-            return
+            return []
         pre = self.control_pre
         if pre is None or not pre.success or not pre.server_id:
             self._debug(
                 "release phase skipped: no confirmed server identity yet "
                 f"(pre_ok={bool(pre and pre.success)})"
             )
-            return
+            return []
         server_id, server_mac = pre.server_id, pre.server_mac
         neighbors = [
             n
@@ -1140,7 +1159,7 @@ class DhcpEngine:
         ]
         if not neighbors:
             self._debug("release phase: no ARP-discovered neighbors to release")
-            return
+            return []
         self._dry_run_would_release = len(neighbors)  # for DRY_RUN_SUMMARY; harmless when live
         if self.cfg.dry_run:
             self._debug(
@@ -1148,59 +1167,148 @@ class DhcpEngine:
                 f"via server {server_id} ({server_mac or 'MAC unknown, broadcasting'}) -- "
                 "nothing sent"
             )
-            return
+            return []
         self._debug(
             f"release phase: sending DHCPRELEASE for {len(neighbors)} neighbor(s) via "
             f"server {server_id} ({server_mac or 'MAC unknown, broadcasting'})"
         )
         sent = self._do_release(neighbors, server_id, server_mac=server_mac)
-        stopped = self._reprobe_released(neighbors)
+        self._debug(f"release phase: {sent} RELEASE sent for {len(neighbors)} neighbor(s)")
+        return [(n.mac, n.ip) for n in neighbors]
+
+    def _finish_release(self, freed: list[tuple[str, str]]) -> None:
+        """Re-acquire the just-released addresses and raise NEIGHBOR_LEASES_RELEASED.
+
+        Shared by exhaust (via `_exhaust_prelude()`) and, later, release mode -- both phases
+        just went through `_release_phase()` and need the same follow-up. A no-op when nothing
+        was freed (disabled, dry-run, no neighbors, no server identity).
+        """
+        if not freed:
+            return
+        server_id = self.control_pre.server_id if self.control_pre else None
+        counts = self._reacquire_phase(freed)
+        granted = counts["granted"]
+        stopped = self._reprobe_released([ip for _mac, ip in freed])
         self._debug(
-            f"release phase: {sent} RELEASE sent, {stopped}/{len(neighbors)} target(s) "
-            "stopped answering ARP afterward"
+            f"release phase: re-acquisition granted {granted}/{len(freed)} freed address(es) "
+            f"(offered_different={counts['offered_different']}, naked={counts['naked']}, "
+            f"no_response={counts['no_response']}); {stopped}/{len(freed)} still ARP-silent"
         )
         self._raise(
             Finding(
                 id="NEIGHBOR_LEASES_RELEASED",
-                title="Sent DHCPRELEASE for ARP-discovered neighbors before exhausting",
+                title="Sent DHCPRELEASE for ARP-discovered neighbors, then re-acquired them",
                 verdict=INFO,
                 severity="medium",
                 evidence={
-                    "targets": len(neighbors),
-                    "released_sent": sent,
-                    "stopped_answering_arp": stopped,
+                    "targets": len(freed),
+                    "granted": granted,
+                    "offered_different": counts["offered_different"],
+                    "naked": counts["naked"],
+                    "no_response": counts["no_response"],
+                    "still_using_address_arp": len(freed) - stopped,
                     "server_id": server_id,
                 },
                 recommendation=(
-                    "The server appears to ignore unauthenticated RELEASE from a third party "
-                    "(the desired behavior)."
-                    if stopped == 0
+                    "The server ignored the unauthenticated RELEASE — none of the freed "
+                    "addresses could be re-acquired (the desired behavior)."
+                    if granted == 0
                     else "The server acted on unauthenticated RELEASE requests for addresses "
-                    "held by other hosts on the segment — any host can force another off its "
-                    "lease. This is independent of pool exhaustion and worth reporting on its "
-                    "own; verify DHCP snooping / binding validation on the access switch."
+                    "held by other hosts on the segment, and this run was able to re-acquire "
+                    f"{granted} of them by name (DHCP option 50) — any host can force another "
+                    "off its lease and then take it. This is independent of pool exhaustion and "
+                    "worth reporting on its own; verify DHCP snooping / binding validation on "
+                    "the access switch. 'still_using_address_arp' is not evidence either way — "
+                    "a released victim keeps using its old address until its own lease's T1, "
+                    "with no way to know it was released."
                 ),
             )
         )
+
+    def _reacquire_phase(self, freed: list[tuple[str, str]]) -> dict[str, int]:
+        """Push one targeted DISCOVER (option 50 = the freed IP) per (mac, ip) in `freed`,
+        each from a fresh random MAC, into the existing windowed `_inflight` pipeline --
+        `_handle_offer()` -> `_handle_ack()` complete them exactly like any other lease, so the
+        result lands in `Cleanup` and the lease journal for free. Returns outcome counts.
+        """
+        counts = {"granted": 0, "offered_different": 0, "naked": 0, "no_response": 0}
+        if not freed:
+            return counts
+        from .netutils import random_mac
+
+        pushed: list[int] = []
+        for _mac, ip in freed:
+            if self._stop.is_set():
+                break
+            while not self._stop.is_set():
+                with self._inflight_lock:
+                    room = self._window - len(self._inflight)
+                if room > 0:
+                    break
+                self._reap_timeouts()
+                if self._stop.wait(0.02):
+                    break
+            if self._stop.is_set():
+                break
+            client_mac = random_mac()
+            xid = _rand_xid()
+            src = self._src_mac(client_mac)
+            self._our_macs.add(src)
+            pkt = packets.build_discover_v4(client_mac, xid, src, requested_addr=ip)
+            self._send(pkt)
+            with self._inflight_lock:
+                self._inflight[xid] = {
+                    "mac": client_mac,
+                    "sent_at": time.time(),
+                    "state": "DISCOVER_SENT",
+                }
+            self._reacquire_targets[xid] = ip
+            self.discovers += 1
+            pushed.append(xid)
+            self.bus.emit(ev.DiscoverSent(mac=client_mac))
+            self._debug(f"reacquire: DISCOVER xid=0x{xid:08x} option50={ip} chaddr={client_mac}")
+
+        # Drain: wait for every pushed xid to leave _inflight (ACK/NAK/timeout). Bounded by one
+        # control-sized settle window plus enough reap cycles to drain all batches through the
+        # window -- these run concurrently (up to self._window at a time), not one-at-a-time.
+        batches = (len(pushed) // max(1, self._window)) + 1
+        deadline = (
+            time.time() + self.cfg.timeouts.control + self.cfg.timeouts.dhcp_request * batches
+        )
+        while not self._stop.is_set() and time.time() < deadline:
+            self._reap_timeouts()
+            with self._inflight_lock:
+                pending = [xid for xid in pushed if xid in self._inflight]
+            if not pending:
+                break
+            self._stop.wait(0.05)
+        self._reap_timeouts()  # final sweep: anything still inflight is now overdue
+
+        for xid in pushed:
+            outcome = self._reacquire_outcomes.get(xid, "no_response")
+            counts[outcome] += 1
+        return counts
 
     def _release_gateway(self) -> str | None:
         from .netutils import default_gateway
 
         return default_gateway(self.cfg.interface)
 
-    def _reprobe_released(self, neighbors: list[Neighbor]) -> int:
+    def _reprobe_released(self, ips: list[str]) -> int:
         """Re-ARP the just-released addresses; count how many stopped answering.
 
-        Servers vary in whether they honour an unauthenticated RELEASE, so report the observed
-        effect rather than assume frames-sent implies addresses-freed.
+        Supplementary colour only (2.3) -- NOT evidence the RELEASE worked or didn't. A host
+        whose lease was released server-side keeps using its address until its own lease's T1
+        and has no way to know anything happened, so this reads 0 even on a fully successful
+        RELEASE. Re-acquisition (`_reacquire_phase()`) is the real test; see `_finish_release()`.
         """
-        if self.cfg.dry_run or not neighbors:
+        if self.cfg.dry_run or not ips:
             return 0
         time.sleep(1.0)  # give hosts/switch a moment before re-probing
-        cidrs = [f"{n.ip}/32" for n in neighbors]
+        cidrs = [f"{ip}/32" for ip in ips]
         still_present, _ = self._discover_neighbors(cidrs)
         still_ips = {n.ip for n in still_present}
-        return sum(1 for n in neighbors if n.ip not in still_ips)
+        return sum(1 for ip in ips if ip not in still_ips)
 
     def _baseline_arp_scan(self) -> None:
         """ARP-sweep the segment for a pre-run inventory of live hosts."""
@@ -1461,6 +1569,10 @@ class DhcpEngine:
         self.acks += 1
         with self._inflight_lock:
             self._inflight.pop(pkt[BOOTP].xid, None)
+        requested = self._reacquire_targets.get(pkt[BOOTP].xid)
+        if requested is not None:
+            outcome = "granted" if ip == requested else "offered_different"
+            self._reacquire_outcomes[pkt[BOOTP].xid] = outcome
         self._consecutive_timeouts = 0  # a clean handshake resets the timeout-storm counter
         self._grow_window()
         self.bus.emit(ev.AckReceived(lease=lease))
@@ -1476,6 +1588,8 @@ class DhcpEngine:
         self.naks += 1
         with self._inflight_lock:
             self._inflight.pop(pkt[BOOTP].xid, None)
+        if pkt[BOOTP].xid in self._reacquire_targets:
+            self._reacquire_outcomes[pkt[BOOTP].xid] = "naked"
         self._shrink_window("nak")
         self._note_nak_for_burst_detection()
         server_id = packets.server_identifier(pkt[BOOTP].siaddr, pkt[DHCP].options)
