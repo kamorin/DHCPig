@@ -28,9 +28,6 @@
     <button id="saveprofile" title="Download profile">💾</button>
     <label class="filebtn" title="Load profile">📂<input type="file" id="loadprofile" accept="application/json" hidden /></label>
     <label class="dry"><input type="checkbox" id="dryrun" /> Dry-run</label>
-    <label class="ctl" title="Run a legitimate DHCP cycle from the real NIC MAC before and after
-the test, so a null result can be told apart from a broken test">
-      <input type="checkbox" id="control" checked /> Control</label>
     <label>Verbosity
       <select id="verbosity">
         <option value="0">0 · errors</option>
@@ -48,7 +45,7 @@ the test, so a null result can be told apart from a broken test">
     <section class="panel config">
       <h2>Config</h2>
       <div id="ratecfg">
-        <label>Rate (pps) <input type="number" id="rate" value="10" min="1" /></label>
+        <label>Rate (pps) <input type="number" id="rate" value="7" min="1" /></label>
       </div>
       <p id="ratehint" class="hint hidden">Exhaust has no rate control of its own — a windowed,
         adaptive handshake pipeline paces it and backs off automatically on NAKs or timeouts.</p>
@@ -94,9 +91,12 @@ already free. Needs a known server (from the control transaction) to work.">
           DHCP request from this machine's real MAC) runs before and after the test so a failed
           run can be read as "the network blocked us" rather than "the test was misconfigured".</p>
       </div>
-      <table id="t-neighbors" class="tab-body hidden">
-        <thead><tr><th>Host</th><th>MAC</th><th>OS / Device</th><th>Conf</th></tr></thead>
-        <tbody></tbody></table>
+      <div id="t-neighbors" class="tab-body neighbors hidden">
+        <table>
+          <thead><tr><th>Host</th><th>MAC</th><th>OS / Device</th><th>Conf</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
       <table id="t-servers" class="tab-body hidden">
         <thead><tr><th>Server</th><th>Offers</th><th>OS / Device</th><th>Conf</th></tr></thead>
         <tbody></tbody></table>

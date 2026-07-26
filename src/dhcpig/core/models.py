@@ -58,7 +58,7 @@ class SessionConfig:
     spoof_ethernet_src: bool = True
     request_options: list[int] = field(default_factory=lambda: list(range(80)))
     fuzz: bool = False
-    rate_limit_pps: int = 10  # the bound on how fast a run can consume a pool
+    rate_limit_pps: int = 7  # the bound on how fast a run can consume a pool
     v6_rapid_commit: bool = False
     dry_run: bool = False
     scope_cidrs: list[str] | None = None  # optional; bounds targets when supplied
@@ -66,9 +66,10 @@ class SessionConfig:
     # verified. Release them explicitly with `dhcpig restore` / the Restore button when done.
     restore_on_exit: bool = False
     report_path: Path | None = None
-    # Run a legitimate DHCP cycle from the real NIC MAC before and after exhausting. This is
-    # what separates "the network blocked us" (PASS) from "the test was broken" (INCONCLUSIVE).
-    control: bool = True
+    # NOTE: there is no opt-out for the control transaction. A legitimate DHCP cycle from the
+    # real NIC MAC always runs before and after exhausting — it's what separates "the network
+    # blocked us" (PASS) from "the test was broken" (INCONCLUSIVE), and a run without it can't
+    # produce a trustworthy verdict. Don't re-add a `control` field without asking.
     # ARP-sweep the segment before exhausting, to record who was there beforehand
     arp_sweep: bool = True
     # Release the leases of ARP-discovered neighbors before exhausting, so the CUJ of "free up

@@ -128,7 +128,9 @@ def test_exhaust_grants_then_releases(veth_pair):
         mode=Mode.EXHAUST,
         rate_limit_pps=200,
         restore_on_exit=True,
-        control=False,  # the fake server has no notion of a "real" NIC MAC baseline
+        # control is not optional; FakeDhcpServer answers any DISCOVER/REQUEST regardless of
+        # MAC, so the pre/post control legs (and the release phase's RELEASE, which it ignores)
+        # are handled the same as the exhaust sender's own traffic.
     )
     engine = DhcpEngine(cfg, bus)
     engine.start()

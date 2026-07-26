@@ -98,12 +98,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ex.add_argument("--no-restore", action="store_true", help=argparse.SUPPRESS)  # legacy no-op
     ex.add_argument(
-        "--no-control",
-        dest="no_control",
-        action="store_true",
-        help="skip the pre/post control transaction (loses PASS vs INCONCLUSIVE certainty)",
-    )
-    ex.add_argument(
         "--no-arp-scan",
         dest="no_arp_scan",
         action="store_true",
@@ -130,7 +124,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="CIDR",
         help="network(s) to sweep; defaults to the interface's own network",
     )
-    asc.add_argument("--rate", type=int, default=10)
+    asc.add_argument("--rate", type=int, default=7)
     asc.add_argument("--dry-run", action="store_true")
 
     for name, helptext in (
@@ -146,7 +140,7 @@ def build_parser() -> argparse.ArgumentParser:
             metavar="CIDR",
             help="limit targets to these networks (default: the interface's own network)",
         )
-        d.add_argument("--rate", type=int, default=10)
+        d.add_argument("--rate", type=int, default=7)
         d.add_argument("--dry-run", action="store_true")
 
     rs = sub.add_parser("restore", help="release leases acquired by a prior run")
@@ -183,7 +177,7 @@ def build_config(args) -> SessionConfig:
         # exhaust has no --rate: the windowed handshake pipeline paces it. Everything else
         # (release/garp/active-scan) still takes --rate as its only pacing mechanism.
         rate_limit_pps=(
-            EXHAUST_DEFAULT_RATE_PPS if mode is Mode.EXHAUST else getattr(args, "rate", 10)
+            EXHAUST_DEFAULT_RATE_PPS if mode is Mode.EXHAUST else getattr(args, "rate", 7)
         ),
         dry_run=getattr(args, "dry_run", False),
         scope_cidrs=scope,
@@ -191,7 +185,6 @@ def build_config(args) -> SessionConfig:
             getattr(args, "restore_on_exit", False) and not getattr(args, "no_restore", False)
         ),
         report_path=Path(args.report) if getattr(args, "report", None) else None,
-        control=not getattr(args, "no_control", False),
         arp_sweep=not getattr(args, "no_arp_scan", False),
         release_neighbors=not getattr(args, "no_release", False),
         status_interval=getattr(args, "status_interval", 5.0),

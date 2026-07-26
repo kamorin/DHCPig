@@ -38,10 +38,9 @@ every host on the segment. Pass `--scope` to bound it.
 Safety flags:
 
     --dry-run            build + log packets, send nothing on the wire
-    --rate N             cap packets/sec — release/garp/active-scan only, default 10
+    --rate N             cap packets/sec — release/garp/active-scan only, default 7
                           (exhaust has no --rate; see EXHAUST PIPELINE below)
     --scope CIDR         restrict targets to these networks (repeatable; optional)
-    --no-control         skip the control transaction (see below; not recommended)
     --no-release         skip releasing ARP-discovered neighbors before exhausting
     --no-arp-scan        skip the pre-run ARP inventory
     --restore-on-exit    release the acquired leases when the run ends

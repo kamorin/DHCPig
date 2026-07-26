@@ -68,12 +68,20 @@ th { color: var(--muted); font-weight: 600; }
 
 /* findings tab */
 .findings { max-height: 260px; overflow-y: scroll; overflow-x: hidden; padding-right: 4px; }
-.findings::-webkit-scrollbar { width: 10px; }
-.findings::-webkit-scrollbar-track { background: var(--bg); border-radius: 6px; }
-.findings::-webkit-scrollbar-thumb { background: var(--edge); border-radius: 6px; }
-.findings::-webkit-scrollbar-thumb:hover { background: var(--muted); }
-.findings { scrollbar-width: thin; scrollbar-color: var(--edge) var(--bg); }
 .findings .hint { color: var(--muted); font-size: 12px; margin: 4px 0 10px; }
+
+/* neighbors tab: header row + 20 data rows (each ~27px at the table's 12px/1.5 line-height,
+   4px vertical padding, 1px border) before it scrolls */
+.neighbors { max-height: 568px; overflow-y: scroll; overflow-x: hidden; padding-right: 4px; }
+
+.findings, .neighbors { scrollbar-width: thin; scrollbar-color: var(--edge) var(--bg); }
+.findings::-webkit-scrollbar, .neighbors::-webkit-scrollbar { width: 10px; }
+.findings::-webkit-scrollbar-track, .neighbors::-webkit-scrollbar-track {
+  background: var(--bg); border-radius: 6px; }
+.findings::-webkit-scrollbar-thumb, .neighbors::-webkit-scrollbar-thumb {
+  background: var(--edge); border-radius: 6px; }
+.findings::-webkit-scrollbar-thumb:hover, .neighbors::-webkit-scrollbar-thumb:hover {
+  background: var(--muted); }
 .finding { border: 1px solid var(--edge); border-left-width: 4px; border-radius: 6px;
   padding: 8px 10px; margin-bottom: 8px; }
 .finding.FAIL { border-left-color: var(--bad); }

@@ -25,7 +25,12 @@ def test_build_config_exhaust_defaults():
     assert cfg.ip_version is IPVersion.V4
     assert cfg.spoof_ethernet_src is True  # distinct L2 MACs by default
     assert cfg.restore_on_exit is False  # keep leases so the exhausted state can be verified
-    assert cfg.control is True
+
+
+def test_exhaust_has_no_no_control_flag():
+    """The control transaction is mandatory; there is no opt-out on exhaust."""
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["exhaust", "eth1", "--no-control"])
 
 
 def test_exhaust_has_no_rate_flag_windowing_paces_it_instead():
@@ -82,7 +87,7 @@ def test_destructive_modes_take_no_authorization_flags():
     for cmd in ("release", "garp"):
         cfg = cli.build_config(cli.build_parser().parse_args([cmd, "eth1"]))
         assert cfg.scope_cidrs is None
-        assert cfg.rate_limit_pps == 10
+        assert cfg.rate_limit_pps == 7
     cfg = cli.build_config(
         cli.build_parser().parse_args(["garp", "eth1", "--scope", "10.0.0.0/24"])
     )
