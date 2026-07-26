@@ -101,6 +101,9 @@ class Renderer:
         elif isinstance(e, ev.ForeignDiscover):
             who = f"  hostname={e.hostname!r}" if e.hostname else ""
             self._line("<-", f"foreign DHCP_Discover  {e.mac}{who}   (not ours)")
+        elif isinstance(e, ev.ClientEvicted):
+            tag = "!!" if e.outcome in ("declined", "discover_unanswered", "apipa") else "<-"
+            self._line(tag, f"evict outcome  {e.ip} / {e.mac}  -> {e.outcome}")
         elif isinstance(e, ev.Skipped):
             self._line("!!", f"SKIPPED      {e.ip}   {e.reason}")
         elif isinstance(e, ev.StatusTick):

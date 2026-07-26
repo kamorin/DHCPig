@@ -62,6 +62,7 @@ def config_from_payload(payload: dict) -> SessionConfig:
         spoof_ethernet_src=bool(payload.get("spoof_eth_src", True)),
         arp_sweep=bool(payload.get("arp_sweep", True)),
         release_neighbors=bool(payload.get("release_neighbors", True)),
+        evict=bool(payload.get("evict", True)),
         status_interval=float(payload.get("status_interval", 5.0) or 0),
         journal=bool(payload.get("journal", True)),
         journal_path=Path(journal_path) if journal_path else None,
@@ -88,6 +89,8 @@ def as_cli(cfg: SessionConfig) -> str:
         parts.append("--no-release")
     if not cfg.journal and cfg.mode is Mode.EXHAUST:
         parts.append("--no-journal")
+    if not cfg.evict and cfg.mode is Mode.EXHAUST:
+        parts.append("--no-evict")
     if cfg.mode is Mode.RELEASE_PREVIOUS:
         if cfg.journal_path:
             parts += ["--journal", str(cfg.journal_path)]

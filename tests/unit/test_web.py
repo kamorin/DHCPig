@@ -248,6 +248,16 @@ def test_journal_flag_from_payload_and_as_cli():
     assert "--no-journal" in schemas.as_cli(cfg)
 
 
+def test_evict_flag_from_payload_and_as_cli():
+    cfg = schemas.config_from_payload({"interface": "eth1", "mode": "exhaust"})
+    assert cfg.evict is True
+    assert "--no-evict" not in schemas.as_cli(cfg)
+
+    cfg = schemas.config_from_payload({"interface": "eth1", "mode": "exhaust", "evict": False})
+    assert cfg.evict is False
+    assert "--no-evict" in schemas.as_cli(cfg)
+
+
 def test_token_helpers():
     assert auth.token_ok("abc", "abc")
     assert not auth.token_ok("abc", "xyz")

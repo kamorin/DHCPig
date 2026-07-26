@@ -111,6 +111,13 @@ def test_build_config_release_neighbors_default_on_and_opt_out():
     assert cli.build_config(args).release_neighbors is False
 
 
+def test_build_config_evict_default_on_and_opt_out():
+    args = cli.build_parser().parse_args(["exhaust", "eth1"])
+    assert cli.build_config(args).evict is True
+    args = cli.build_parser().parse_args(["exhaust", "eth1", "--no-evict"])
+    assert cli.build_config(args).evict is False
+
+
 def test_exhaust_has_no_restore_on_exit_flag():
     """Auto-restore-on-exit was removed -- release-previous is the caller-initiated recovery
     path now, so exhaust always keeps its leases until the operator explicitly releases them."""

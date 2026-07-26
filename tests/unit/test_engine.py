@@ -67,9 +67,9 @@ def test_restore_releases_exactly_acquired_leases(sent):
     assert len(sent) == 2
 
 
-def test_do_garp_only_in_scope(sent):
-    """(2.3) _do_garp is the frame-building core that Phase 4's eviction reuses (renamed to
-    _do_arp_conflict there); scope enforcement must survive that rewrite unchanged."""
+def test_do_arp_conflict_only_in_scope(sent):
+    """(2.3) _do_arp_conflict (renamed from _do_garp) is the frame-building core that Phase 4's
+    eviction reuses; scope enforcement must survive that rewrite unchanged."""
     bus, events = _bus_collect()
     cfg = SessionConfig(interface="lo", mode=Mode.RELEASE_NEIGHBORS, scope_cidrs=["172.20.0.0/16"])
     eng = DhcpEngine(cfg, bus)
@@ -78,31 +78,31 @@ def test_do_garp_only_in_scope(sent):
         Neighbor("de:ad:00:00:00:02", "10.9.9.9"),  # out of scope
         Neighbor("de:ad:00:00:00:03", "172.20.0.8"),
     ]
-    n = eng._do_garp(targets)
+    n = eng._do_arp_conflict(targets)
     # two in-scope targets x (ARP conflict request + reply); no third/gateway frame (2.3)
     assert n == 4
     assert len(sent) == 4
     assert any(isinstance(e, ev.Skipped) for e in events)
 
 
-def test_garp_sends_both_arp_forms(sent):
+def test_arp_conflict_sends_both_arp_forms(sent):
     from dhcpig.core import packets as pk
 
     bus, _ = _bus_collect()
     eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.RELEASE_NEIGHBORS), bus)
-    eng._do_garp([Neighbor("de:ad:00:00:00:01", "10.0.0.7")])
+    eng._do_arp_conflict([Neighbor("de:ad:00:00:00:01", "10.0.0.7")])
     ops = [p[pk.ARP].op for p in sent]
     assert ops == [pk.ARP_REQUEST, pk.ARP_REPLY]
     for p in sent:  # announcement form: psrc == pdst == the claimed address
         assert p[pk.ARP].psrc == p[pk.ARP].pdst == "10.0.0.7"
 
 
-def test_do_garp_no_longer_takes_a_gateway_blackhole():
+def test_do_arp_conflict_no_longer_takes_a_gateway_blackhole():
     """(2.3) build_arp_poison() and the third unicast gateway-blackhole frame were removed --
-    _do_garp's signature no longer accepts a `gateway` argument at all."""
+    _do_arp_conflict's signature no longer accepts a `gateway` argument at all."""
     import inspect
 
-    sig = inspect.signature(DhcpEngine._do_garp)
+    sig = inspect.signature(DhcpEngine._do_arp_conflict)
     assert "gateway" not in sig.parameters
 
 
@@ -317,3 +317,307 @@ def test_finalize_findings_silent_when_no_foreign_discovers_observed():
     ids = [e.finding.id for e in events if isinstance(e, ev.FindingRaised)]
     assert "FOREIGN_DISCOVERS_UNANSWERED" not in ids
     assert "FOREIGN_DISCOVERS_ANSWERED" not in ids
+
+
+# ------------------------------------------------------------ ARP-conflict eviction (2.3, Phase 4)
+def _arp_pkt(mac: str, ip: str, op=None):
+    from scapy.all import ARP, Ether
+
+    from dhcpig.core import packets as pk
+
+    return Ether(src=mac) / ARP(op=op or pk.ARP_REPLY, hwsrc=mac, psrc=ip, pdst=ip)
+
+
+def _decline_pkt(mac: str, xid: int):
+    from scapy.all import BOOTP, DHCP, IP, UDP, Ether, mac2str
+
+    return (
+        Ether(src=mac)
+        / IP(src="0.0.0.0", dst="255.255.255.255")
+        / UDP(sport=68, dport=67)
+        / BOOTP(chaddr=mac2str(mac) + b"\x00" * 10, xid=xid)
+        / DHCP(options=[("message-type", "decline"), "end"])
+    )
+
+
+def test_evict_interval_too_slow_raises_config_error():
+    from dhcpig.core.exceptions import ConfigError
+    from dhcpig.core.models import Timeouts
+
+    with pytest.raises(ConfigError):
+        SessionConfig(interface="lo", timeouts=Timeouts(evict_interval=10.0))
+
+
+def test_evict_rounds_below_two_raises_config_error():
+    from dhcpig.core.exceptions import ConfigError
+
+    with pytest.raises(ConfigError):
+        SessionConfig(interface="lo", evict_rounds=1)
+
+
+def test_evict_rung_max_picks_the_higher_rung():
+    from dhcpig.core.engine import _evict_rung_max
+
+    assert _evict_rung_max("no_reaction", "defended") == "defended"
+    assert _evict_rung_max("declined", "defended") == "declined"
+    assert _evict_rung_max("rediscovered", "apipa") == "apipa"
+
+
+def test_do_arp_conflict_not_gated_on_stop_event(sent):
+    """(2.3) eviction runs from within stop(), after self._stop.set() -- _do_arp_conflict must
+    still send, unlike the old _do_garp which would silently no-op here."""
+    bus, _ = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.RELEASE_NEIGHBORS), bus)
+    eng._stop.set()
+    n = eng._do_arp_conflict([Neighbor("de:ad:00:00:00:01", "10.0.0.7")])
+    assert n == 2
+    assert len(sent) == 2
+
+
+def test_handle_evict_arp_marks_defended_from_real_owner_mac():
+    bus, _ = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo"), bus)
+    eng._evict_targets = {"10.0.0.7"}
+    eng._evict_mac_by_ip = {"10.0.0.7": "de:ad:00:00:00:01"}
+    eng._evict_ip_by_mac = {"de:ad:00:00:00:01": "10.0.0.7"}
+    eng._handle_evict_arp(_arp_pkt("de:ad:00:00:00:01", "10.0.0.7"))
+    assert "10.0.0.7" in eng._evict_defenders
+
+
+def test_handle_evict_arp_ignores_our_own_bogus_mac():
+    """A forged conflict frame, echoed back by the widened BPF, must not be mistaken for the
+    victim defending -- it carries a bogus MAC we generated ourselves, not the real owner's."""
+    bus, _ = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo"), bus)
+    eng._evict_targets = {"10.0.0.7"}
+    eng._evict_mac_by_ip = {"10.0.0.7": "de:ad:00:00:00:01"}
+    eng._evict_ip_by_mac = {"de:ad:00:00:00:01": "10.0.0.7"}
+    bogus = "aa:bb:cc:00:00:01"
+    eng._evict_bogus_macs.add(bogus)
+    eng._handle_evict_arp(_arp_pkt(bogus, "10.0.0.7"))
+    assert eng._evict_defenders == set()
+
+
+def test_handle_evict_arp_marks_apipa_when_target_mac_sources_from_link_local():
+    bus, _ = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo"), bus)
+    eng._evict_targets = {"10.0.0.7"}
+    eng._evict_mac_by_ip = {"10.0.0.7": "de:ad:00:00:00:01"}
+    eng._evict_ip_by_mac = {"de:ad:00:00:00:01": "10.0.0.7"}
+    eng._handle_evict_arp(_arp_pkt("de:ad:00:00:00:01", "169.254.12.34"))
+    assert "10.0.0.7" in eng._evict_apipa_ips
+
+
+def test_handle_client_decline_records_target_ip():
+    bus, _ = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo"), bus)
+    eng._evict_ip_by_mac = {"de:ad:00:00:00:01": "10.0.0.7"}
+    eng._handle_client_decline(_decline_pkt("de:ad:00:00:00:01", 0xB001))
+    assert "10.0.0.7" in eng._evict_declined_ips
+
+
+def test_handle_client_decline_from_unknown_mac_is_a_noop():
+    bus, _ = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo"), bus)
+    eng._evict_ip_by_mac = {}
+    eng._handle_client_decline(_decline_pkt("de:ad:00:00:00:99", 0xB002))
+    assert eng._evict_declined_ips == set()
+
+
+def test_on_dhcp_routes_decline_and_arp_to_eviction_handlers():
+    bus, _ = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo"), bus)
+    eng._evict_targets = {"10.0.0.7"}
+    eng._evict_mac_by_ip = {"10.0.0.7": "de:ad:00:00:00:01"}
+    eng._evict_ip_by_mac = {"de:ad:00:00:00:01": "10.0.0.7"}
+    eng._on_dhcp(_decline_pkt("de:ad:00:00:00:01", 0xB003))
+    assert "10.0.0.7" in eng._evict_declined_ips
+    eng._on_dhcp(_arp_pkt("de:ad:00:00:00:01", "10.0.0.7"))
+    assert "10.0.0.7" in eng._evict_defenders
+
+
+def test_measure_eviction_picks_highest_rung_across_multiple_signals():
+    """A target that both defended an earlier round and later declined must land on the higher
+    rung (declined), not whichever signal happened to be checked last."""
+    bus, events = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo"), bus)
+    n = Neighbor("de:ad:00:00:00:01", "10.0.0.7")
+    eng._evict_targets = {"10.0.0.7"}
+    eng._evict_outcomes = {"10.0.0.7": "no_reaction"}
+    eng._evict_defenders.add("10.0.0.7")
+    eng._evict_declined_ips.add("10.0.0.7")
+    eng._measure_eviction([n])
+    assert eng._evict_outcomes["10.0.0.7"] == "declined"
+    evicted = [e for e in events if isinstance(e, ev.ClientEvicted)]
+    assert len(evicted) == 1
+    assert evicted[0].outcome == "declined"
+
+
+def test_measure_eviction_rediscovered_and_unanswered_when_no_offer_followed():
+    bus, _ = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo"), bus)
+    n = Neighbor("de:ad:00:00:00:01", "10.0.0.7")
+    eng._evict_targets = {"10.0.0.7"}
+    eng._evict_outcomes = {"10.0.0.7": "no_reaction"}
+    eng._evict_start_ts = 100.0
+    eng._foreign_discovers[0xC001] = {
+        "mac": "de:ad:00:00:00:01",
+        "hostname": None,
+        "ts": 200.0,
+        "answered": False,
+    }
+    eng._measure_eviction([n])
+    assert eng._evict_outcomes["10.0.0.7"] == "discover_unanswered"
+
+
+def test_measure_eviction_rediscovered_only_when_offer_followed():
+    bus, _ = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo"), bus)
+    n = Neighbor("de:ad:00:00:00:01", "10.0.0.7")
+    eng._evict_targets = {"10.0.0.7"}
+    eng._evict_outcomes = {"10.0.0.7": "no_reaction"}
+    eng._evict_start_ts = 100.0
+    eng._foreign_discovers[0xC002] = {
+        "mac": "de:ad:00:00:00:01",
+        "hostname": None,
+        "ts": 200.0,
+        "answered": True,
+    }
+    eng._measure_eviction([n])
+    assert eng._evict_outcomes["10.0.0.7"] == "rediscovered"
+
+
+def test_measure_eviction_ignores_discover_seen_before_eviction_started():
+    """A DISCOVER sighted before _evict_start_ts is unrelated prior traffic, not evidence of
+    restart-at-INIT caused by this eviction round."""
+    bus, _ = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo"), bus)
+    n = Neighbor("de:ad:00:00:00:01", "10.0.0.7")
+    eng._evict_targets = {"10.0.0.7"}
+    eng._evict_outcomes = {"10.0.0.7": "no_reaction"}
+    eng._evict_start_ts = 100.0
+    eng._foreign_discovers[0xC003] = {
+        "mac": "de:ad:00:00:00:01",
+        "hostname": None,
+        "ts": 50.0,
+        "answered": False,
+    }
+    eng._measure_eviction([n])
+    assert eng._evict_outcomes["10.0.0.7"] == "no_reaction"
+
+
+def test_evict_phase_skips_when_disabled():
+    bus, _ = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.EXHAUST, evict=False), bus)
+    eng._reacquire_targets = {1: "10.0.0.7"}
+    eng._reacquire_outcomes = {1: "granted"}
+    eng._evict_phase()
+    assert eng._evict_targets == set()
+
+
+def test_evict_phase_skips_when_no_granted_reacquisitions():
+    bus, _ = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.EXHAUST), bus)
+    eng._reacquire_targets = {1: "10.0.0.7"}
+    eng._reacquire_outcomes = {1: "naked"}  # not granted
+    eng._evict_phase()
+    assert eng._evict_targets == set()
+
+
+def test_evict_phase_only_targets_granted_reacquisitions_excluding_server(sent, monkeypatch):
+    """Target selection is restricted to Phase 3's `granted` outcomes and excludes the DHCP
+    server, even when both are present in the ARP-discovered neighbor table."""
+    from dhcpig.core import engine as engine_mod
+    from dhcpig.core.models import ControlOutcome
+
+    monkeypatch.setattr(engine_mod.DhcpEngine, "_release_gateway", lambda self: None)
+    bus, _ = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.EXHAUST), bus)
+    eng.cfg.evict_rounds = 2
+    eng.cfg.timeouts.evict_interval = 0.01
+    eng.cfg.evict_settle = 0.0
+    eng.control_pre = ControlOutcome(phase="pre", server_id="172.20.15.1")
+    eng._neighbors_by_mac["de:ad:00:00:00:01"] = Neighbor("de:ad:00:00:00:01", "172.20.0.7")
+    eng._neighbors_by_mac["de:ad:00:00:00:02"] = Neighbor("de:ad:00:00:00:02", "172.20.0.8")
+    eng._neighbors_by_mac["srv:mac:00:00:00"] = Neighbor("srv:mac:00:00:00", "172.20.15.1")
+    eng._reacquire_targets = {1: "172.20.0.7", 2: "172.20.0.8", 3: "172.20.15.1"}
+    eng._reacquire_outcomes = {1: "granted", 2: "naked", 3: "granted"}
+    eng._evict_phase()
+    assert eng._evict_targets == {"172.20.0.7"}
+
+
+def test_finalize_findings_evicted_when_declined_or_higher():
+    bus, events = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.EXHAUST), bus)
+    eng._evict_outcomes = {"10.0.0.7": "declined", "10.0.0.8": "no_reaction"}
+    eng._finalize_findings()
+    ids = [e.finding.id for e in events if isinstance(e, ev.FindingRaised)]
+    assert "CLIENTS_EVICTED_FROM_ADDRESSES" in ids
+    f = next(
+        e.finding
+        for e in events
+        if isinstance(e, ev.FindingRaised) and e.finding.id == "CLIENTS_EVICTED_FROM_ADDRESSES"
+    )
+    assert f.verdict == "FAIL"
+
+
+def test_finalize_findings_defended_only_when_no_one_declined():
+    bus, events = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.EXHAUST), bus)
+    eng._evict_outcomes = {"10.0.0.7": "defended"}
+    eng._finalize_findings()
+    ids = [e.finding.id for e in events if isinstance(e, ev.FindingRaised)]
+    assert "CLIENTS_DEFENDED_ADDRESSES" in ids
+    assert "CLIENTS_EVICTED_FROM_ADDRESSES" not in ids
+
+
+def test_finalize_findings_unanswered_when_nothing_reacted():
+    bus, events = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.EXHAUST), bus)
+    eng._evict_outcomes = {"10.0.0.7": "no_reaction"}
+    eng._finalize_findings()
+    ids = [e.finding.id for e in events if isinstance(e, ev.FindingRaised)]
+    assert "ARP_CONFLICTS_UNANSWERED" in ids
+    assert "CLIENTS_DEFENDED_ADDRESSES" not in ids
+    assert "CLIENTS_EVICTED_FROM_ADDRESSES" not in ids
+
+
+def test_finalize_findings_no_eviction_finding_under_dry_run():
+    """Under dry-run every outcome reads no_reaction because nothing was ever sent -- that's
+    not evidence of anything, so no eviction finding should be raised (DRY_RUN_SUMMARY covers
+    the dry-run case instead)."""
+    bus, events = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.EXHAUST, dry_run=True), bus)
+    eng._evict_outcomes = {"10.0.0.7": "no_reaction"}
+    eng._finalize_findings()
+    ids = [e.finding.id for e in events if isinstance(e, ev.FindingRaised)]
+    assert "ARP_CONFLICTS_UNANSWERED" not in ids
+    assert "CLIENTS_DEFENDED_ADDRESSES" not in ids
+    assert "CLIENTS_EVICTED_FROM_ADDRESSES" not in ids
+
+
+def test_finalize_findings_silent_when_no_evict_targets():
+    bus, events = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.EXHAUST), bus)
+    eng._finalize_findings()
+    ids = [e.finding.id for e in events if isinstance(e, ev.FindingRaised)]
+    assert "ARP_CONFLICTS_UNANSWERED" not in ids
+    assert "CLIENTS_DEFENDED_ADDRESSES" not in ids
+    assert "CLIENTS_EVICTED_FROM_ADDRESSES" not in ids
+
+
+def test_status_reports_evict_outcomes_when_present():
+    bus, _ = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.EXHAUST), bus)
+    eng._evict_outcomes = {"10.0.0.7": "declined"}
+    st = eng.status()
+    assert st["evict_targets"] == 1
+    assert st["evict_outcomes"] == {"10.0.0.7": "declined"}
+
+
+def test_status_omits_evict_fields_when_no_eviction_ran():
+    bus, _ = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.EXHAUST), bus)
+    st = eng.status()
+    assert "evict_targets" not in st
+    assert "evict_outcomes" not in st
