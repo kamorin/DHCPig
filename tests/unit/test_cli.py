@@ -19,13 +19,19 @@ def test_parse_request_options():
 
 
 def test_build_config_exhaust_defaults():
-    args = cli.build_parser().parse_args(["exhaust", "eth1", "--rate", "30", "--max-leases", "5"])
+    args = cli.build_parser().parse_args(["exhaust", "eth1", "--rate", "30"])
     cfg = cli.build_config(args)
     assert cfg.mode is Mode.EXHAUST
     assert cfg.rate_limit_pps == 30
-    assert cfg.max_leases == 5
     assert cfg.ip_version is IPVersion.V4
     assert cfg.spoof_ethernet_src is True  # distinct L2 MACs by default
+    assert cfg.restore_on_exit is False  # keep leases so the exhausted state can be verified
+    assert cfg.control is True
+
+
+def test_build_config_restore_on_exit_opt_in():
+    args = cli.build_parser().parse_args(["exhaust", "eth1", "--restore-on-exit"])
+    assert cli.build_config(args).restore_on_exit is True
 
 
 def test_build_config_no_spoof_eth_src():

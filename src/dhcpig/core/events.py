@@ -63,11 +63,13 @@ class HostFingerprinted(Event):
 
 
 @dataclass
-class LimitReached(Event):
-    """We hit our own --max-leases cap. NOT a statement about the server's pool."""
+class OffersCeased(Event):
+    """Offers have gone quiet — the run may be finishing. Emitted so the UI shows progress
+    instead of appearing to hang while we wait out the silence window."""
 
+    quiet_for: float
     leases: int
-    elapsed: float
+    deadline: float
 
 
 @dataclass
@@ -115,6 +117,11 @@ class Skipped(Event):
 
 @dataclass
 class StatusTick(Event):
+    """Periodic heartbeat with running totals *and* per-window deltas.
+
+    Deltas are the point: totals alone don't show whether anything is still happening.
+    """
+
     stats: dict = field(default_factory=dict)
 
 

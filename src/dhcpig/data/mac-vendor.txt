@@ -1,0 +1,41 @@
+# mac-vendor.txt -- supplementary Ethernet vendor mappings
+#
+# Vendored from arp-scan (https://github.com/royhills/arp-scan), GPLv3.
+# See DATA_ATTRIBUTION.md.
+#
+# These are MAC prefixes deliberately NOT present in the IEEE OUI registry:
+# virtualisation platforms, first-hop redundancy protocols and load balancers that
+# synthesise their own MACs. The IEEE-registered OUIs come from scapy's bundled
+# Wireshark `manuf` database, so nothing here duplicates that.
+#
+# Format: <MAC-Prefix><TAB><Vendor>. The prefix may be any length from one to six
+# octets; ":", "-" and "." are ignored and case is insignificant. Longest prefix wins.
+#
+# 01:23:45      matches 01:23:45:xx:xx:xx
+# 01:23:45:6    matches 01:23:45:6x:xx:xx
+# 01:23:45:67   matches 01:23:45:67:xx:xx
+
+# From nmap Debian bug report #369681 dated 31 May 2006
+52:54:00	QEMU
+b0:c4:20	Bochs
+
+# From RFC 5798: "IPv4 case: 00-00-5E-00-01-{VRID}"
+# OpenBSD's CARP protocol uses VRRP's IPv4 MAC addresses.
+00:00:5e:00:01	VRRP/CARP (last octet is VRID/VHID)
+# From RFC 5798: "IPv6 case: 00-00-5E-00-02-{VRID}"
+00:00:5e:00:02	IPv6 VRRP (last octet is VRID)
+
+# OpenBSD ether_fakeaddr()
+fe:e1:ba:d	OpenBSD randomly generated MAC address
+
+# Microsoft WLBS (Windows NT Load Balancing Service)
+02:bf	Microsoft WLBS (last four octets are IP address)
+
+# Cisco HSRP (Hot Standby Routing Protocol)
+# 00-00-0c-07-ac-XX, where XX is the HSRP group number (0 to 255)
+00:00:0c:07:ac	HSRP (last octet is group number)
+
+# Ethernet broadcast address
+ff:ff:ff:ff:ff:ff	Broadcast
+
+# Local additions below this line.

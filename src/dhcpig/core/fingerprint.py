@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from importlib import resources
 
+from . import oui
 from .models import HostFingerprint
 from .packets import dhcp_option
 
@@ -173,8 +174,8 @@ def _resolve_from_builtin(sig: Signature, role: str) -> HostFingerprint | None:
             )
             if best is None or cand.confidence > best.confidence:
                 best = cand
-        for oui in entry.get("oui", []):
-            if sig.oui and sig.oui == oui.lower():
+        for entry_oui in entry.get("oui", []):
+            if sig.oui and sig.oui == entry_oui.lower():
                 cand = HostFingerprint(
                     mac=sig.mac,
                     ip=sig.ip,
@@ -196,21 +197,33 @@ def resolve(sig: Signature, role: str = "client") -> HostFingerprint:
 
     1) exact option-55 order match against combined_dhcp_os_lookup.json (strongest signal)
     2) builtin fallback: representative option-55 order, then vendor-class substring, then OUI
+    3) MAC OUI only — no DHCP evidence, but at least says who made the hardware
     """
-    fp = _resolve_from_combined(sig, role)
+    fp = _resolve_from_combined(sig, role) or _resolve_from_builtin(sig, role)
     if fp is not None:
+        if not fp.vendor:  # fill in the hardware vendor the DHCP data didn't carry
+            fp.vendor = oui.lookup(sig.mac)
         return fp
-    fp = _resolve_from_builtin(sig, role)
-    if fp is not None:
-        return fp
+    return from_mac(sig.mac, ip=sig.ip, role=role, raw_prl=sig.prl)
+
+
+def from_mac(mac: str, ip: str = "", role: str = "client", raw_prl=None) -> HostFingerprint:
+    """OUI-only identification, for hosts with no usable DHCP fingerprint.
+
+    ARP-only neighbours never send DHCP we can read, so without this they'd show a blank
+    OS/Device column. The hardware vendor is weak evidence — hence the low confidence — but
+    it is far more useful than nothing.
+    """
+    vendor = oui.lookup(mac)
     return HostFingerprint(
-        mac=sig.mac,
-        ip=sig.ip,
+        mac=mac,
+        ip=ip,
         role=role,
         os=None,
-        device=None,
-        vendor=None,
-        confidence=0,
-        matched_via="unknown",
-        raw_prl=sig.prl,
+        # surfaced in the OS/Device column; marked so it is never mistaken for an OS match
+        device=f"{vendor} (MAC vendor)" if vendor else None,
+        vendor=vendor,
+        confidence=15 if vendor else 0,
+        matched_via=f"oui:{mac[:8]}" if vendor else "unknown",
+        raw_prl=list(raw_prl or []),
     )

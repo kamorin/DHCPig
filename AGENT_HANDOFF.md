@@ -37,7 +37,8 @@ Both front ends drive the SAME `DhcpEngine` and never touch scapy directly.
 | `core/events.py` | `EventBus` (thread-safe), event dataclasses, `to_dict()` + `jsonable()` (recursively converts enums/bytes/Path so JSON never breaks). |
 | `core/safety.py` | `authorize()`, `ScopeGuard`, `RateLimiter` (token bucket), `Cleanup` (tracks leases for restore). |
 | `core/sniffer.py` | thin `AsyncSniffer` wrapper. |
-| `core/fingerprint.py` | `extract_signature()` + `resolve()`: exact option-55 match against `data/combined_dhcp_os_lookup.json`, else builtin vendor-class/OUI/PRL fallback. `DB_VERSION`. |
+| `core/fingerprint.py` | `extract_signature()` + `resolve()`: exact option-55 match against `data/combined_dhcp_os_lookup.json`, else builtin vendor-class/PRL table, else `from_mac()` OUI-only. `DB_VERSION`. |
+| `core/oui.py` | MAC → hardware vendor. `data/mac-vendor.txt` supplement (longest prefix wins) then scapy's bundled Wireshark/IEEE `manuf` DB (~50k); locally-administered MACs labelled as randomised. No bundled IEEE copy needed — scapy already ships one. |
 | `core/reporting.py` | `SessionRecorder` → JSON/CSV/HTML (`render()` / `export()`). Neighbors deduped by MAC. |
 | `core/netutils.py` | iface enumeration, `iface_network_cidr()` (scope auto-fill), IP math, `random_mac()`. |
 | `core/exceptions.py` | `DhcpigError`, `Unauthorized`, `ConfigError`, `OutOfScope`, `SessionConflict`. |
@@ -62,7 +63,10 @@ the browser's `EventSource` updates the DOM. **Handlers must be cheap/non-blocki
 - `active-scan` is non-destructive but **requires `--scope`** (`ConfigError` if missing).
 - **`_send()` is the chokepoint**: scope check (drops out-of-scope, emits `Skipped`), rate limit,
   and **dry-run** (builds + accounts, never calls `sendp`). Keep all sends flowing through it.
-- `restore()` releases exactly the leases in `Cleanup`; exhaust auto-restores on exit.
+- `restore()` releases exactly the leases in `Cleanup`. **Auto-restore is OFF by default**
+  (`restore_on_exit=False`) so the exhausted state can be verified after a run; the operator
+  cleans up via `dhcpig restore <iface>` / the Restore button, or opts in with
+  `--restore-on-exit`. Don't silently flip this back — retention is deliberate.
 
 ## 5a. Confidence model — why the tool can be believed
 The engine reports **verdicts backed by evidence**, not just counters. Three pieces work together
@@ -73,9 +77,16 @@ and should be kept together:
   `_consume_control()` so control traffic never pollutes run counters. The lease is released
   immediately. **A failed `pre` means the test was broken, not that a defense worked** — that
   distinction is the whole point; don't let a null result be reported as a PASS.
-- **`LIMIT_REACHED` vs `EXHAUSTED`**: hitting `--max-leases` is `LimitReached`. Real exhaustion
-  needs offers to have flowed then stopped (`_offers_seen_any` + `offer_silence`), and is only
-  `confirmed=True` when the post control is also denied. Never conflate these again.
+- **`EXHAUSTED` means the server stopped serving — nothing else.** There is no lease cap
+  (`--max-leases` was removed precisely so nothing self-imposed could be mistaken for
+  exhaustion); `--rate` is the only self-imposed bound. Exhaustion needs offers to have flowed
+  then stopped (`_offers_seen_any` + `offer_silence`) and is only `confirmed=True` once the post
+  control is also denied.
+- **Runs finalize themselves.** `_finish_in_background()` spawns a finisher thread that calls
+  `stop()` when a terminal condition hits. This is required, not cosmetic: `stop()` joins the
+  worker threads, so the sender cannot call it directly, and without it the web UI sat idle
+  after the pool drained (senders dead, no post-control, no verdict) until Stop was pressed.
+  `OffersCeased` reports the quiet-period countdown so the UI shows progress meanwhile.
 - **Findings** (`_finalize_findings`, `Finding`): id/verdict/severity/evidence/recommendation,
   emitted as `FindingRaised`, collected into `report["findings"]`. Add new findings there.
 
@@ -134,12 +145,18 @@ python3 -m ruff format --check src tests
   no CDN. Charting is a hand-rolled canvas sparkline (not Chart.js). Keep it dependency-free.
 - **Verbosity**: engine emits `Debug` events always; the CLI shows them only at `-v3`, the web
   filters client-side via the dropdown (each log line tagged level 0–3; errors always show).
+- **Status heartbeat**: `_status_ticker()` emits `StatusTick` every `status_interval` (5s) with
+  totals *and* per-window deltas — deltas are the point, totals alone don't show whether
+  anything is still happening. The thread is deliberately **not** in `_threads`: callers treat
+  that list as "work in progress" and a forever-thread there would stall destructive runs.
+- **OUI fallback confidence is 15 on purpose.** A NIC vendor is not an OS; keep it far below
+  DHCP matches (75–98) so it can never be mistaken for one, and keep `os=None` for these.
 
 ## 9. Current status
 Roadmap V1.0 (CLI), V1.1 (web Exhaust), V2.0 (web all modes + packaging) are all **done**, plus
 these later additions: combined-DB fingerprinting (replacing FingerBank), distinct-MAC default,
 debug logging + verbosity dropdown, `active-scan`, and neighbor↔fingerprint correlation by MAC.
-**91 unit tests pass; ruff clean.** The user validated a real exhaust run on their Kali VM (pcap
+**111 unit tests pass; ruff clean.** The user validated a real exhaust run on their Kali VM (pcap
 reviewed — worked; the single-MAC finding drove the spoof-default change). The confidence work
 in §5a (control transaction, limit-vs-exhaustion, NAKs, findings, `--rate` pacing fix) is done
 but has **not yet been exercised against real hardware** — that's the next validation step.
@@ -151,9 +168,8 @@ but has **not yet been exercised against real hardware** — that's the next val
   Huginn-Muninn); regenerate it from newer source exports to expand coverage. `os` is always
   `None` for combined-DB matches by design (see §8) — if the report/UI should distinguish OS
   from device, that needs a curated taxonomy layered on top of `name`.
-- **Active-scan** currently fingerprints the DHCP *server* (via INFORM reply); ARP-only
-  neighbors (no DHCP chatter observed during the run) still show no OS/Device — there's no
-  OUI-only entry in the combined DB or builtin table to fall back on for those.
+- **Active-scan** fingerprints the DHCP *server* via the INFORM reply; ARP-only neighbours now
+  get MAC-vendor identification (`core/oui.py`), but never an OS — that needs DHCP evidence.
 - **Integration coverage** only exercises exhaust; add netns cases for release/garp/active-scan.
 - **Packaging** `.deb`/`.desktop` exist under `packaging/` but haven't been built/tested on a
   real Kali box yet.

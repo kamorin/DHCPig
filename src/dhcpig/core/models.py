@@ -47,17 +47,19 @@ class SessionConfig:
     request_options: list[int] = field(default_factory=lambda: list(range(80)))
     fuzz: bool = False
     threads: int = 1
-    rate_limit_pps: int = 50  # required safety cap
-    max_leases: int | None = 1000  # hard cap
+    rate_limit_pps: int = 50  # required safety cap (the remaining bound on run impact)
     v6_rapid_commit: bool = False
     dry_run: bool = False
     authorized: bool = False  # set by --i-am-authorized
     scope_cidrs: list[str] | None = None  # required for destructive modes
-    restore_on_exit: bool = True
+    # Default False: keep the leases after the run so the exhausted state can be observed and
+    # verified. Release them explicitly with `dhcpig restore` / the Restore button when done.
+    restore_on_exit: bool = False
     report_path: Path | None = None
     # Run a legitimate DHCP cycle from the real NIC MAC before and after exhausting. This is
     # what separates "the network blocked us" (PASS) from "the test was broken" (INCONCLUSIVE).
     control: bool = True
+    status_interval: float = 5.0  # heartbeat period for StatusTick; 0 disables
     timeouts: Timeouts = field(default_factory=Timeouts)
     verbosity: int = 2
 

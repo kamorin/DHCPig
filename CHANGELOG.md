@@ -1,5 +1,41 @@
 # Changelog
 
+## 2.0.0 (unreleased) — run visibility & MAC vendor identification
+
+- **Periodic status line, every 5s at normal verbosity.** The `StatusTick` event existed since
+  V1.0 but nothing ever emitted it; the engine now runs a heartbeat thread reporting running
+  totals *with per-window deltas and rates*, so a stalled or draining run is obvious at a
+  glance. Zero-valued counters are omitted, so a scan run doesn't carry empty lease columns.
+  `--status-interval SEC` (0 disables).
+
+      [##] t=220s  RUNNING  leases 1022 (+0 in 5s, 0.0/s)  discovers 4300 (+250 in 5s, 50.0/s)
+           offers 1030 (+0 in 5s)  servers 1  last offer 6s ago
+
+- **MAC vendor identification** for hosts with no usable DHCP fingerprint. ARP-only neighbours
+  previously showed an empty OS/Device column; they now show the hardware vendor at a
+  deliberately low confidence (15) that can never be mistaken for an OS match. Two offline
+  sources: scapy's bundled Wireshark/IEEE `manuf` database (~50k OUIs — already a dependency,
+  so nothing extra to ship) plus a vendored `mac-vendor.txt` from arp-scan covering prefixes
+  the IEEE registry omits (QEMU, Bochs, HSRP, VRRP/CARP, WLBS), matched longest-prefix-first.
+  Unresolved MACs are labelled as locally administered (randomised/spoofed) rather than blank.
+
+## 2.0.0 (unreleased) — run completion & lease retention
+
+- **Runs now finalize themselves.** Previously, when the pool drained the sender threads exited
+  on `EXHAUSTED` but nothing called `stop()` — in the web UI the session sat idle with no
+  post-control and no verdict until the operator pressed Stop. A terminal condition now spawns
+  a background finisher that runs the post-control, emits findings and ends the session.
+- New `OffersCeased` event: once offers have been quiet for 2s the UI reports the countdown to
+  the exhaustion deadline, instead of appearing to hang.
+- **Removed `--max-leases` / `max_leases`** entirely (CLI, config, web UI, `as-cli`). With no
+  self-imposed cap, `POOL EXHAUSTED` can only ever mean the server stopped serving; the
+  now-unreachable `LimitReached` event and `LIMIT_REACHED` state were removed with it.
+  `--rate` remains the bound on run impact.
+- **Auto-restore is now off by default** (`restore_on_exit=False`; the web UI's "disable
+  auto-restore" box ships checked). Leases are retained so the exhausted state can be verified;
+  clean up with `dhcpig restore <iface>` / the Restore button, or opt back in with the new
+  `--restore-on-exit`. `--no-restore` is kept as a hidden legacy no-op.
+
 ## 2.0.0 (unreleased) — confidence work
 
 Changes aimed at making results trustworthy enough to put in a hardening report.

@@ -16,6 +16,7 @@ from . import packets
 from .events import EventBus
 from .exceptions import ConfigError
 from .fingerprint import extract_signature, resolve
+from .fingerprint import from_mac as fingerprint_from_mac
 from .models import (
     FAIL,
     INCONCLUSIVE,
@@ -33,16 +34,9 @@ from .models import (
 from .safety import Cleanup, RateLimiter, ScopeGuard, authorize
 from .sniffer import DhcpSniffer
 
-# engine states. LIMIT_REACHED = we hit our own --max-leases cap; EXHAUSTED = the server
-# stopped offering. They are different claims and must not be conflated.
-IDLE, RUNNING, LIMIT_REACHED, EXHAUSTED, STOPPING, DONE = (
-    "IDLE",
-    "RUNNING",
-    "LIMIT_REACHED",
-    "EXHAUSTED",
-    "STOPPING",
-    "DONE",
-)
+# engine states. EXHAUSTED means the *server* stopped offering — it is never set because of
+# anything we chose ourselves (there is no lease cap; --rate is the only self-imposed bound).
+IDLE, RUNNING, EXHAUSTED, STOPPING, DONE = "IDLE", "RUNNING", "EXHAUSTED", "STOPPING", "DONE"
 
 
 class DhcpEngine:
@@ -79,6 +73,11 @@ class DhcpEngine:
         # exhaustion detection: offers must have flowed and then stopped
         self._offers_seen_any = False
         self._last_offer_ts = 0.0
+        self._silence_noticed = False
+        self._finishing = threading.Event()
+        # heartbeat thread; deliberately NOT in _threads (callers treat that list as "work in
+        # progress" and would never see a destructive run finish if a forever-thread were in it)
+        self._ticker: threading.Thread | None = None
         # correlate ARP-discovered neighbors with DHCP-observed fingerprints by MAC, so the
         # Neighbors table shows OS/Device regardless of which signal (ARP vs DHCP) arrives first
         self._neighbors_by_mac: dict[str, Neighbor] = {}
@@ -112,10 +111,15 @@ class DhcpEngine:
         c = self.cfg
         self._debug(
             f"start mode={c.mode.value} iface={c.interface} ipver={c.ip_version.value} "
-            f"rate={c.rate_limit_pps}pps max_leases={c.max_leases} threads={c.threads} "
+            f"rate={c.rate_limit_pps}pps threads={c.threads} "
             f"dry_run={c.dry_run} spoof_eth_src={c.spoof_ethernet_src} "
             f"scope={c.scope_cidrs} restore_on_exit={c.restore_on_exit} control={c.control}"
         )
+        if self.cfg.status_interval > 0:
+            self._ticker = threading.Thread(
+                target=self._status_ticker, name="dhcpig-status", daemon=True
+            )
+            self._ticker.start()
         runners = {
             Mode.EXHAUST: self._run_exhaust,
             Mode.SCAN: self._run_scan,
@@ -124,6 +128,42 @@ class DhcpEngine:
             Mode.GARP_DOS: self._run_garp,
         }
         runners[self.cfg.mode]()
+
+    # ---------------------------------------------------------------- status heartbeat
+    def _counters(self) -> dict:
+        return {
+            "discovers": self.discovers,
+            "offers": self.offers,
+            "leases": self.acks,
+            "naks": self.naks,
+            "releases": self.releases,
+            "garps": self.garps,
+        }
+
+    def _status_ticker(self) -> None:
+        """Emit a StatusTick every `status_interval` seconds until the run stops."""
+        prev, prev_t = self._counters(), time.time()
+        # Event.wait() returns True once _stop is set, so this doubles as the sleep and the exit
+        while not self._stop.wait(self.cfg.status_interval):
+            now = time.time()
+            cur = self._counters()
+            window = max(1e-6, now - prev_t)
+            stats = {
+                "state": self.state,
+                "elapsed": round(now - self._started, 1) if self._started else 0.0,
+                "window": round(window, 1),
+                "servers": len(self.servers),
+                "neighbors": len(self._neighbors_by_mac),
+                **cur,
+                **{f"d_{k}": cur[k] - prev[k] for k in cur},
+                "discover_pps": round((cur["discovers"] - prev["discovers"]) / window, 1),
+                "lease_pps": round((cur["leases"] - prev["leases"]) / window, 1),
+                "since_last_offer": (
+                    round(now - self._last_offer_ts, 1) if self._offers_seen_any else None
+                ),
+            }
+            self.bus.emit(ev.StatusTick(stats=stats))
+            prev, prev_t = cur, now
 
     def stop(self) -> None:
         if self.state == DONE:
@@ -152,6 +192,19 @@ class DhcpEngine:
             self.restore()
         self.state = DONE
         self.bus.emit(ev.SessionEnded(report=self.status()))
+
+    def _finish_in_background(self, reason: str) -> None:
+        """A terminal condition was reached — finalize without waiting for the operator.
+
+        Runs off-thread because stop() joins the worker threads, and the caller here *is* one
+        of them. Without this the run would sit idle after the pool drained: senders dead, no
+        post-control, no verdict, until someone pressed Stop.
+        """
+        if self._finishing.is_set():
+            return
+        self._finishing.set()
+        self._debug(f"auto-finalizing: {reason}")
+        threading.Thread(target=self.stop, name="dhcpig-finish", daemon=True).start()
 
     def restore(self) -> None:
         """Release exactly the leases we acquired."""
@@ -439,8 +492,15 @@ class DhcpEngine:
             )
 
     def _note_neighbor(self, mac: str, ip: str) -> Neighbor:
-        """Record/refresh a neighbor, attaching any DHCP fingerprint already seen for this MAC."""
-        n = Neighbor(mac=mac, ip=ip, fingerprint=self._fp_by_mac.get(mac))
+        """Record/refresh a neighbor, attaching any DHCP fingerprint already seen for this MAC.
+
+        With no DHCP evidence we fall back to the MAC's OUI, so an ARP-only host still shows
+        its hardware vendor rather than an empty OS/Device column.
+        """
+        fp = self._fp_by_mac.get(mac)
+        if fp is None:
+            fp = fingerprint_from_mac(mac, ip=ip, role="neighbor")
+        n = Neighbor(mac=mac, ip=ip, fingerprint=fp)
         self._neighbors_by_mac[mac] = n
         self.bus.emit(ev.NeighborFound(neighbor=n))
         return n
@@ -513,20 +573,11 @@ class DhcpEngine:
 
         macs = list(self.cfg.client_macs) if self.cfg.client_macs else None
         while not self._stop.is_set():
-            # Hitting our own cap is NOT pool exhaustion — it says nothing about the server.
-            if self.cfg.max_leases is not None and self.acks >= self.cfg.max_leases:
-                if self.state not in (LIMIT_REACHED, EXHAUSTED):
-                    self.state = LIMIT_REACHED
-                    self.bus.emit(
-                        ev.LimitReached(leases=self.acks, elapsed=time.time() - self._started)
-                    )
-                return
             # Offers flowed and then stopped: the pool *looks* drained. Provisional until the
-            # post-run control transaction confirms a real client is also denied.
-            if (
-                self._offers_seen_any
-                and (time.time() - self._last_offer_ts) > self.cfg.timeouts.offer_silence
-            ):
+            # post-run control transaction confirms a real client is also denied — which we now
+            # go and do ourselves rather than waiting for the operator to press Stop.
+            silence = time.time() - self._last_offer_ts
+            if self._offers_seen_any and silence > self.cfg.timeouts.offer_silence:
                 if self.state != EXHAUSTED:
                     self.state = EXHAUSTED
                     self.bus.emit(
@@ -536,7 +587,19 @@ class DhcpEngine:
                             confirmed=False,
                         )
                     )
+                    self._finish_in_background(
+                        f"no OFFER for {silence:.0f}s after {self.acks} lease(s)"
+                    )
                 return
+            if self._offers_seen_any and silence > 2.0 and not self._silence_noticed:
+                self._silence_noticed = True
+                self.bus.emit(
+                    ev.OffersCeased(
+                        quiet_for=silence,
+                        leases=self.acks,
+                        deadline=self.cfg.timeouts.offer_silence,
+                    )
+                )
             mac = macs.pop(0) if macs else random_mac()
             if macs is not None:
                 macs.append(mac)  # rotate through the provided list
@@ -569,6 +632,7 @@ class DhcpEngine:
         self.offers += 1
         self._offers_seen_any = True
         self._last_offer_ts = time.time()
+        self._silence_noticed = False  # offers resumed; re-arm the quiet-period notice
         server_id, server_mac, offered_ip, subnet = packets.parse_offer(pkt)
         server = self.servers.get(server_id)
         if server is None:
