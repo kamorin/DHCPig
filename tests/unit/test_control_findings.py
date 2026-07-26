@@ -361,15 +361,18 @@ def test_sender_does_not_add_fixed_sleep(monkeypatch):
 # ---------------------------------------------------------------- windowed handshake pipeline
 def test_window_never_exceeds_its_configured_cap(monkeypatch):
     eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST, window_initial=8, window_max=10)
+    eng.cfg.window_growth_per_ack = 1.0  # cap behavior, not the ratchet rate, is under test
     for _ in range(20):
         eng._grow_window()
     assert eng._window == 10
 
 
 def test_ack_grows_window_nak_and_timeout_halve_it(monkeypatch):
+    """(2.3, Phase 7) 100 clean ACKs per +1 slot, not 2 -- 99 calls must not grow the window,
+    the 100th must."""
     eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST, window_initial=8, window_max=64)
-    # half-rate ramp: the first clean ACK only banks half a slot, the second one cashes it in
-    eng._grow_window()
+    for _ in range(99):
+        eng._grow_window()
     assert eng._window == 8
     eng._grow_window()
     assert eng._window == 9
@@ -381,16 +384,26 @@ def test_ack_grows_window_nak_and_timeout_halve_it(monkeypatch):
 
 
 def test_growth_accumulator_resets_on_shrink(monkeypatch):
-    """A banked half-slot from before a NAK/timeout shouldn't give the very next ACK after
-    the shrink a free head start -- ramping back up should be just as cautious as ramping
-    up cold."""
+    """A partially-banked accumulator from before a NAK/timeout shouldn't give the ACKs right
+    after the shrink a head start -- ramping back up should be just as cautious as ramping up
+    cold: the next 99 calls still must not grow the window."""
     eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST, window_initial=8, window_max=64)
-    eng._grow_window()  # banks 0.5, window still 8
+    for _ in range(50):
+        eng._grow_window()  # bank 0.5, well short of a slot
     eng._shrink_window("nak")  # window -> 4, accumulator wiped
-    eng._grow_window()  # banks 0.5 again, not 1.0 -- should NOT grow yet
+    for _ in range(99):
+        eng._grow_window()  # starting from zero again -- should NOT grow yet
     assert eng._window == 4
-    eng._grow_window()
+    eng._grow_window()  # the 100th since the reset
     assert eng._window == 5
+
+
+def test_window_growth_per_ack_is_config_driven(monkeypatch):
+    """The increment is a SessionConfig field, not a hardcoded literal (2.3, Phase 7)."""
+    eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST, window_initial=8, window_max=64)
+    eng.cfg.window_growth_per_ack = 1.0
+    eng._grow_window()  # a single ACK is enough to grow the window when the rate is 1.0
+    assert eng._window == 9
 
 
 def test_only_acks_increment_the_lease_counter_not_timeouts(monkeypatch):

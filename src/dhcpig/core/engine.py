@@ -1285,10 +1285,15 @@ class DhcpEngine:
         self._finish_in_background(f"control detected: {signal} — {detail}")
 
     def _grow_window(self) -> None:
-        """Grow at half the naive rate: each clean ACK only adds 0.5 to an accumulator, so it
-        takes two clean ACKs to actually widen the window by one slot."""
+        """Grow at `cfg.window_growth_per_ack` per clean ACK (default 0.01, i.e. 100 clean ACKs
+        widen the window by one slot) -- a ratchet, not a ramp: `_shrink_window()` still halves
+        on NAK/timeout/duplicate-offer and wipes this accumulator, so on any run with even
+        occasional errors the window trends toward the floor of 1 rather than climbing back.
+        That's the deliberate trade-off (2.3, Phase 7): a small, steady window is what keeps the
+        server's pending-offer table from saturating, which is what the NAK-then-silence stall
+        this pacing logic exists to prevent was caused by."""
         with self._inflight_lock:
-            self._window_growth_accum += 0.5
+            self._window_growth_accum += self.cfg.window_growth_per_ack
             if self._window_growth_accum < 1.0:
                 return
             self._window_growth_accum -= 1.0

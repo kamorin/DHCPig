@@ -89,6 +89,12 @@ class SessionConfig:
     status_interval: float = 5.0  # heartbeat period for StatusTick; 0 disables
     window_initial: int = 8  # exhaust: starting number of in-flight DISCOVER/REQUEST transactions
     window_max: int = 64  # exhaust: ceiling the adaptive window may grow to
+    # (2.3, Phase 7) how much a clean ACK banks toward the next +1 window slot. 0.01 means 100
+    # clean ACKs per slot -- deliberately slow. At the old 0.5 (two ACKs per slot) the window hit
+    # window_max well before a typical pool drained, saturating the server's pending-offer table
+    # and producing a NAK-then-silence stall. Lower this only with a clear read on what it does
+    # to the ramp -- see _grow_window()'s docstring for the actual numbers.
+    window_growth_per_ack: float = 0.01
     # Lease journal (2.2): an append-only, crash-tolerant record of every lease acquired, so
     # `release-previous` can recover a drained pool even after the process that drained it is
     # long gone. On by default -- a recovery tool that only sometimes records is useless.
