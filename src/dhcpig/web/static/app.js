@@ -23,7 +23,7 @@ const rate = { last: 0, series: [] };
 const servers = new Map();
 const neighbors = new Map();
 const leases = [];
-const SCOPE_MODES = new Set(["release", "garp", "active-scan", "release-previous"]);
+const SCOPE_MODES = new Set(["release", "active-scan", "release-previous"]);
 const ifaceCidr = {};       // iface name -> network cidr (for scope auto-fill)
 let lastAutoScope = "";     // remember what we auto-filled so we don't clobber user edits
 
@@ -68,7 +68,7 @@ function setRunning(on) {
 function onModeChange() {
   const mode = $("mode").value;
   // scope is optional everywhere except active-scan, but the box is useful for any mode
-  // that targets neighbours, so show it for release/garp/active-scan
+  // that targets neighbours, so show it for release/active-scan/release-previous
   $("destcfg").classList.toggle("hidden", !SCOPE_MODES.has(mode));
   // exhaust has no --rate of its own; the windowed handshake pipeline paces it instead
   const isExhaust = mode === "exhaust";
@@ -85,7 +85,6 @@ function onModeChange() {
     scan: ["hosts", "servers", "resolved"],
     "active-scan": ["hosts", "servers", "resolved"],
     release: ["released", "neighbors", "pps"],
-    garp: ["gARP sent", "neighbors", "pps"],
     "release-previous": ["released", "servers", "pps"],
   }[mode];
   $("l-a").textContent = labels[0];
@@ -261,7 +260,7 @@ function handleEvent(e) {
       break;
     }
     case "LeaseReleased": logLine("out", `[->] DHCPRELEASE  ${e.lease.ip}`, 2); break;
-    case "GarpSent": logLine("out", `[->] Gratuitous_ARP knock offline ${e.ip}`, 2); break;
+    case "ArpConflictSent": logLine("out", `[->] ARP_conflict contest ownership of ${e.ip}`, 2); break;
     case "Skipped": logLine("alert", `[!!] SKIPPED ${e.ip}  ${e.reason}`, 1); break;
     case "StatusTick": {
       const s = e.stats, w = Math.round(s.window || 0);
@@ -275,7 +274,7 @@ function handleEvent(e) {
       col("leases", "leases", "lease_pps");
       col("discovers", "discovers", "discover_pps");
       col("offers", "offers"); col("naks", "naks");
-      col("releases", "releases"); col("garps", "garps");
+      col("releases", "releases"); col("arp_conflicts", "arp_conflicts");
       if (s.servers) bits.push(`servers ${s.servers}`);
       if (s.neighbors) bits.push(`neighbors ${s.neighbors}`);
       if (s.send_window != null) bits.push(`window ${s.send_window} (inflight ${s.inflight || 0})`);
@@ -342,7 +341,7 @@ async function pollStatus() {
     const mode = $("mode").value;
     const scanlike = mode === "scan" || mode === "active-scan";
     const primary = { exhaust: status.leases, scan: neighbors.size,
-      "active-scan": neighbors.size, release: status.releases, garp: status.garps,
+      "active-scan": neighbors.size, release: status.releases,
       "release-previous": status.releases }[mode] ?? 0;
     const pps = Math.max(0, (status.discovers ?? 0) - rate.last);
     rate.last = status.discovers ?? 0;

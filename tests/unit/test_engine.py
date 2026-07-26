@@ -47,7 +47,7 @@ def test_live_send_calls_sendp(sent):
 
 def test_scope_blocks_out_of_scope_target(sent):
     bus, events = _bus_collect()
-    cfg = SessionConfig(interface="lo", mode=Mode.GARP_DOS, scope_cidrs=["10.0.0.0/24"])
+    cfg = SessionConfig(interface="lo", mode=Mode.RELEASE_NEIGHBORS, scope_cidrs=["10.0.0.0/24"])
     eng = DhcpEngine(cfg, bus)
     assert eng._send(_pkt(), target_ip="192.168.1.5") is False
     assert sent == []
@@ -68,8 +68,10 @@ def test_restore_releases_exactly_acquired_leases(sent):
 
 
 def test_do_garp_only_in_scope(sent):
+    """(2.3) _do_garp is the frame-building core that Phase 4's eviction reuses (renamed to
+    _do_arp_conflict there); scope enforcement must survive that rewrite unchanged."""
     bus, events = _bus_collect()
-    cfg = SessionConfig(interface="lo", mode=Mode.GARP_DOS, scope_cidrs=["172.20.0.0/16"])
+    cfg = SessionConfig(interface="lo", mode=Mode.RELEASE_NEIGHBORS, scope_cidrs=["172.20.0.0/16"])
     eng = DhcpEngine(cfg, bus)
     targets = [
         Neighbor("de:ad:00:00:00:01", "172.20.0.7"),
@@ -77,40 +79,31 @@ def test_do_garp_only_in_scope(sent):
         Neighbor("de:ad:00:00:00:03", "172.20.0.8"),
     ]
     n = eng._do_garp(targets)
-    # two in-scope targets x (GARP request + GARP reply); no gateway given, so no unicast poison
+    # two in-scope targets x (ARP conflict request + reply); no third/gateway frame (2.3)
     assert n == 4
     assert len(sent) == 4
     assert any(isinstance(e, ev.Skipped) for e in events)
-
-
-def test_do_garp_adds_gateway_blackhole_per_target(sent):
-    """The unicast gateway poison is the frame that actually costs a victim connectivity."""
-    from dhcpig.core import packets as pk
-
-    bus, _ = _bus_collect()
-    cfg = SessionConfig(interface="lo", mode=Mode.GARP_DOS, scope_cidrs=["172.20.0.0/16"])
-    eng = DhcpEngine(cfg, bus)
-    n = eng._do_garp([Neighbor("de:ad:00:00:00:01", "172.20.0.7")], gateway="172.20.0.1")
-    assert n == 3  # request + reply + unicast gateway poison
-    poison = sent[-1]
-    assert poison[pk.ARP].op == pk.ARP_REPLY
-    assert poison[pk.ARP].psrc == "172.20.0.1"  # claims to be the gateway
-    assert poison[pk.ARP].pdst == "172.20.0.7"  # directed at the victim
-    assert poison.dst == "de:ad:00:00:00:01"  # unicast, not broadcast
-    # blackhole, never our own MAC: the forged MAC must not be a real host on the segment
-    assert poison[pk.ARP].hwsrc not in ("172.20.0.1", eng.cfg.interface)
 
 
 def test_garp_sends_both_arp_forms(sent):
     from dhcpig.core import packets as pk
 
     bus, _ = _bus_collect()
-    eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.GARP_DOS), bus)
+    eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.RELEASE_NEIGHBORS), bus)
     eng._do_garp([Neighbor("de:ad:00:00:00:01", "10.0.0.7")])
     ops = [p[pk.ARP].op for p in sent]
     assert ops == [pk.ARP_REQUEST, pk.ARP_REPLY]
     for p in sent:  # announcement form: psrc == pdst == the claimed address
         assert p[pk.ARP].psrc == p[pk.ARP].pdst == "10.0.0.7"
+
+
+def test_do_garp_no_longer_takes_a_gateway_blackhole():
+    """(2.3) build_arp_poison() and the third unicast gateway-blackhole frame were removed --
+    _do_garp's signature no longer accepts a `gateway` argument at all."""
+    import inspect
+
+    sig = inspect.signature(DhcpEngine._do_garp)
+    assert "gateway" not in sig.parameters
 
 
 def test_do_release_only_in_scope(sent):
@@ -129,7 +122,7 @@ def test_do_release_only_in_scope(sent):
 def test_scope_still_bounds_targets_when_supplied(sent):
     """--scope is optional now, but when given it must still be enforced at _send()."""
     bus, events = _bus_collect()
-    cfg = SessionConfig(interface="lo", mode=Mode.GARP_DOS, scope_cidrs=["10.0.0.0/24"])
+    cfg = SessionConfig(interface="lo", mode=Mode.RELEASE_NEIGHBORS, scope_cidrs=["10.0.0.0/24"])
     eng = DhcpEngine(cfg, bus)
     assert eng._send(_pkt(), target_ip="10.0.0.5") is True
     assert eng._send(_pkt(), target_ip="192.168.1.5") is False

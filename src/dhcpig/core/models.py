@@ -17,7 +17,6 @@ class Mode(Enum):
     SCAN = "scan"  # passive: listen only
     ACTIVE_SCAN = "active-scan"  # active discovery: ARP sweep + DHCP INFORM (scope required)
     RELEASE_NEIGHBORS = "release"
-    GARP_DOS = "garp"
     # Recovery: replay the lease journal to release phantom leases this tool (or an earlier run
     # of it) acquired within the current network. Not in DESTRUCTIVE_MODES -- it only releases
     # leases the journal proves this tool took, so it adds no offensive capability.
@@ -27,7 +26,7 @@ class Mode(Enum):
 # Modes that disrupt live clients. Used for labelling and reporting only — they are no longer
 # gated behind an authorization attestation, and --scope is optional (it bounds a run when
 # supplied, and otherwise the interface's own network is used).
-DESTRUCTIVE_MODES: set[Mode] = {Mode.RELEASE_NEIGHBORS, Mode.GARP_DOS}
+DESTRUCTIVE_MODES: set[Mode] = {Mode.RELEASE_NEIGHBORS}
 # active-scan still requires an explicit scope so its sweep can't be unbounded
 SCOPE_REQUIRED_MODES: set[Mode] = {Mode.ACTIVE_SCAN}
 
@@ -45,9 +44,11 @@ class Timeouts:
     dhcp_request: float = 2.0  # legacy -z
     control: float = 5.0  # per-leg wait for the control transaction's OFFER / ACK
     offer_silence: float = 10.0  # offers must stop this long before we suspect exhaustion
-    # garp re-poisoning period. Hosts re-ARP within seconds and the real owner answers, so a
-    # single pass is undone almost immediately — the mapping only sticks if it is refreshed.
-    garp_interval: float = 2.0
+    # eviction (2.3): spacing between ARP-conflict rounds. Must stay under RFC 5227's 10s
+    # DEFEND_INTERVAL -- a second conflict inside that window is what moves a host out of its
+    # "defend once" phase; spaced further apart than that, each round looks like a fresh,
+    # independently-defensible conflict and the host never gives up the address.
+    evict_interval: float = 3.0
 
 
 @dataclass

@@ -1,6 +1,6 @@
 """dhcpig command-line interface (V1.0).
 
-Subcommands: exhaust | scan | release | garp | restore | ifaces | report
+Subcommands: exhaust | scan | active-scan | release | release-previous | restore | ifaces | report
 Exit codes: 0 ok · 2 bad args · 3 no DHCP server · 130 interrupted
 """
 
@@ -32,7 +32,6 @@ _MODE_BY_CMD = {
     "scan": Mode.SCAN,
     "active-scan": Mode.ACTIVE_SCAN,
     "release": Mode.RELEASE_NEIGHBORS,
-    "garp": Mode.GARP_DOS,
     "release-previous": Mode.RELEASE_PREVIOUS,
 }
 
@@ -133,10 +132,7 @@ def build_parser() -> argparse.ArgumentParser:
     asc.add_argument("--rate", type=int, default=7)
     asc.add_argument("--dry-run", action="store_true")
 
-    for name, helptext in (
-        ("release", "DHCPRELEASE in-scope neighbors (DESTRUCTIVE)"),
-        ("garp", "gratuitous-ARP DoS, standalone (DESTRUCTIVE)"),
-    ):
+    for name, helptext in (("release", "DHCPRELEASE in-scope neighbors (DESTRUCTIVE)"),):
         d = sub.add_parser(name, help=helptext)
         common(d)
         d.add_argument(
@@ -225,7 +221,7 @@ def build_config(args) -> SessionConfig:
         request_options=req_opts,
         fuzz=getattr(args, "fuzz", False),
         # exhaust has no --rate: the windowed handshake pipeline paces it. Everything else
-        # (release/garp/active-scan) still takes --rate as its only pacing mechanism.
+        # (release/active-scan/release-previous) still takes --rate as its only pacing mechanism.
         rate_limit_pps=(
             EXHAUST_DEFAULT_RATE_PPS if mode is Mode.EXHAUST else getattr(args, "rate", 7)
         ),
@@ -315,7 +311,7 @@ def _run_session(cfg: SessionConfig) -> int:
     st = engine.status()
     print(
         f"[--] done: leases={st['leases']} servers={st['servers']} naks={st['naks']} "
-        f"releases={st['releases']} garps={st['garps']}"
+        f"releases={st['releases']} arp_conflicts={st['arp_conflicts']}"
     )
     if engine.findings:
         worst = {"FAIL": 3, "INCONCLUSIVE": 2, "PASS": 1, "INFO": 0}

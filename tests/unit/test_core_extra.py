@@ -122,7 +122,7 @@ def test_exhaust_sender_stops_when_offers_cease(monkeypatch):
 def test_status_shape(monkeypatch):
     eng, _, _ = _engine(monkeypatch)
     st = eng.status()
-    for key in ("state", "discovers", "leases", "garps", "releases", "servers"):
+    for key in ("state", "discovers", "leases", "arp_conflicts", "releases", "servers"):
         assert key in st
 
 

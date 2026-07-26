@@ -167,22 +167,6 @@ def build_garp(ip: str, mac: str, op: int = 1) -> Ether:
     )
 
 
-def build_arp_poison(claim_ip: str, claim_mac: str, victim_ip: str, victim_mac: str) -> Ether:
-    """Unicast ARP reply telling one victim that `claim_ip` is at `claim_mac`.
-
-    Directed at a single host, so it lands in that host's cache rather than relying on it to
-    honour a broadcast. Used to blackhole a victim's default route by pointing the gateway IP
-    at an unused MAC.
-
-    NOTE (whitehat boundary): `claim_mac` must always be a bogus/unused address so the traffic
-    is dropped. Never point it at our own MAC — that would turn a denial-of-service check into
-    traffic interception, which is out of scope for this tool.
-    """
-    return Ether(src=claim_mac, dst=victim_mac) / ARP(
-        op=ARP_REPLY, hwsrc=claim_mac, psrc=claim_ip, hwdst=victim_mac, pdst=victim_ip
-    )
-
-
 def build_arp_request(ip: str, src_ip: str, src_mac: str | None = None) -> Ether:
     eth = Ether(dst="ff:ff:ff:ff:ff:ff")
     if src_mac:
