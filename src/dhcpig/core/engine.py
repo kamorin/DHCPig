@@ -148,7 +148,7 @@ class DhcpEngine:
             f"start mode={c.mode.value} iface={c.interface} ipver={c.ip_version.value} "
             f"rate={c.rate_limit_pps}pps "
             f"dry_run={c.dry_run} spoof_eth_src={c.spoof_ethernet_src} "
-            f"scope={c.scope_cidrs} restore_on_exit={c.restore_on_exit} control={c.control}"
+            f"scope={c.scope_cidrs} restore_on_exit={c.restore_on_exit}"
         )
         if self.cfg.status_interval > 0:
             self._ticker = threading.Thread(
@@ -225,8 +225,9 @@ class DhcpEngine:
         for t in self._threads:
             t.join(timeout=3.0)
         # Post-run control runs BEFORE restore, while our leases are still held — that is what
-        # makes "a real client can't get an address" a meaningful measurement.
-        if self.cfg.mode is Mode.EXHAUST and self.cfg.control and self._sniffer is not None:
+        # makes "a real client can't get an address" a meaningful measurement. Not optional:
+        # dry-run has no sniffer to receive the reply, which is the only thing that skips it.
+        if self.cfg.mode is Mode.EXHAUST and self._sniffer is not None:
             self.control_post = self._control_transaction("post", client="self")
             # the leg that actually answers "is the pool drained?" — needs a fresh address
             self.control_post_new = self._control_transaction("post", client="new")
@@ -974,7 +975,7 @@ class DhcpEngine:
         """
         if self.cfg.arp_sweep:
             self._baseline_arp_scan()
-        if self.cfg.control and not self._stop.is_set():
+        if not self._stop.is_set():
             self.control_pre = self._control_transaction("pre", client="self")
             self.control_pre_new = self._control_transaction("pre", client="new")
         if not self._stop.is_set():
@@ -997,7 +998,7 @@ class DhcpEngine:
         if pre is None or not pre.success or not pre.server_id:
             self._debug(
                 "release phase skipped: no confirmed server identity yet "
-                f"(control={self.cfg.control}, pre_ok={bool(pre and pre.success)})"
+                f"(pre_ok={bool(pre and pre.success)})"
             )
             return
         server_id, server_mac = pre.server_id, pre.server_mac
@@ -1324,10 +1325,8 @@ class DhcpEngine:
         self._debug(f"release: {len(neighbors)} neighbor(s) discovered in scope")
         # _discover_neighbors is ARP-only and never learns a DHCP server identity. (BUG FIX,
         # 2.1) this mode used to send every RELEASE to 0.0.0.0, which no server honours — run a
-        # quick self-MAC control cycle to learn the real server before sending anything.
-        if not self.cfg.control:
-            self._debug("release: skipped — --no-control means no server identity is known")
-            return
+        # quick self-MAC control cycle to learn the real server before sending anything. Not
+        # optional: without it there is no way to target the RELEASE at a real server.
         pre = self._control_transaction("pre", client="self")
         self.control_pre = pre
         if not pre.success or not pre.server_id:

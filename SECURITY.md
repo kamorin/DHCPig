@@ -7,7 +7,7 @@ explicitly authorized to test.
 - `exhaust` paces itself with a windowed, adaptive handshake pipeline (starts small, grows on a
   clean ACK, halves on a NAK/timeout/duplicate offer) instead of a flat rate cap — see the
   README's EXHAUST PIPELINE section. `release`, `garp`, and `active-scan` still take a rate cap
-  (`--rate`, default 10 pps) bounding how fast they emit RELEASE/ARP/INFORM traffic.
+  (`--rate`, default 7 pps) bounding how fast they emit RELEASE/ARP/INFORM traffic.
 - `exhaust` also **halts sending immediately** if a defensive control fires mid-run (a NAK
   burst, the link going down, a timeout storm, or a duplicate-offer pattern) — it doesn't try to
   push through a control that's already working. Leases already acquired are kept (not

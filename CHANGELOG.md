@@ -30,6 +30,12 @@ pool exhaustion.**
   never fabricated — shows `—` when unknown) surfaces as a live dashboard number:
   `headroom = pool_size - leases_held - observed_in_use`, floored at 0, always labelled with its
   source. New `POOL_HEADROOM_LOW` finding when the pre-test baseline is already ≥80% utilized.
+- **The control transaction is no longer optional.** Removed `--no-control` (CLI) and the
+  Control checkbox (web); `SessionConfig.control` is gone. `exhaust` always runs the legitimate
+  pre/post DHCP cycle from the real NIC MAC — a run without it can't produce a trustworthy
+  verdict, so there's no longer a way to skip it.
+- **Default `--rate` lowered from 10 to 7 pps** (`release`/`garp`/`active-scan`; exhaust has no
+  `--rate` of its own — see above).
 - **Verdict rename.** `DHCP_STARVATION_POSSIBLE`, `DHCP_STARVATION_BLOCKED`,
   `POOL_EXHAUSTED_CONFIRMED`, and `POOL_NOT_EXHAUSTED` are retired in favor of two:
   `DHCP_STARVATION_ATTAINED` (FAIL — acks>0 and the post-run new-MAC control was denied and its

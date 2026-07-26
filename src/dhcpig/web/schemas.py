@@ -39,7 +39,7 @@ def config_from_payload(payload: dict) -> SessionConfig:
     rate = (
         EXHAUST_DEFAULT_RATE_PPS
         if mode is Mode.EXHAUST
-        else _as_int(payload.get("rate", 10), "rate", lo=1, hi=100000)
+        else _as_int(payload.get("rate", 7), "rate", lo=1, hi=100000)
     )
     return SessionConfig(
         interface=iface,
@@ -50,7 +50,6 @@ def config_from_payload(payload: dict) -> SessionConfig:
         scope_cidrs=scope,
         spoof_ethernet_src=bool(payload.get("spoof_eth_src", True)),
         restore_on_exit=bool(payload.get("restore_on_exit", False)),
-        control=bool(payload.get("control", True)),
         arp_sweep=bool(payload.get("arp_sweep", True)),
         release_neighbors=bool(payload.get("release_neighbors", True)),
         status_interval=float(payload.get("status_interval", 5.0) or 0),
@@ -70,8 +69,6 @@ def as_cli(cfg: SessionConfig) -> str:
         parts += ["--scope", cidr]
     if cfg.dry_run:
         parts.append("--dry-run")
-    if not cfg.control and cfg.mode is Mode.EXHAUST:
-        parts.append("--no-control")
     if not cfg.arp_sweep and cfg.mode is Mode.EXHAUST:
         parts.append("--no-arp-scan")
     if not cfg.release_neighbors and cfg.mode is Mode.EXHAUST:

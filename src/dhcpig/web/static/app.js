@@ -38,7 +38,6 @@ function currentConfig() {
     scope_cidrs: scope.length ? scope : null,
     spoof_eth_src: $("spoofeth").checked,
     restore_on_exit: !$("norestore").checked,
-    control: $("control").checked,
     arp_sweep: $("arpscan").checked,
     release_neighbors: $("releasefirst").checked,
     verbosity: currentVerbosity(),
@@ -52,7 +51,6 @@ function applyConfig(c) {
   if (c.rate != null) $("rate").value = c.rate;
   if (c.dry_run != null) $("dryrun").checked = c.dry_run;
   if (c.spoof_eth_src != null) $("spoofeth").checked = c.spoof_eth_src;
-  if (c.control != null) $("control").checked = c.control;
   if (c.arp_sweep != null) $("arpscan").checked = c.arp_sweep;
   if (c.release_neighbors != null) $("releasefirst").checked = c.release_neighbors;
   if (Array.isArray(c.scope_cidrs)) $("scope").value = c.scope_cidrs.join(", ");
@@ -65,7 +63,7 @@ function setRunning(on) {
   $("start").disabled = on;
   $("stop").disabled = !on;
   ["iface", "mode", "rate", "dryrun", "norestore", "scope",
-    "spoofeth", "control", "arpscan", "releasefirst"].forEach((id) => ($(id).disabled = on));
+    "spoofeth", "arpscan", "releasefirst"].forEach((id) => ($(id).disabled = on));
 }
 
 function onModeChange() {
@@ -417,7 +415,6 @@ function cliFromConfig() {
   if (c.restore_on_exit) s += " --restore-on-exit";
   (c.scope_cidrs || []).forEach((x) => (s += ` --scope ${x}`));
   if (c.dry_run) s += " --dry-run";
-  if (!c.control && c.mode === "exhaust") s += " --no-control";
   if (!c.arp_sweep && c.mode === "exhaust") s += " --no-arp-scan";
   if (!c.release_neighbors && c.mode === "exhaust") s += " --no-release";
   return s;
