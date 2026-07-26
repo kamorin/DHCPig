@@ -44,16 +44,15 @@ the test, so a null result can be told apart from a broken test">
   </header>
 
   <div id="drybanner" class="banner warn">DRY RUN — building packets, nothing is sent on the wire</div>
-  <div id="destbanner" class="banner bad hidden">⚠ DESTRUCTIVE MODE — authorization + scope required</div>
 
   <main>
     <section class="panel config">
       <h2>Config</h2>
-      <label>Rate (pps) <input type="number" id="rate" value="20" min="1" /></label>
+      <label>Rate (pps) <input type="number" id="rate" value="10" min="1" /></label>
       <label>Threads <input type="number" id="threads" value="1" min="1" max="64" /></label>
       <div id="destcfg" class="destcfg hidden">
-        <label>Scope CIDRs <input type="text" id="scope" placeholder="172.20.0.0/16, ..." /></label>
-        <label class="chk" id="authlbl"><input type="checkbox" id="authorized" /> I am authorized</label>
+        <label>Scope CIDRs <input type="text" id="scope"
+          placeholder="defaults to the interface network" /></label>
       </div>
       <label class="chk"><input type="checkbox" id="spoofeth" checked /> spoof eth src (distinct MACs)</label>
       <label class="chk" title="Leave the acquired leases in place after the run so the exhausted
@@ -101,20 +100,6 @@ were present beforehand.">
   </main>
 
   <section class="panel log"><h2>Event log</h2><pre id="log"></pre></section>
-
-  <div id="modal" class="modal hidden">
-    <div class="modal-box">
-      <h3 id="modal-title">Confirm destructive action</h3>
-      <p id="modal-text"></p>
-      <label>Type the interface name to confirm:
-        <input type="text" id="modal-input" autocomplete="off" />
-      </label>
-      <div class="modal-actions">
-        <button id="modal-cancel">Cancel</button>
-        <button id="modal-go" class="danger" disabled>Proceed</button>
-      </div>
-    </div>
-  </div>
 
   <script src="/app.js"></script>
 </body>

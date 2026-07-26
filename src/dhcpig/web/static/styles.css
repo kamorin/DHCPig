@@ -20,7 +20,6 @@ button { background: var(--edge); color: var(--fg); border: 0; border-radius: 6p
   padding: 6px 10px; cursor: pointer; font: inherit; }
 button:hover:not(:disabled) { outline: 1px solid var(--accent); }
 button:disabled { opacity: .4; cursor: default; }
-button.danger { background: #4a1f1f; color: #ff9a92; }
 .exportgrp { color: var(--muted); font-size: 12px; }
 .exportgrp button { padding: 4px 8px; margin-left: 2px; }
 .filebtn { cursor: pointer; }
@@ -87,10 +86,3 @@ th { color: var(--muted); font-weight: 600; }
 .ctlbox li.bad { color: var(--bad); }
 .ctlbox li.skip { color: var(--muted); }
 
-.modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex;
-  align-items: center; justify-content: center; }
-.modal-box { background: var(--panel); border: 1px solid var(--bad); border-radius: 10px;
-  padding: 18px; width: min(520px, 92vw); }
-.modal-box h3 { margin: 0 0 8px; color: var(--bad); }
-.modal-box input { width: 100%; margin-top: 4px; }
-.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 14px; }

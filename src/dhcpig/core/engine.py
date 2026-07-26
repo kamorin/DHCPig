@@ -31,7 +31,7 @@ from .models import (
     ServerInfo,
     SessionConfig,
 )
-from .safety import Cleanup, RateLimiter, ScopeGuard, authorize
+from .safety import Cleanup, RateLimiter, ScopeGuard
 from .sniffer import DhcpSniffer
 
 # engine states. EXHAUSTED means the *server* stopped offering — it is never set because of
@@ -105,7 +105,6 @@ class DhcpEngine:
 
     # ---------------------------------------------------------------- lifecycle
     def start(self) -> None:
-        authorize(self.cfg)  # raises Unauthorized for destructive w/o auth+scope
         if self.cfg.mode is Mode.ACTIVE_SCAN and not self.cfg.scope_cidrs:
             raise ConfigError("active-scan requires --scope (the network range to sweep)")
         self._started = time.time()
@@ -874,7 +873,8 @@ class DhcpEngine:
         self._threads.append(t)
 
     def _release_worker(self) -> None:
-        neighbors, server_ip = self._discover_neighbors()
+        # no scope given -> fall back to the interface's own network
+        neighbors, server_ip = self._discover_neighbors(self._sweep_cidrs())
         self._debug(f"release: {len(neighbors)} neighbor(s) discovered in scope")
         self._do_release(neighbors, server_ip or "0.0.0.0")
 
@@ -884,8 +884,8 @@ class DhcpEngine:
         self._threads.append(t)
 
     def _garp_worker(self) -> None:
-        # standalone: no exhaustion phase. Target in-scope hosts discovered via ARP.
-        neighbors, _ = self._discover_neighbors()
+        # standalone: no exhaustion phase. No scope given -> the interface's own network.
+        neighbors, _ = self._discover_neighbors(self._sweep_cidrs())
         self._debug(f"garp: {len(neighbors)} in-scope host(s) to knock offline")
         self._do_garp([n.ip for n in neighbors])
 

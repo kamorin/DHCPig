@@ -351,9 +351,7 @@ def test_sweep_range_prefers_explicit_scope(monkeypatch):
 
 def test_destructive_discovery_is_not_widened_by_the_sweep_fallback(monkeypatch):
     """_discover_neighbors must stay pinned to cfg.scope_cidrs unless told otherwise."""
-    eng, _, _ = _engine(
-        monkeypatch, mode=Mode.GARP_DOS, authorized=True, scope_cidrs=["10.9.9.0/30"]
-    )
+    eng, _, _ = _engine(monkeypatch, mode=Mode.GARP_DOS, scope_cidrs=["10.9.9.0/30"])
     seen = {}
 
     def fake_srp(pkt, **kw):

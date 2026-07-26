@@ -56,11 +56,16 @@ validation, no pydantic; `config_from_payload`, `as_cli`), `web/static/{index.ht
 web `SseSubscriber` puts `to_dict(event)` on a queue, the `/events` handler writes SSE frames,
 the browser's `EventSource` updates the DOM. **Handlers must be cheap/non-blocking.**
 
-## 5. Safety model (do not weaken)
-- Non-destructive by default. Destructive modes (`release`, `garp`) require
-  `authorized=True` + non-empty `scope_cidrs`; `authorize()` enforces it, the web re-validates
-  server-side (403), the CLI refuses (exit 4), and the web UI adds a typed-confirmation modal.
-- `active-scan` is non-destructive but **requires `--scope`** (`ConfigError` if missing).
+## 5. Safety model
+- **The authorization gate was removed at the maintainer's request** (2026-07). There is no
+  `--i-am-authorized`, no `authorize()`, no `Unauthorized`, no confirmation modal or prompt, and
+  `--scope` is optional for `release`/`garp` — with none given they fall back to the interface's
+  own network via `_sweep_cidrs()`. **`dhcpig garp eth0` will target the whole segment.** Don't
+  re-add the gate without asking, and don't quietly remove what's left below either.
+- What still bounds a run: `--rate` (default 10 pps), `--dry-run`, `ScopeGuard` when a scope
+  *is* supplied, and `Cleanup`/`restore()` for lease reversal.
+- `active-scan` is non-destructive but **requires `--scope`** (`ConfigError` if missing) — this
+  is the one remaining hard requirement, so its sweep can't be unbounded.
 - **`_send()` is the chokepoint**: scope check (drops out-of-scope, emits `Skipped`), rate limit,
   and **dry-run** (builds + accounts, never calls `sendp`). Keep all sends flowing through it.
 - `restore()` releases exactly the leases in `Cleanup`. **Auto-restore is OFF by default**

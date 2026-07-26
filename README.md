@@ -23,19 +23,22 @@ INSTALL
 USAGE (V1.0 — CLI)
 ------------------
 
-    sudo dhcpig exhaust eth1 --rate 50 --report run.json
+    sudo dhcpig exhaust eth1 --rate 20 --report run.json
     sudo dhcpig scan eth1 --report inventory.json          # passive, read-only
-    sudo dhcpig release eth1 --scope 172.20.0.0/16 --i-am-authorized   # DESTRUCTIVE
-    sudo dhcpig garp    eth1 --scope 172.20.0.0/16 --i-am-authorized   # DESTRUCTIVE
+    sudo dhcpig release eth1 --scope 172.20.0.0/16         # DESTRUCTIVE
+    sudo dhcpig garp    eth1 --scope 172.20.0.0/16         # DESTRUCTIVE
     sudo dhcpig restore eth1                               # release leases we grabbed
     dhcpig ifaces
+
+`release` and `garp` disrupt live clients. They take no confirmation step — `--scope` is
+optional and **defaults to the interface's own network**, so `dhcpig garp eth1` will target
+every host on the segment. Pass `--scope` to bound it.
 
 Safety flags:
 
     --dry-run            build + log packets, send nothing on the wire
-    --rate N             cap packets/sec (authoritative — the only pacing mechanism)
-    --scope CIDR         restrict destructive actions to these networks (repeatable)
-    --i-am-authorized    required for release/garp; you attest you have permission
+    --rate N             cap packets/sec (authoritative — the only pacing mechanism, default 10)
+    --scope CIDR         restrict targets to these networks (repeatable; optional)
     --no-control         skip the control transaction (see below; not recommended)
     --restore-on-exit    release the acquired leases when the run ends
     --status-interval N  periodic status line, default every 5s (0 disables)
@@ -103,8 +106,8 @@ MODES
 * __scan__        — passive ARP + DHCP capture; fingerprints every host (OS/device/vendor).
 * __active-scan__ — active discovery: ARP sweep of the scope + a DHCP INFORM to find/fingerprint
                     servers. Non-destructive; requires `--scope` (auto-filled from the interface).
-* __release__     — DHCPRELEASE for in-scope neighbors (DESTRUCTIVE, gated).
-* __garp__        — standalone gratuitous-ARP flood, no exhaustion phase (DESTRUCTIVE, gated).
+* __release__     — DHCPRELEASE for neighbors (DESTRUCTIVE; scope defaults to the iface network).
+* __garp__        — standalone gratuitous-ARP flood, no exhaustion phase (DESTRUCTIVE).
 
 STATUS OUTPUT
 -------------

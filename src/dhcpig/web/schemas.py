@@ -39,10 +39,9 @@ def config_from_payload(payload: dict) -> SessionConfig:
         interface=iface,
         mode=mode,
         ip_version=IPVersion.V6 if payload.get("ipv6") else IPVersion.V4,
-        rate_limit_pps=_as_int(payload.get("rate", 20), "rate", lo=1, hi=100000),
+        rate_limit_pps=_as_int(payload.get("rate", 10), "rate", lo=1, hi=100000),
         threads=_as_int(payload.get("threads", 1), "threads", lo=1, hi=64),
         dry_run=bool(payload.get("dry_run", False)),
-        authorized=bool(payload.get("authorized", False)),
         scope_cidrs=scope,
         spoof_ethernet_src=bool(payload.get("spoof_eth_src", True)),
         restore_on_exit=bool(payload.get("restore_on_exit", False)),
@@ -62,8 +61,6 @@ def as_cli(cfg: SessionConfig) -> str:
         parts.append("--restore-on-exit")
     for cidr in cfg.scope_cidrs or []:
         parts += ["--scope", cidr]
-    if cfg.authorized:
-        parts.append("--i-am-authorized")
     if cfg.dry_run:
         parts.append("--dry-run")
     if not cfg.control and cfg.mode is Mode.EXHAUST:

@@ -5,10 +5,6 @@ class DhcpigError(Exception):
     """Base class for all dhcpig errors."""
 
 
-class Unauthorized(DhcpigError):
-    """A destructive action was attempted without authorization/scope."""
-
-
 class ConfigError(DhcpigError):
     """Invalid session configuration."""
 

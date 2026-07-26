@@ -147,20 +147,6 @@ def test_report_download_csv(server):
     _req(addr, "POST", "/api/session/stop", token="TESTTOKEN", body={}, origin=o)
 
 
-def test_destructive_start_rejected_server_side(server):
-    _, addr = server
-    o = f"http://{addr[0]}:{addr[1]}"
-    status, body = _req(
-        addr,
-        "POST",
-        "/api/session/start",
-        token="TESTTOKEN",
-        body={"interface": "lo", "mode": "garp"},
-        origin=o,
-    )
-    assert status == 403  # core.safety.authorize re-validated on the server
-
-
 # ---------------------------------------------------------------- SSE plumbing
 def test_sse_subscriber_receives_events():
     bus = EventBus()

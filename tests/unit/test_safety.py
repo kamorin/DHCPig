@@ -1,38 +1,4 @@
-import pytest
-
-from dhcpig.core.exceptions import Unauthorized
-from dhcpig.core.models import Mode, SessionConfig
-from dhcpig.core.safety import RateLimiter, ScopeGuard, authorize
-
-
-def test_authorize_allows_nondestructive():
-    authorize(SessionConfig(interface="eth0", mode=Mode.EXHAUST))
-    authorize(SessionConfig(interface="eth0", mode=Mode.SCAN))
-
-
-def test_authorize_blocks_destructive_without_auth():
-    with pytest.raises(Unauthorized):
-        authorize(
-            SessionConfig(
-                interface="eth0", mode=Mode.RELEASE_NEIGHBORS, scope_cidrs=["10.0.0.0/24"]
-            )
-        )  # missing authorized
-
-
-def test_authorize_blocks_destructive_without_scope():
-    with pytest.raises(Unauthorized):
-        authorize(SessionConfig(interface="eth0", mode=Mode.GARP_DOS, authorized=True))
-
-
-def test_authorize_allows_destructive_with_auth_and_scope():
-    authorize(
-        SessionConfig(
-            interface="eth0",
-            mode=Mode.RELEASE_NEIGHBORS,
-            authorized=True,
-            scope_cidrs=["10.0.0.0/24"],
-        )
-    )
+from dhcpig.core.safety import RateLimiter, ScopeGuard
 
 
 def test_scope_guard():
