@@ -1897,19 +1897,37 @@ class DhcpEngine:
         )
 
     def _handle_nak(self, pkt) -> None:
-        """DHCPNAK: the server refused. Meaningful evidence, previously dropped on the floor."""
+        """DHCPNAK: the server refused. Meaningful evidence, previously dropped on the floor.
+
+        BUG FIX (2.3, found while designing race-freed): NAK is never self-originated (same
+        reasoning as OFFER/ACK/DECLINE -- `_on_dhcp()` checks these before the self-filter, per
+        AGENT_HANDOFF §8), so every NAK on the segment reaches this handler, including ones
+        addressed to *other* clients. This used to count every NAK as ours regardless --
+        `self.naks += 1`, `_shrink_window("nak")`, `_note_nak_for_burst_detection()` all ran
+        unconditionally -- so a foreign client's NAK could shrink our send window and count
+        toward the `nak_burst` halt signal (§5c), halting a run on someone else's traffic.
+
+        `xid in self._inflight` is the ownership check: it's populated for every transaction we
+        send (the exhaust flood and targeted re-acquisition both register there), so it reliably
+        answers "is this NAK ours" without guessing from packet contents.
+        """
         from scapy.all import BOOTP, DHCP
 
-        self.naks += 1
+        xid = pkt[BOOTP].xid
+        server_id = packets.server_identifier(pkt[BOOTP].siaddr, pkt[DHCP].options)
         with self._inflight_lock:
-            self._inflight.pop(pkt[BOOTP].xid, None)
-        if pkt[BOOTP].xid in self._reacquire_targets:
-            self._reacquire_outcomes[pkt[BOOTP].xid] = "naked"
+            ours = xid in self._inflight
+            self._inflight.pop(xid, None)
+        if not ours:
+            self._debug(f"foreign NAK xid=0x{xid:08x} from {server_id} (not ours)")
+            return
+        self.naks += 1
+        if xid in self._reacquire_targets:
+            self._reacquire_outcomes[xid] = "naked"
         self._shrink_window("nak")
         self._note_nak_for_burst_detection()
-        server_id = packets.server_identifier(pkt[BOOTP].siaddr, pkt[DHCP].options)
         self.bus.emit(ev.NakReceived(server_ip=server_id))
-        self._debug(f"NAK xid=0x{pkt[BOOTP].xid:08x} from {server_id} opts=[{_opts_summary(pkt)}]")
+        self._debug(f"NAK xid=0x{xid:08x} from {server_id} opts=[{_opts_summary(pkt)}]")
 
     def _run_scan(self) -> None:
         # read-only: sniff + fingerprint. No DHCP REQUEST/RELEASE, no ARP conflict.
