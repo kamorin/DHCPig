@@ -155,6 +155,27 @@ def test_neighbor_carries_fingerprint_when_dhcp_seen_before_arp(monkeypatch):
     assert n.fingerprint is not None and n.fingerprint.confidence > 0
 
 
+def _discover_with_prl(mac: str, xid: int, prl: list[int]):
+    """Like build_discover_v4, but with a caller-chosen option-55 order so a test can force a
+    known packetfence_dhcp_fingerprints.json match (build_discover_v4's PRL is macOS-style and
+    isn't in the packetfence-only DB)."""
+    opts = [
+        ("message-type", "discover"),
+        ("param_req_list", *prl),
+        ("max_dhcp_size", 1500),
+        ("client_id", b"\x01" + mac2str(mac)),
+        ("lease_time", 10000),
+        ("end", "00000000000000"),
+    ]
+    return (
+        Ether(src=mac, dst="ff:ff:ff:ff:ff:ff")
+        / IP(src="0.0.0.0", dst="255.255.255.255")
+        / UDP(sport=68, dport=67)
+        / BOOTP(chaddr=[mac2str(mac)], xid=xid, flags=0x8000)
+        / DHCP(options=opts)
+    )
+
+
 def test_neighbor_fingerprint_backfilled_when_dhcp_seen_after_arp(monkeypatch):
     eng, events, _ = _engine(monkeypatch, mode=Mode.SCAN)
     mac = "de:ad:be:ef:00:04"
@@ -163,9 +184,12 @@ def test_neighbor_fingerprint_backfilled_when_dhcp_seen_after_arp(monkeypatch):
     assert first.fingerprint is not None
     assert first.fingerprint.os is None  # OUI alone never claims an OS
     assert first.fingerprint.confidence <= 15
-    eng._on_scan(packets.build_discover_v4(mac, 4, mac))  # DHCP arrives -> backfills the row
+    # 'N300 Wireless Router' -- a single, unambiguous packetfence_dhcp_fingerprints.json entry
+    prl = [1, 121, 249, 3, 6, 12, 15, 28, 33, 43]
+    eng._on_scan(_discover_with_prl(mac, 4, prl))  # DHCP arrives -> backfills the row
     neighbor_events = [e for e in events if isinstance(e, ev.NeighborFound)]
     assert len(neighbor_events) == 2  # initial ARP sighting + the fingerprint-triggered refresh
     updated = neighbor_events[-1].neighbor
     assert updated.mac == mac
-    assert updated.fingerprint is not None and updated.fingerprint.confidence > 0
+    assert updated.fingerprint is not None
+    assert updated.fingerprint.confidence > first.fingerprint.confidence

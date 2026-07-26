@@ -229,21 +229,19 @@ FINGERPRINTING
 --------------
 
 `scan` (and server discovery during `exhaust`) resolves OS/device from the DHCP option-55
-parameter-request-list order (exact, order-sensitive match) with option-60 vendor-class /
-MAC-OUI as a fallback signal. It ships a static `combined_dhcp_os_lookup.json` (PacketFence +
-Huginn-Muninn fingerprints merged by `data/fingerprint-merge.py`, 594 fingerprints) plus a
-small builtin fallback table for signals the combined DB doesn't carry — no API, no key, works
-fully offline/airgapped. A fingerprint matching more than one device is reported with lower
-confidence and flagged ambiguous. Drop a refreshed `combined_dhcp_os_lookup.json` into
-`src/dhcpig/data/` to update coverage; see `data/DATA_ATTRIBUTION.md`. In `scan`/`active-scan`,
-neighbors discovered via ARP are automatically paired with any DHCP fingerprint seen for the
-same MAC, so the Neighbors table shows OS/Device whichever signal arrives first.
+parameter-request-list order (exact, order-sensitive match), falling back to MAC-OUI. It ships
+a static `packetfence_dhcp_fingerprints.json` (PacketFence fingerprints, 535 entries) — no API,
+no key, works fully offline/airgapped. A fingerprint matching more than one device is reported
+with lower confidence and flagged ambiguous. Drop a refreshed
+`packetfence_dhcp_fingerprints.json` into `src/dhcpig/data/` to update coverage; see
+`data/DATA_ATTRIBUTION.md`. In `scan`/`active-scan`, neighbors discovered via ARP are
+automatically paired with any DHCP fingerprint seen for the same MAC, so the Neighbors table
+shows OS/Device whichever signal arrives first.
 
 Hosts with **no** usable DHCP fingerprint fall back to **MAC vendor** identification, so the
 OS/Device column is never blank: scapy's bundled IEEE/Wireshark OUI database (~50k entries,
-offline) plus a small `mac-vendor.txt` from arp-scan for prefixes the IEEE registry omits
-(QEMU, HSRP, VRRP/CARP, WLBS). These are shown as `Vendor (MAC vendor)` at low confidence —
-a NIC manufacturer is not an OS. Randomised/locally-administered MACs are labelled as such.
+offline). These are shown as `Vendor (MAC vendor)` at low confidence — a NIC manufacturer is
+not an OS. Randomised/locally-administered MACs are labelled as such.
 
 DEFENSE
 -------

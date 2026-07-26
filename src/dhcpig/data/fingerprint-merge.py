@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Standalone DHCP Option 55 OS/device identifier.
 
-Copy this file and combined_dhcp_os_lookup.json into another repository.
+Copy this file and packetfence_dhcp_fingerprints.json into another repository.
 Only the Python standard library is required.
 """
 
@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-DEFAULT_DATABASE = Path(__file__).with_name("combined_dhcp_os_lookup.json")
+DEFAULT_DATABASE = Path(__file__).with_name("packetfence_dhcp_fingerprints.json")
 
 
 def normalize_fingerprint(value: str) -> str:
@@ -87,7 +87,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--database",
         type=Path,
         default=DEFAULT_DATABASE,
-        help="combined lookup JSON beside this script by default",
+        help="packetfence lookup JSON beside this script by default",
     )
     parser.add_argument("--json", action="store_true", help="write JSON results")
     parser.add_argument("--stats", action="store_true", help="show database statistics and exit")
@@ -103,7 +103,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if args.stats:
-        output = statistics or {"combined_fingerprints": len(database)}
+        output = statistics or {"packetfence_fingerprints": len(database)}
         print(json.dumps(output, indent=2, sort_keys=True))
         return 0
 

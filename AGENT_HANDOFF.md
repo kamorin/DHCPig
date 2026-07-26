@@ -37,13 +37,13 @@ Both front ends drive the SAME `DhcpEngine` and never touch scapy directly.
 | `core/events.py` | `EventBus` (thread-safe), event dataclasses (including `ControlDetected`), `to_dict()` + `jsonable()` (recursively converts enums/bytes/Path so JSON never breaks). |
 | `core/safety.py` | `ScopeGuard`, `RateLimiter` (token bucket — still wired through `_send()` for every mode; see §5c for why exhaust no longer takes `--rate`), `Cleanup` (tracks leases for restore). No `authorize()` — the gate was removed, see §5. |
 | `core/sniffer.py` | thin `AsyncSniffer` wrapper. |
-| `core/fingerprint.py` | `extract_signature()` + `resolve()`: exact option-55 match against `data/combined_dhcp_os_lookup.json`, else builtin vendor-class/PRL table, else `from_mac()` OUI-only. `DB_VERSION`. |
-| `core/oui.py` | MAC → hardware vendor. `data/mac-vendor.txt` supplement (longest prefix wins) then scapy's bundled Wireshark/IEEE `manuf` DB (~50k); locally-administered MACs labelled as randomised. No bundled IEEE copy needed — scapy already ships one. |
+| `core/fingerprint.py` | `extract_signature()` + `resolve()`: exact option-55 match against `data/packetfence_dhcp_fingerprints.json`, else `from_mac()` OUI-only. `DB_VERSION`. |
+| `core/oui.py` | MAC → hardware vendor. scapy's bundled Wireshark/IEEE `manuf` DB (~50k) only; locally-administered MACs labelled as randomised. No bundled IEEE copy needed — scapy already ships one. |
 | `core/reporting.py` | `SessionRecorder` → JSON/CSV/HTML (`render()` / `export()`). Neighbors deduped by MAC. Tracks `final_status` from `SessionEnded` to surface the pool estimate in reports. |
 | `core/netutils.py` | iface enumeration, `iface_network_cidr()` (scope auto-fill), `default_gateway()` (garp/release-phase exclusion), `link_is_up()` (carrier poll for `link_down` halt detection — `None` fail-open, see §5c), IP math, `random_mac()`. |
 | `core/journal.py` | Lease journal for recovery (2.2, §5e): append-only JSONL, `default_path()` (XDG state dir, never `/var/lib`), `record_ack`/`record_released`, `load_open_leases()` (never raises — crash-tolerant). Powers `Mode.RELEASE_PREVIOUS`. |
 | `core/exceptions.py` | `DhcpigError`, `ConfigError`, `OutOfScope`, `SessionConflict`. |
-| `data/combined_dhcp_os_lookup.json` | Static PacketFence + Huginn-Muninn merge (594 fingerprints), built by `data/fingerprint-merge.py` (also a standalone lookup CLI). `data/fingerprints.json` builtin fallback. `data/DATA_ATTRIBUTION.md`. |
+| `data/packetfence_dhcp_fingerprints.json` | Static PacketFence-only fingerprints (535), queryable standalone via `data/fingerprint-merge.py`. `data/DATA_ATTRIBUTION.md`. |
 
 ### Web files
 `web/server.py` (`WebApp` + `Handler` + `main`), `web/api.py` (route handlers → `(status,dict)`),
@@ -260,15 +260,15 @@ python3 -m ruff format --check src tests
   for Wi-Fi. The legacy `pig.py` shim injects `--no-spoof-eth-src` to preserve old behavior.
 - **PR #27/#28 fixes** live in `packets.py` (server-id = opt54 else siaddr; client MAC =
   `chaddr[:6]`; REQUEST includes option-61; broadcast flag 0x8000) with regression tests. Don't lose them.
-- **Fingerprint DB is `data/combined_dhcp_os_lookup.json`** (PacketFence + Huginn-Muninn merged
-  by `data/fingerprint-merge.py`, 594 fingerprints), replacing the earlier bundled FingerBank
-  `.conf`. Matching is exact/order-sensitive on option-55; a fingerprint with more than one
-  candidate device is returned at lower confidence (75 vs 90) and flagged `(ambiguous xN)` in
-  `matched_via`. `os` is intentionally left `None` for combined-DB matches (the data doesn't
-  cleanly separate OS from device); `device` carries the candidate name(s). The small builtin
-  `fingerprints.json` table is a fallback for option-60 vendor-class / OUI signals the combined
-  DB doesn't carry at all, checked only when the combined DB has no exact PRL match. There's no
-  `--fingerbank-api-key` anymore — that stub was removed (never implemented, never used).
+- **Fingerprint DB is `data/packetfence_dhcp_fingerprints.json`** (PacketFence-only, 535
+  fingerprints; queryable standalone via `data/fingerprint-merge.py`), replacing the earlier
+  bundled FingerBank `.conf`. Matching is exact/order-sensitive on option-55; a fingerprint with
+  more than one candidate device is returned at lower confidence (75 vs 90) and flagged
+  `(ambiguous xN)` in `matched_via`. `os` is intentionally left `None` for DB matches (the data
+  doesn't cleanly separate OS from device); `device` carries the candidate name(s). No builtin
+  vendor-class/PRL fallback table anymore — a miss falls straight through to `from_mac()`
+  OUI-only identification. There's no `--fingerbank-api-key` anymore — that stub was removed
+  (never implemented, never used).
 - **Neighbors ↔ fingerprints are correlated by MAC** (`engine._note_neighbor` /
   `_note_fingerprint`, `_neighbors_by_mac` / `_fp_by_mac`): whichever signal arrives first (ARP
   is-at vs. a DHCP packet from that MAC), the other backfills it and re-emits `NeighborFound` so
@@ -314,10 +314,10 @@ have been exercised against real hardware yet** — that's the next validation s
 ## 10. Open follow-ups (not yet done)
 - **IPv6**: `IPVersion.V6` is a seam only; v6 packet builders/flows are NOT implemented. The v4
   modes are the working ones.
-- **Fingerprint coverage**: `combined_dhcp_os_lookup.json` has 594 fingerprints (PacketFence +
-  Huginn-Muninn); regenerate it from newer source exports to expand coverage. `os` is always
-  `None` for combined-DB matches by design (see §8) — if the report/UI should distinguish OS
-  from device, that needs a curated taxonomy layered on top of `name`.
+- **Fingerprint coverage**: `packetfence_dhcp_fingerprints.json` has 535 fingerprints
+  (PacketFence-only); regenerate it from a newer PacketFence export to expand coverage. `os` is
+  always `None` for DB matches by design (see §8) — if the report/UI should distinguish OS from
+  device, that needs a curated taxonomy layered on top of `name`.
 - **Active-scan** fingerprints the DHCP *server* via the INFORM reply; ARP-only neighbours now
   get MAC-vendor identification (`core/oui.py`), but never an OS — that needs DHCP evidence.
 - **Integration coverage** only exercises exhaust; add netns cases for release/garp/active-scan.
