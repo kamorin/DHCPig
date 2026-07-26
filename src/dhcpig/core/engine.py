@@ -120,6 +120,13 @@ class DhcpEngine:
         self._nak_timestamps: list[float] = []
         self._offered_ip_macs: dict[str, set[str]] = {}
         self._duplicate_offer_ips: set[str] = set()
+        # foreign DISCOVER observation (2.3): xid -> {mac, hostname, ts, answered}. Populated by
+        # _handle_foreign_discover(), and "answered" is flipped by _handle_offer() when a reply
+        # carrying that xid arrives. _foreign_discover_macs is separate: it's which MACs we've
+        # already logged/emitted a ForeignDiscover for, so a retrying client (new xid every few
+        # seconds) doesn't flood the log -- only counters keep moving after the first sighting.
+        self._foreign_discovers: dict[int, dict] = {}
+        self._foreign_discover_macs: set[str] = set()
         # halt-and-report: the first defensive-control signal wins. (signal, detail, leases_held)
         self._halt_signal: tuple[str, str, int] | None = None
         # pool-size estimate for the headroom number: learned from the first OFFER's subnet
@@ -216,7 +223,14 @@ class DhcpEngine:
         runners[self.cfg.mode]()
 
     # ---------------------------------------------------------------- status heartbeat
+    def _foreign_discover_counts(self) -> tuple[int, int]:
+        """(observed, unanswered) across every tracked foreign DISCOVER xid so far."""
+        observed = len(self._foreign_discovers)
+        unanswered = sum(1 for v in self._foreign_discovers.values() if not v["answered"])
+        return observed, unanswered
+
     def _counters(self) -> dict:
+        observed, unanswered = self._foreign_discover_counts()
         return {
             "discovers": self.discovers,
             "offers": self.offers,
@@ -224,6 +238,8 @@ class DhcpEngine:
             "naks": self.naks,
             "releases": self.releases,
             "arp_conflicts": self.arp_conflicts,
+            "foreign_discovers": observed,
+            "foreign_discovers_unanswered": unanswered,
         }
 
     def _status_ticker(self) -> None:
@@ -328,6 +344,7 @@ class DhcpEngine:
             self.bus.emit(ev.LeaseReleased(lease=lease))
 
     def status(self) -> dict:
+        foreign_observed, foreign_unanswered = self._foreign_discover_counts()
         out = {
             "state": self.state,
             "discovers": self.discovers,
@@ -336,6 +353,8 @@ class DhcpEngine:
             "naks": self.naks,
             "arp_conflicts": self.arp_conflicts,
             "releases": self.releases,
+            "foreign_discovers": foreign_observed,
+            "foreign_discovers_unanswered": foreign_unanswered,
             "servers": len(self.servers),
             "elapsed": round(time.time() - self._started, 1) if self._started else 0.0,
             "control_pre": self.control_pre.success if self.control_pre else None,
@@ -747,6 +766,57 @@ class DhcpEngine:
                     ),
                 )
             )
+
+        # Foreign DISCOVER observation (2.3, goal 4): direct client-visible-outage evidence,
+        # not an inference from our own lease count. Silence (nothing observed) raises nothing
+        # -- a segment where every host is already bound is expected to be quiet, and that's not
+        # evidence of anything.
+        observed, unanswered = self._foreign_discover_counts()
+        if observed:
+            macs = sorted({v["mac"] for v in self._foreign_discovers.values()})
+            sample_hosts = [
+                {"mac": v["mac"], "hostname": v["hostname"]}
+                for v in list(self._foreign_discovers.values())[:5]
+            ]
+            if unanswered:
+                self._raise(
+                    Finding(
+                        id="FOREIGN_DISCOVERS_UNANSWERED",
+                        title="Other hosts' DHCPDISCOVERs went unanswered during this run",
+                        verdict=FAIL,
+                        severity="high",
+                        evidence={
+                            "observed": observed,
+                            "unanswered": unanswered,
+                            "distinct_macs": len(macs),
+                            "sample_hosts": sample_hosts,
+                        },
+                        recommendation=(
+                            "Other people's machines asked for an address during this run and "
+                            "got nothing — the most direct evidence of client-visible outage "
+                            "this tool can produce. Correlate the MACs above against known "
+                            "devices on the segment."
+                        ),
+                    )
+                )
+            else:
+                self._raise(
+                    Finding(
+                        id="FOREIGN_DISCOVERS_ANSWERED",
+                        title="Other hosts' DHCPDISCOVERs were all answered during this run",
+                        verdict=INFO,
+                        severity="info",
+                        evidence={
+                            "observed": observed,
+                            "distinct_macs": len(macs),
+                            "sample_hosts": sample_hosts,
+                        },
+                        recommendation=(
+                            "Third-party DHCP kept working alongside this run — no client-"
+                            "visible outage observed via foreign DISCOVER traffic."
+                        ),
+                    )
+                )
 
     def _note_neighbor(self, mac: str, ip: str) -> Neighbor:
         """Record/refresh a neighbor, attaching any DHCP fingerprint already seen for this MAC.
@@ -1245,6 +1315,8 @@ class DhcpEngine:
                 self._handle_nak(pkt)
             elif self._is_own_traffic(pkt):
                 return  # our own DISCOVER/REQUEST/RELEASE, echoed back by the widened BPF (2.3)
+            elif packets.is_discover(pkt):
+                self._handle_foreign_discover(pkt)
         except Exception as exc:  # never let a bad packet kill the sniffer thread
             self.bus.emit(ev.ErrorEvent(message=f"parse error: {exc!r}"))
 
@@ -1273,6 +1345,52 @@ class DhcpEngine:
                 if self._control_xid is not None and xid == self._control_xid:
                     return True
         return False
+
+    def _handle_foreign_discover(self, pkt) -> None:
+        """Track a DHCPDISCOVER from a MAC that is not ours (2.3) -- goal 4's direct evidence.
+
+        Only the first sighting per MAC is logged/emitted; a retrying client sends a fresh
+        DISCOVER (usually a fresh xid) every few seconds and would otherwise flood the log.
+        Every sighting is still tracked in `_foreign_discovers` by xid so `_handle_offer()` can
+        mark it answered, and the counters keep moving either way.
+        """
+        from scapy.all import BOOTP, DHCP
+
+        try:
+            if BOOTP not in pkt:
+                return
+            xid = pkt[BOOTP].xid
+            if xid in self._foreign_discovers:
+                return  # duplicate delivery of the same frame
+            mac = packets.client_mac_from_offer(pkt)
+            hostname = None
+            if DHCP in pkt:
+                raw = packets.dhcp_option(pkt[DHCP].options, "hostname")
+                if isinstance(raw, bytes):
+                    hostname = raw.decode("utf-8", errors="replace")
+                elif isinstance(raw, str):
+                    hostname = raw
+            self._foreign_discovers[xid] = {
+                "mac": mac,
+                "hostname": hostname,
+                "ts": time.time(),
+                "answered": False,
+            }
+            first_sighting = mac not in self._foreign_discover_macs
+            if first_sighting:
+                # Emitted as its own event (rendered at verbosity >= 2 by the CLI/web layers,
+                # like any other typed event) rather than through _debug() -- that's what keeps
+                # this visible by default without needing -v3.
+                self._foreign_discover_macs.add(mac)
+                fp = resolve(extract_signature(pkt, role="client"), role="client")
+                self._note_fingerprint(fp)
+                self.bus.emit(ev.ForeignDiscover(mac=mac, xid=xid, hostname=hostname))
+            else:
+                # Rate-limited: a retrying client would otherwise flood the log every few
+                # seconds. Debug is gated to verbosity >= 3, well below the first sighting.
+                self._debug(f"foreign DISCOVER xid=0x{xid:08x} chaddr={mac} (repeat sighting)")
+        except Exception as exc:
+            self.bus.emit(ev.ErrorEvent(message=f"foreign discover parse error: {exc!r}"))
 
     def _handle_offer(self, pkt) -> None:
         from scapy.all import BOOTP
@@ -1304,6 +1422,9 @@ class DhcpEngine:
             if info is not None:
                 info["state"] = "REQUEST_SENT"
                 info["sent_at"] = time.time()  # restart the timeout clock for the ACK leg
+        foreign = self._foreign_discovers.get(xid)
+        if foreign is not None:
+            foreign["answered"] = True
         self._note_offer_for_duplicate_detection(offered_ip, lease.mac)
         self._note_offer_for_pool_estimate(offered_ip, subnet)
         self.bus.emit(ev.OfferReceived(lease=lease, server=server))

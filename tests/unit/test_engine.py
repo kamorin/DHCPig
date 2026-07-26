@@ -195,3 +195,125 @@ def test_on_dhcp_ignores_a_packet_whose_xid_is_in_inflight():
     pkt = packets.build_discover_v4("de:ad:00:00:00:03", 0x4444, "de:ad:00:00:00:03")
     eng._on_dhcp(pkt)
     assert events == []
+
+
+# ---------------------------------------------------------------- foreign DISCOVER (2.3)
+def _offer(xid: int, mac: str, yiaddr: str = "172.20.0.83", server="172.20.15.1"):
+    from scapy.all import BOOTP, DHCP, IP, UDP, Ether, mac2str
+
+    return (
+        Ether(src="00:0c:29:da:53:f9")
+        / IP(src=server, dst="255.255.255.255")
+        / UDP(sport=67, dport=68)
+        / BOOTP(op=2, yiaddr=yiaddr, siaddr=server, chaddr=mac2str(mac) + b"\x00" * 10, xid=xid)
+        / DHCP(options=[("message-type", "offer"), ("server_id", server), "end"])
+    )
+
+
+def _foreign_discover_pkt(mac: str, xid: int, hostname: str | None = None):
+    """A DISCOVER as it looks *after* the sniffer parses it off the wire: chaddr is a plain
+    padded 16-byte string, not the pre-serialization list form build_discover_v4() uses --
+    client_mac_from_offer() only round-trips correctly on the former."""
+    from scapy.all import BOOTP, DHCP, IP, UDP, Ether, mac2str
+
+    opts = [("message-type", "discover")]
+    if hostname:
+        opts.append(("hostname", hostname))
+    opts.append("end")
+    return (
+        Ether(src=mac)
+        / IP(src="0.0.0.0", dst="255.255.255.255")
+        / UDP(sport=68, dport=67)
+        / BOOTP(chaddr=mac2str(mac) + b"\x00" * 10, xid=xid, flags=0x8000)
+        / DHCP(options=opts)
+    )
+
+
+def test_foreign_discover_first_sighting_emits_event_and_is_tracked():
+    bus, events = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo"), bus)
+    pkt = _foreign_discover_pkt("de:ad:00:00:00:05", 0x5555)
+    eng._on_dhcp(pkt)
+    seen = [e for e in events if isinstance(e, ev.ForeignDiscover)]
+    assert len(seen) == 1
+    assert seen[0].mac == "de:ad:00:00:00:05"
+    assert seen[0].xid == 0x5555
+    assert 0x5555 in eng._foreign_discovers
+    assert eng._foreign_discovers[0x5555]["answered"] is False
+
+
+def test_foreign_discover_repeat_sighting_from_same_mac_does_not_reemit():
+    """A retrying client sends a fresh DISCOVER (usually a fresh xid) every few seconds --
+    only the first sighting per MAC gets its own event, to avoid flooding the log."""
+    bus, events = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo"), bus)
+    mac = "de:ad:00:00:00:06"
+    eng._on_dhcp(_foreign_discover_pkt(mac, 0x6001))
+    eng._on_dhcp(_foreign_discover_pkt(mac, 0x6002))  # retry, new xid
+    seen = [e for e in events if isinstance(e, ev.ForeignDiscover)]
+    assert len(seen) == 1  # only the first
+    # but both xids are still tracked for counting/answered purposes
+    assert 0x6001 in eng._foreign_discovers
+    assert 0x6002 in eng._foreign_discovers
+
+
+def test_offer_marks_a_tracked_foreign_discover_as_answered(sent):
+    bus, _ = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo"), bus)
+    mac = "de:ad:00:00:00:07"
+    eng._on_dhcp(_foreign_discover_pkt(mac, 0x7777))
+    assert eng._foreign_discovers[0x7777]["answered"] is False
+    eng._on_dhcp(_offer(0x7777, mac))
+    assert eng._foreign_discovers[0x7777]["answered"] is True
+
+
+def test_foreign_discover_counters_in_status_and_counters(sent):
+    bus, _ = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo"), bus)
+    eng._on_dhcp(_foreign_discover_pkt("de:ad:00:00:00:08", 0x8001))
+    eng._on_dhcp(_foreign_discover_pkt("de:ad:00:00:00:09", 0x8002))
+    eng._on_dhcp(_offer(0x8001, "de:ad:00:00:00:08"))  # only one answered
+    assert eng._counters()["foreign_discovers"] == 2
+    assert eng._counters()["foreign_discovers_unanswered"] == 1
+    st = eng.status()
+    assert st["foreign_discovers"] == 2
+    assert st["foreign_discovers_unanswered"] == 1
+
+
+def test_finalize_findings_raises_unanswered_when_any_foreign_discover_unanswered():
+    bus, events = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.EXHAUST), bus)
+    eng._started = __import__("time").time()
+    eng._on_dhcp(_foreign_discover_pkt("de:ad:00:00:00:0a", 0x9001))
+    eng._finalize_findings()
+    ids = [e.finding.id for e in events if isinstance(e, ev.FindingRaised)]
+    assert "FOREIGN_DISCOVERS_UNANSWERED" in ids
+    f = next(
+        e.finding
+        for e in events
+        if isinstance(e, ev.FindingRaised) and e.finding.id == "FOREIGN_DISCOVERS_UNANSWERED"
+    )
+    assert f.verdict == "FAIL"
+
+
+def test_finalize_findings_raises_answered_info_when_all_foreign_discovers_answered(sent):
+    bus, events = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.EXHAUST), bus)
+    eng._started = __import__("time").time()
+    mac = "de:ad:00:00:00:0b"
+    eng._on_dhcp(_foreign_discover_pkt(mac, 0xA001))
+    eng._on_dhcp(_offer(0xA001, mac))
+    eng._finalize_findings()
+    ids = [e.finding.id for e in events if isinstance(e, ev.FindingRaised)]
+    assert "FOREIGN_DISCOVERS_ANSWERED" in ids
+    assert "FOREIGN_DISCOVERS_UNANSWERED" not in ids
+
+
+def test_finalize_findings_silent_when_no_foreign_discovers_observed():
+    bus, events = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.EXHAUST), bus)
+    eng._started = __import__("time").time()
+    eng._finalize_findings()
+    ids = [e.finding.id for e in events if isinstance(e, ev.FindingRaised)]
+    assert "FOREIGN_DISCOVERS_UNANSWERED" not in ids
+    assert "FOREIGN_DISCOVERS_ANSWERED" not in ids

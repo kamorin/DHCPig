@@ -98,6 +98,9 @@ class Renderer:
             self._line("->", f"DHCPRELEASE  {e.lease.ip}   (in scope)")
         elif isinstance(e, ev.ArpConflictSent):
             self._line("->", f"ARP_conflict  contest ownership of {e.ip}   (in scope)")
+        elif isinstance(e, ev.ForeignDiscover):
+            who = f"  hostname={e.hostname!r}" if e.hostname else ""
+            self._line("<-", f"foreign DHCP_Discover  {e.mac}{who}   (not ours)")
         elif isinstance(e, ev.Skipped):
             self._line("!!", f"SKIPPED      {e.ip}   {e.reason}")
         elif isinstance(e, ev.StatusTick):
@@ -162,6 +165,8 @@ def status_summary(s: dict) -> str:
     col("naks", "naks")
     col("releases", "releases")
     col("arp_conflicts", "arp_conflicts")
+    col("foreign_discovers", "foreign_discovers")
+    col("foreign_unanswered", "foreign_discovers_unanswered")
     if s.get("servers"):
         parts.append(f"servers {s['servers']}")
     if s.get("neighbors"):
