@@ -118,8 +118,11 @@ class SessionConfig:
     evict: bool = True
     evict_rounds: int = 4  # must be >= 2 -- one round can only ever reach "defended", never more
     # evict_settle: how long to wait, after the last round, before measuring the outcome ladder
-    # -- gives a DECLINE/restart-at-INIT/APIPA time to actually land on the wire.
-    evict_settle: float = 8.0
+    # -- gives a DECLINE/restart-at-INIT/APIPA time to actually land on the wire. Bumped 8.0 ->
+    # 16.0 (2.3) after a live run: a target that DECLINEd was measured before its follow-up
+    # DISCOVER arrived, so its outcome locked in at "declined" instead of the stronger
+    # "discover_unanswered"/"apipa" the extra settle time would have let land in time.
+    evict_settle: float = 16.0
     timeouts: Timeouts = field(default_factory=Timeouts)
     verbosity: int = 2
 

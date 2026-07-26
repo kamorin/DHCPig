@@ -249,8 +249,9 @@ victim's traffic, which is out of scope for this tool. By default 4 rounds, spac
 apart (`timeouts.evict_interval`, must stay under RFC 5227's 10-second `DEFEND_INTERVAL` — a
 host defends once, then must give up on a *second* conflict inside that window; spaced further
 apart, each round looks like a fresh, independently-defensible conflict and the host never gives
-up the address). After the last round, DHCPig waits 8 seconds (`evict_settle`) for a
-DECLINE/restart/APIPA to land, then measures.
+up the address). After the last round, DHCPig waits 16 seconds (`evict_settle`) for a
+DECLINE/restart/APIPA to land, then measures — a target that declines right as the window closes
+needs time for its follow-up DISCOVER to land too, or its outcome locks in one rung too low.
 
 **Outcome ladder** (each target's *highest* rung reached wins):
 
