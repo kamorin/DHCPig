@@ -73,6 +73,10 @@ function onModeChange() {
   // scope is optional everywhere except active-scan, but the box is useful for any mode
   // that targets neighbours, so show it for release/garp/active-scan
   $("destcfg").classList.toggle("hidden", !SCOPE_MODES.has(mode));
+  // exhaust has no --rate of its own; the windowed handshake pipeline paces it instead
+  const isExhaust = mode === "exhaust";
+  $("ratecfg").classList.toggle("hidden", isExhaust);
+  $("ratehint").classList.toggle("hidden", !isExhaust);
   autofillScope();
   const labels = {
     exhaust: ["leases", "servers", "pps"],
@@ -265,10 +269,18 @@ function handleEvent(e) {
       col("releases", "releases"); col("garps", "garps");
       if (s.servers) bits.push(`servers ${s.servers}`);
       if (s.neighbors) bits.push(`neighbors ${s.neighbors}`);
+      if (s.send_window != null) bits.push(`window ${s.send_window} (inflight ${s.inflight || 0})`);
+      if (s.timeouts) bits.push(`timeouts ${s.timeouts}`);
       if (s.since_last_offer != null) bits.push(`last offer ${Math.round(s.since_last_offer)}s ago`);
+      if (s.halt_signal) bits.push(`HALTED[${s.halt_signal}]`);
       logLine("stat", "[##] " + bits.join("  "), 2);
       break;
     }
+    case "ControlDetected":
+      logLine("alert",
+        `[!!] CONTROL DETECTED [${e.signal}]  ${e.detail}  — sending stopped, ` +
+        `${e.leases_held} lease(s) held for the report`, 0);
+      $("state").textContent = "HALTED"; break;
     case "OffersCeased":
       logLine("note",
         `[--] offers quiet ${e.quiet_for.toFixed(0)}s after ${e.leases} lease(s) — ` +
@@ -379,7 +391,8 @@ $("copycli").addEventListener("click", async () => {
 });
 function cliFromConfig() {
   const c = currentConfig();
-  let s = `dhcpig ${c.mode} ${c.interface} --rate ${c.rate}`;
+  let s = `dhcpig ${c.mode} ${c.interface}`;
+  if (c.mode !== "exhaust") s += ` --rate ${c.rate}`;
   if (c.restore_on_exit) s += " --restore-on-exit";
   (c.scope_cidrs || []).forEach((x) => (s += ` --scope ${x}`));
   if (c.dry_run) s += " --dry-run";

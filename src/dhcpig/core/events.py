@@ -95,6 +95,19 @@ class ControlFinished(Event):
 
 
 @dataclass
+class ControlDetected(Event):
+    """A defensive control fired mid-run.
+
+    Sending stops immediately; leases already held are kept, and the post-run controls still
+    run so the report is complete — see DhcpEngine._trigger_halt().
+    """
+
+    signal: str  # nak_burst | offer_silence | link_down | timeout_storm | duplicate_offers
+    detail: str
+    leases_held: int
+
+
+@dataclass
 class FindingRaised(Event):
     finding: Finding
 

@@ -86,6 +86,21 @@ def default_gateway(iface: str | None = None) -> str | None:
         return None
 
 
+def link_is_up(iface: str) -> bool | None:
+    """Best-effort carrier state, or None if it can't be determined.
+
+    None covers loopback (no carrier attribute), non-Linux, and interfaces that simply don't
+    exist — all of which must fail *open* (no halt decision) rather than be mistaken for a
+    down link. Used to detect port-security err-disable during an exhaust run: a switch
+    shutting the port down is a defensive control firing, not a glitch to retry through.
+    """
+    try:
+        with open(f"/sys/class/net/{iface}/carrier") as fh:
+            return fh.read().strip() == "1"
+    except OSError:
+        return None
+
+
 def iface_network_cidr(iface: str) -> str | None:
     """The interface's own network in CIDR form, e.g. '192.168.7.0/24' (best effort).
 

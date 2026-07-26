@@ -27,6 +27,12 @@ DESTRUCTIVE_MODES: set[Mode] = {Mode.RELEASE_NEIGHBORS, Mode.GARP_DOS}
 # active-scan still requires an explicit scope so its sweep can't be unbounded
 SCOPE_REQUIRED_MODES: set[Mode] = {Mode.ACTIVE_SCAN}
 
+# Exhaust no longer takes --rate: the windowed handshake pipeline (window_initial/window_max)
+# is the pacing mechanism now. rate_limit_pps is set high enough here that the token bucket
+# never binds; it stays wired through _send() so the invariant "everything funnels through the
+# rate limiter" holds, but the window is what actually shapes exhaust's traffic.
+EXHAUST_DEFAULT_RATE_PPS = 500
+
 
 @dataclass
 class Timeouts:
