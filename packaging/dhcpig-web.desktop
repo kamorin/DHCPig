@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=DHCPig (Web UI)
+GenericName=DHCP hardening validation
+Comment=DHCP exhaustion / scan / release / ARP-GARP — whitehat network hardening validator
+Exec=pkexec dhcpig-web --open
+Icon=network-wired
+Terminal=true
+Categories=09-sniffing-spoofing;Network;Security;
+Keywords=dhcp;pentest;exhaustion;scapy;arp;fingerprint;

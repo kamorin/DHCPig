@@ -1,0 +1,18 @@
+Source: dhcpig
+Section: net
+Priority: optional
+Maintainer: Kevin Amorin <kamorin@gmail.com>
+Build-Depends: debhelper-compat (= 13), dh-python, python3-all, python3-hatchling
+Standards-Version: 4.6.2
+Homepage: https://github.com/kamorin/DHCPig
+
+Package: dhcpig
+Architecture: all
+Depends: ${python3:Depends}, ${misc:Depends}, python3-scapy, libpcap0.8
+Description: DHCP exhaustion / network-hardening validation tool (whitehat)
+ DHCPig validates that a network is hardened against DHCP starvation, forced
+ lease release, and gratuitous-ARP disruption, and passively fingerprints
+ hosts. Provides a CLI (dhcpig) and a local web UI (dhcpig-web). The web UI is
+ pure Python stdlib (no web framework); scapy is the only significant runtime
+ dependency. Destructive actions are opt-in, authorization-gated,
+ scope-restricted, rate-limited, and reversible.

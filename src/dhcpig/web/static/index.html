@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DHCPig</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <span class="brand">DHCP<span class="pig">ig</span></span>
+    <label>Iface <select id="iface"></select></label>
+    <label>Mode
+      <select id="mode">
+        <option value="exhaust">Exhaust</option>
+        <option value="scan">Passive Scan</option>
+        <option value="active-scan">Active Scan</option>
+        <option value="release">DHCP Release</option>
+        <option value="garp">ARP-GARP DoS</option>
+      </select>
+    </label>
+    <button id="start">▶ Start</button>
+    <button id="stop" disabled>■ Stop</button>
+    <button id="restore" disabled>↺ Restore</button>
+    <span class="exportgrp">⤓
+      <button data-fmt="json">JSON</button><button data-fmt="csv">CSV</button><button data-fmt="html">HTML</button>
+    </span>
+    <button id="copycli" title="Copy equivalent dhcpig command">⧉ Copy CLI</button>
+    <button id="saveprofile" title="Download profile">💾</button>
+    <label class="filebtn" title="Load profile">📂<input type="file" id="loadprofile" accept="application/json" hidden /></label>
+    <label class="dry"><input type="checkbox" id="dryrun" /> Dry-run</label>
+    <label class="ctl" title="Run a legitimate DHCP cycle from the real NIC MAC before and after
+the test, so a null result can be told apart from a broken test">
+      <input type="checkbox" id="control" checked /> Control</label>
+    <label>Verbosity
+      <select id="verbosity">
+        <option value="0">0 · errors</option>
+        <option value="1">1 · minimal</option>
+        <option value="2" selected>2 · normal</option>
+        <option value="3">3 · debug</option>
+      </select>
+    </label>
+    <span id="conn" class="pill off">SSE: off</span>
+  </header>
+
+  <div id="drybanner" class="banner warn">DRY RUN — building packets, nothing is sent on the wire</div>
+  <div id="destbanner" class="banner bad hidden">⚠ DESTRUCTIVE MODE — authorization + scope required</div>
+
+  <main>
+    <section class="panel config">
+      <h2>Config</h2>
+      <label>Rate (pps) <input type="number" id="rate" value="50" min="1" /></label>
+      <label>Max leases <input type="number" id="maxleases" value="500" min="1" /></label>
+      <label>Threads <input type="number" id="threads" value="1" min="1" max="64" /></label>
+      <div id="destcfg" class="destcfg hidden">
+        <label>Scope CIDRs <input type="text" id="scope" placeholder="172.20.0.0/16, ..." /></label>
+        <label class="chk" id="authlbl"><input type="checkbox" id="authorized" /> I am authorized</label>
+      </div>
+      <label class="chk"><input type="checkbox" id="spoofeth" checked /> spoof eth src (distinct MACs)</label>
+      <label class="chk"><input type="checkbox" id="norestore" /> disable auto-restore</label>
+    </section>
+
+    <section class="panel dashboard">
+      <h2>Dashboard</h2>
+      <div class="counters">
+        <div class="counter"><span id="c-a">0</span><label id="l-a">leases</label></div>
+        <div class="counter"><span id="c-b">0</span><label id="l-b">servers</label></div>
+        <div class="counter"><span id="c-c">0</span><label id="l-c">pps</label></div>
+        <div class="counter"><span id="c-d">0s</span><label>elapsed</label></div>
+      </div>
+      <canvas id="spark" width="520" height="90"></canvas>
+      <div id="state" class="state">IDLE</div>
+    </section>
+
+    <section class="panel tables">
+      <div class="tabs">
+        <button class="tab active" data-tab="findings">Findings</button>
+        <button class="tab" data-tab="neighbors">Neighbors / Hosts</button>
+        <button class="tab" data-tab="servers">Servers</button>
+        <button class="tab" data-tab="leases">Leases</button>
+      </div>
+      <div id="t-findings" class="tab-body findings">
+        <p class="hint">Verdicts appear here when the run ends. A control transaction (a normal
+          DHCP request from this machine's real MAC) runs before and after the test so a failed
+          run can be read as "the network blocked us" rather than "the test was misconfigured".</p>
+      </div>
+      <table id="t-neighbors" class="tab-body hidden">
+        <thead><tr><th>Host</th><th>MAC</th><th>OS / Device</th><th>Conf</th></tr></thead>
+        <tbody></tbody></table>
+      <table id="t-servers" class="tab-body hidden">
+        <thead><tr><th>Server</th><th>Offers</th><th>OS / Device</th><th>Conf</th></tr></thead>
+        <tbody></tbody></table>
+      <table id="t-leases" class="tab-body hidden">
+        <thead><tr><th>IP</th><th>MAC</th><th>Server</th></tr></thead>
+        <tbody></tbody></table>
+    </section>
+  </main>
+
+  <section class="panel log"><h2>Event log</h2><pre id="log"></pre></section>
+
+  <div id="modal" class="modal hidden">
+    <div class="modal-box">
+      <h3 id="modal-title">Confirm destructive action</h3>
+      <p id="modal-text"></p>
+      <label>Type the interface name to confirm:
+        <input type="text" id="modal-input" autocomplete="off" />
+      </label>
+      <div class="modal-actions">
+        <button id="modal-cancel">Cancel</button>
+        <button id="modal-go" class="danger" disabled>Proceed</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+#!/usr/bin/make -f
+# Build the .deb with pybuild + hatchling. Installs the dhcpig / dhcpig-web / pig
+# console scripts and the desktop launcher.
+
+export PYBUILD_NAME=dhcpig
+
+%:
+	dh $@ --with python3 --buildsystem=pybuild
+
+override_dh_install:
+	dh_install
+	install -Dm644 packaging/dhcpig-web.desktop \
+		debian/dhcpig/usr/share/applications/dhcpig-web.desktop

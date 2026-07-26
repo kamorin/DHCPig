@@ -1,0 +1,82 @@
+"""Packet builder/parser tests, including the PR #27 and #28 regressions."""
+
+from scapy.all import BOOTP, DHCP, IP, UDP, Ether, mac2str
+
+from dhcpig.core import packets
+
+
+def _make_offer(chaddr_bytes: bytes, siaddr: str, server_id: str | None, yiaddr="172.20.0.83"):
+    opts = [("message-type", "offer")]
+    if server_id is not None:
+        opts.append(("server_id", server_id))
+    opts += [("subnet_mask", "255.255.255.0"), "end"]
+    return (
+        Ether(src="00:0c:29:da:53:f9", dst="de:ad:00:00:00:01")
+        / IP(src=siaddr or "0.0.0.0", dst="255.255.255.255")
+        / UDP(sport=67, dport=68)
+        / BOOTP(op=2, chaddr=chaddr_bytes, yiaddr=yiaddr, siaddr=siaddr, xid=0x1234)
+        / DHCP(options=opts)
+    )
+
+
+def test_discover_sets_broadcast_flag_and_client_id():
+    pkt = packets.build_discover_v4("de:ad:be:ef:00:01", 0xABCD, "de:ad:be:ef:00:01")
+    assert pkt[BOOTP].flags == 0x8000
+    cid = packets.dhcp_option(pkt[DHCP].options, "client_id")
+    assert cid == b"\x01" + mac2str("de:ad:be:ef:00:01")
+
+
+def test_server_identifier_prefers_option54():  # PR #27
+    opts = [("message-type", "offer"), ("server_id", "172.20.15.1"), "end"]
+    assert packets.server_identifier("0.0.0.0", opts) == "172.20.15.1"
+
+
+def test_server_identifier_falls_back_to_siaddr():  # PR #27
+    opts = [("message-type", "offer"), "end"]  # no option 54
+    assert packets.server_identifier("172.20.15.9", opts) == "172.20.15.9"
+
+
+def test_request_uses_option54_when_siaddr_empty():  # PR #27 end-to-end
+    offer = _make_offer(
+        mac2str("de:ad:00:7c:a8:50") + b"\x00" * 10, siaddr="0.0.0.0", server_id="172.20.15.1"
+    )
+    req = packets.build_request_v4(offer, "de:ad:00:7c:a8:50")
+    assert packets.dhcp_option(req[DHCP].options, "server_id") == "172.20.15.1"
+
+
+def test_request_client_mac_is_six_bytes_and_option61_present():  # PR #28
+    # chaddr arrives as a padded 16-byte field
+    chaddr16 = mac2str("de:ad:26:4b:d3:40") + b"\x00" * 10
+    offer = _make_offer(chaddr16, siaddr="172.20.15.1", server_id=None)
+    req = packets.build_request_v4(offer, "de:ad:26:4b:d3:40")
+    # MAC parsed from chaddr[:6] -> exactly 6 octets
+    localm = packets.client_mac_from_offer(offer)
+    assert localm == "de:ad:26:4b:d3:40"
+    assert len(localm.split(":")) == 6
+    # option 61 client-id present and 7 bytes: htype(1) + 6-byte MAC
+    cid = packets.dhcp_option(req[DHCP].options, "client_id")
+    assert cid == b"\x01" + mac2str("de:ad:26:4b:d3:40")
+    assert len(cid) == 7
+    assert req[BOOTP].flags == 0x8000
+
+
+def test_release_and_garp_build():
+    rel = packets.build_release_v4("de:ad:00:00:00:02", "10.0.0.5", "10.0.0.1", 42)
+    assert packets.dhcp_option(rel[DHCP].options, "message-type") in ("release", 7)
+    assert rel[IP].dst == "10.0.0.1"
+    g = packets.build_garp("10.0.0.5", "de:ad:00:00:00:02")
+    assert g.haslayer("ARP")
+    assert g["ARP"].psrc == "10.0.0.5"
+
+
+def test_is_offer_is_ack():
+    offer = _make_offer(mac2str("de:ad:00:00:00:03") + b"\x00" * 10, "172.20.15.1", "172.20.15.1")
+    assert packets.is_offer(offer)
+    assert not packets.is_ack(offer)
+
+
+def test_build_inform():
+    pkt = packets.build_inform_v4("de:ad:00:00:00:05", "192.168.1.50", 0x1234)
+    assert packets.dhcp_option(pkt[DHCP].options, "message-type") in ("inform", 8)
+    assert pkt[BOOTP].ciaddr == "192.168.1.50"  # INFORM comes from an addressed client
+    assert pkt[IP].src == "192.168.1.50"

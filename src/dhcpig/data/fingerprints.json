@@ -1,0 +1,84 @@
+{
+  "version": "builtin-2026-07",
+  "note": "Small offline fallback table. For full coverage, layer a local Fingerbank DHCP DB. PRLs are representative option-55 orders; extend as needed.",
+  "entries": [
+    {
+      "os": "Windows 10/11",
+      "device": "Windows PC",
+      "vendor": "Microsoft",
+      "prl": [1, 3, 6, 15, 31, 33, 43, 44, 46, 47, 119, 121, 249, 252],
+      "vendor_class": "MSFT",
+      "confidence": 98
+    },
+    {
+      "os": "Windows Server",
+      "device": "Windows Server DHCP",
+      "vendor": "Microsoft",
+      "vendor_class": "MSFT 5.0",
+      "confidence": 90
+    },
+    {
+      "os": "macOS",
+      "device": "Mac",
+      "vendor": "Apple",
+      "prl": [1, 121, 3, 6, 15, 119, 252, 95, 44, 46],
+      "confidence": 95
+    },
+    {
+      "os": "Apple iOS",
+      "device": "iPhone/iPad",
+      "vendor": "Apple",
+      "vendor_class": "iPhone",
+      "confidence": 92
+    },
+    {
+      "os": "Android",
+      "device": "Android device",
+      "vendor": "Google",
+      "vendor_class": "android-dhcp",
+      "confidence": 92
+    },
+    {
+      "os": "Linux (dhclient)",
+      "device": "Linux host",
+      "vendor": "ISC",
+      "prl": [1, 28, 2, 3, 15, 6, 119, 12, 44, 47, 26, 121, 42],
+      "confidence": 90
+    },
+    {
+      "os": "Linux (dhcpcd)",
+      "device": "Linux host",
+      "vendor": "dhcpcd",
+      "vendor_class": "dhcpcd",
+      "confidence": 88
+    },
+    {
+      "os": "Linux (systemd-networkd)",
+      "device": "Linux host",
+      "vendor": "systemd",
+      "prl": [1, 3, 6, 12, 15, 26, 28, 33, 40, 41, 42, 119, 121],
+      "confidence": 85
+    },
+    {
+      "os": "ISC dhcpd",
+      "device": "DHCP server",
+      "vendor": "ISC",
+      "vendor_class": "isc-dhcpd",
+      "confidence": 85
+    },
+    {
+      "os": null,
+      "device": "PXE boot client",
+      "vendor": null,
+      "vendor_class": "PXEClient",
+      "confidence": 80
+    },
+    {
+      "os": null,
+      "device": "Printer",
+      "vendor": "HP",
+      "vendor_class": "Hewlett-Packard",
+      "confidence": 80
+    }
+  ]
+}

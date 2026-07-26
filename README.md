@@ -1,0 +1,125 @@
+DHCPig
+======
+
+Tags: DHCP, IPv4, IPv6, exhaustion, pentest, fingerprinting, security, scapy
+
+SUMMARY
+-------
+
+DHCPig is a whitehat network-hardening validation tool. It exercises DHCP starvation,
+lease-hijack, forced lease release, gratuitous-ARP disruption, and passive host
+fingerprinting so security engineers can confirm a network is defended (DHCP snooping,
+port security, etc.).
+
+`dhcpig` 2.x is a refactor of the original single-file `pig.py` into an installable,
+tested package. It requires `scapy>=2.5` and root/CAP_NET_RAW. Destructive actions are
+opt-in, authorization-gated, scope-restricted, rate-limited, and reversible.
+
+INSTALL
+-------
+
+    pipx install dhcpig        # or: pip install .
+
+USAGE (V1.0 — CLI)
+------------------
+
+    sudo dhcpig exhaust eth1 --rate 50 --max-leases 500 --report run.json
+    sudo dhcpig scan eth1 --report inventory.json          # passive, read-only
+    sudo dhcpig release eth1 --scope 172.20.0.0/16 --i-am-authorized   # DESTRUCTIVE
+    sudo dhcpig garp    eth1 --scope 172.20.0.0/16 --i-am-authorized   # DESTRUCTIVE
+    sudo dhcpig restore eth1                               # release leases we grabbed
+    dhcpig ifaces
+
+Safety flags:
+
+    --dry-run            build + log packets, send nothing on the wire
+    --rate N             cap packets/sec (authoritative — the only pacing mechanism)
+    --max-leases N       hard cap on leases consumed
+    --scope CIDR         restrict destructive actions to these networks (repeatable)
+    --i-am-authorized    required for release/garp; you attest you have permission
+    --no-control         skip the control transaction (see below; not recommended)
+
+CONTROL TRANSACTION & FINDINGS
+------------------------------
+
+`exhaust` runs a **control transaction** before and after the test: one ordinary DHCP cycle
+(DISCOVER/OFFER/REQUEST/ACK/RELEASE) using the interface's real MAC, labelled `CONTROL[pre]`
+and `CONTROL[post]` in the output. The lease is released immediately, so the control consumes
+nothing.
+
+This is what makes a null result meaningful:
+
+* `pre` **succeeds**, spoofed MACs get nothing → the network defended itself (**PASS**).
+* `pre` **fails** → the test itself is invalid (wrong VLAN, wrong interface, no server), so the
+  run is reported **INCONCLUSIVE** rather than as a pass.
+* `post` **fails** while leases are held → a real client is being denied service, which
+  confirms genuine pool exhaustion (**FAIL**).
+
+Runs end with **findings** — an ID, verdict, severity, the evidence behind it, and a
+recommendation — printed by the CLI, shown in the web UI's Findings tab, and included in the
+JSON/HTML reports. Note that `LIMIT REACHED` (your `--max-leases` cap) and `POOL EXHAUSTED`
+(the server stopped serving) are reported as different things and must not be confused.
+
+Legacy `./pig.py eth1` still works via a deprecated shim.
+
+WEB UI
+------
+
+    sudo dhcpig-web            # prints a tokenized loopback URL; open it in a browser
+
+The web UI (`dhcpig-web`) is Python-stdlib only (no framework, no build step). It is bound to
+`127.0.0.1`, requires the printed bearer token, and enforces same-origin. All four modes are
+available with a live dashboard, OS-inventory tables, JSON/CSV/HTML export, "Copy as CLI", and
+profile save/load. Destructive modes require the authorization checkbox, a scope, and a typed
+confirmation (re-validated server-side). For a headless VM, reach it from your host with:
+
+    ssh -L 8787:127.0.0.1:8787 kali@<vm-ip>
+
+MODES
+-----
+
+* __exhaust__     — DISCOVER/OFFER/REQUEST loop that consumes the address pool (non-destructive).
+* __scan__        — passive ARP + DHCP capture; fingerprints every host (OS/device/vendor).
+* __active-scan__ — active discovery: ARP sweep of the scope + a DHCP INFORM to find/fingerprint
+                    servers. Non-destructive; requires `--scope` (auto-filled from the interface).
+* __release__     — DHCPRELEASE for in-scope neighbors (DESTRUCTIVE, gated).
+* __garp__        — standalone gratuitous-ARP flood, no exhaustion phase (DESTRUCTIVE, gated).
+
+FINGERPRINTING
+--------------
+
+`scan` (and server discovery during `exhaust`) resolves OS/device from the DHCP option-55
+parameter-request-list order (exact, order-sensitive match) with option-60 vendor-class /
+MAC-OUI as a fallback signal. It ships a static `combined_dhcp_os_lookup.json` (PacketFence +
+Huginn-Muninn fingerprints merged by `data/fingerprint-merge.py`, 594 fingerprints) plus a
+small builtin fallback table for signals the combined DB doesn't carry — no API, no key, works
+fully offline/airgapped. A fingerprint matching more than one device is reported with lower
+confidence and flagged ambiguous. Drop a refreshed `combined_dhcp_os_lookup.json` into
+`src/dhcpig/data/` to update coverage; see `data/DATA_ATTRIBUTION.md`. In `scan`/`active-scan`,
+neighbors discovered via ARP are automatically paired with any DHCP fingerprint seen for the
+same MAC, so the Neighbors table shows OS/Device whichever signal arrives first.
+
+DEFENSE
+-------
+
+The most common defense against DHCP exhaustion is access-layer switching / wireless
+controllers. On Cisco, enable DHCP snooping — it defends against pool exhaustion, IP
+hijacking, and rogue DHCP servers, all of which DHCPig exercises:
+
+    ip dhcp snooping
+    interface fa0/1
+      ip dhcp snooping trust        ! your DHCP uplink
+    show ip dhcp snooping
+    show ip dhcp snooping binding
+
+DISCLAIMER
+----------
+
+All information and software here are for authorized testing and educational purposes only.
+The authors are not responsible for misuse. Only run DHCPig against networks you own or are
+explicitly authorized to test.
+
+LICENSE
+-------
+
+GPL v2 or later. See LICENSE.
