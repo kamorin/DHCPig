@@ -261,6 +261,11 @@ function handleEvent(e) {
     }
     case "LeaseReleased": logLine("out", `[->] DHCPRELEASE  ${e.lease.ip}`, 2); break;
     case "ArpConflictSent": logLine("out", `[->] ARP_conflict contest ownership of ${e.ip}`, 2); break;
+    case "ForeignDiscover": {
+      const who = e.hostname ? `  hostname=${e.hostname}` : "";
+      logLine("note", `[<-] foreign DHCP_Discover  ${e.mac}${who}  (not ours)`, 2);
+      break;
+    }
     case "Skipped": logLine("alert", `[!!] SKIPPED ${e.ip}  ${e.reason}`, 1); break;
     case "StatusTick": {
       const s = e.stats, w = Math.round(s.window || 0);
@@ -275,6 +280,8 @@ function handleEvent(e) {
       col("discovers", "discovers", "discover_pps");
       col("offers", "offers"); col("naks", "naks");
       col("releases", "releases"); col("arp_conflicts", "arp_conflicts");
+      col("foreign_discovers", "foreign_discovers");
+      col("foreign_unanswered", "foreign_discovers_unanswered");
       if (s.servers) bits.push(`servers ${s.servers}`);
       if (s.neighbors) bits.push(`neighbors ${s.neighbors}`);
       if (s.send_window != null) bits.push(`window ${s.send_window} (inflight ${s.inflight || 0})`);

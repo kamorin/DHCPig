@@ -48,6 +48,17 @@ class NakReceived(Event):
 
 
 @dataclass
+class ForeignDiscover(Event):
+    """A DHCPDISCOVER from a MAC we've never sent from ourselves (2.3) -- visible only since
+    the sniffer's BPF widened to see client->server traffic too. First sighting per MAC only;
+    repeats are recorded but not re-emitted, to avoid flooding the log with retries."""
+
+    mac: str
+    xid: int
+    hostname: str | None = None
+
+
+@dataclass
 class ServerDiscovered(Event):
     server: ServerInfo
 
