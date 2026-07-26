@@ -88,6 +88,12 @@ function onModeChange() {
   $("l-a").textContent = labels[0];
   $("l-b").textContent = labels[1];
   $("l-c").textContent = labels[2];
+  // headroom only means something for exhaust (it's a DHCP pool concept)
+  if (mode !== "exhaust") {
+    $("c-e").textContent = "—";
+    $("l-e").textContent = "headroom";
+    $("headroomcell").classList.add("dim");
+  }
 }
 
 function autofillScope() {
@@ -271,6 +277,10 @@ function handleEvent(e) {
       if (s.neighbors) bits.push(`neighbors ${s.neighbors}`);
       if (s.send_window != null) bits.push(`window ${s.send_window} (inflight ${s.inflight || 0})`);
       if (s.timeouts) bits.push(`timeouts ${s.timeouts}`);
+      if (s.headroom != null) {
+        const tag = s.pool_source === "scope" ? "" : " est.";
+        bits.push(`headroom ${s.headroom} / ~${s.pool_size}${tag}`);
+      }
       if (s.since_last_offer != null) bits.push(`last offer ${Math.round(s.since_last_offer)}s ago`);
       if (s.halt_signal) bits.push(`HALTED[${s.halt_signal}]`);
       logLine("stat", "[##] " + bits.join("  "), 2);
@@ -334,6 +344,17 @@ async function pollStatus() {
     $("c-c").textContent = scanlike ? neighbors.size : pps;
     $("c-d").textContent = (status.elapsed ?? 0) + "s";
     $("state").textContent = status.state ?? "";
+    if (mode === "exhaust" && status.pool_size != null) {
+      const tag = status.pool_source === "scope" ? "" : " est.";
+      $("c-e").textContent = status.headroom != null ? status.headroom : "—";
+      $("l-e").textContent = `headroom / ~${status.pool_size}${tag}`;
+      $("headroomcell").classList.remove("dim");
+      $("headroomcell").title = status.pool_detail || "";
+    } else if (mode === "exhaust") {
+      $("c-e").textContent = "—";
+      $("l-e").textContent = "headroom (unknown)";
+      $("headroomcell").classList.add("dim");
+    }
     rate.series.push(pps); if (rate.series.length > 120) rate.series.shift();
     drawSpark();
   } catch (_) {}

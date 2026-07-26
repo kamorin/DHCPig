@@ -18,6 +18,39 @@ def test_report_roundtrip(tmp_path):
     assert "fingerprint_db" in data
 
 
+def test_pool_estimate_carried_from_session_ended_into_report():
+    cfg = SessionConfig(interface="eth1")
+    rec = SessionRecorder(cfg)
+    rec.handle(
+        ev.SessionEnded(
+            report={
+                "pool_size": 254,
+                "pool_source": "scope",
+                "pool_is_estimate": False,
+                "pool_detail": "usable hosts in 10.0.0.0/24",
+                "headroom": 200,
+                "in_use_observed": 3,
+            }
+        )
+    )
+    data = rec.to_dict()
+    est = data["pool_estimate"]
+    assert est["size"] == 254
+    assert est["source"] == "scope"
+    assert est["headroom"] == 200
+    text, _ = rec.render("html")
+    assert "Pool headroom" in text and "254" in text
+
+
+def test_pool_estimate_defaults_to_nulls_without_a_session_ended_event():
+    cfg = SessionConfig(interface="eth1")
+    rec = SessionRecorder(cfg)
+    data = rec.to_dict()
+    assert data["pool_estimate"]["size"] is None
+    text, _ = rec.render("html")
+    assert "Pool headroom" not in text  # nothing fabricated when the estimate is unknown
+
+
 def test_neighbor_update_dedupes_by_mac_not_appended():
     cfg = SessionConfig(interface="eth1")
     rec = SessionRecorder(cfg)

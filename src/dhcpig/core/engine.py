@@ -28,6 +28,7 @@ from .models import (
     Lease,
     Mode,
     Neighbor,
+    PoolEstimate,
     ServerInfo,
     SessionConfig,
 )
@@ -110,6 +111,13 @@ class DhcpEngine:
         self._duplicate_offer_ips: set[str] = set()
         # halt-and-report: the first defensive-control signal wins. (signal, detail, leases_held)
         self._halt_signal: tuple[str, str, int] | None = None
+        # pool-size estimate for the headroom number: learned from the first OFFER's subnet
+        # (option 1), or an explicit --scope. self._baseline_neighbor_count is the ARP-sweep
+        # count taken *before* exhausting, for the pre-run utilization finding — it must not be
+        # confused with the live _neighbors_by_mac count, which the estimate/headroom uses.
+        self._first_offer_ip: str | None = None
+        self._first_offer_subnet: str | None = None
+        self._baseline_neighbor_count = 0
 
     # ---------------------------------------------------------------- send chokepoint
     def _send(self, pkt, target_ip: str | None = None) -> bool:
@@ -200,6 +208,10 @@ class DhcpEngine:
                 stats["send_window"] = self._window
                 stats["inflight"] = len(self._inflight)
                 stats["timeouts"] = self.timeouts_seen
+                est, headroom = self._pool_headroom()
+                stats["pool_size"] = est.size
+                stats["pool_source"] = est.source
+                stats["headroom"] = headroom
             if self._halt_signal is not None:
                 stats["halt_signal"] = self._halt_signal[0]
             self.bus.emit(ev.StatusTick(stats=stats))
@@ -264,7 +276,7 @@ class DhcpEngine:
             self.bus.emit(ev.LeaseReleased(lease=lease))
 
     def status(self) -> dict:
-        return {
+        out = {
             "state": self.state,
             "discovers": self.discovers,
             "offers": self.offers,
@@ -281,6 +293,15 @@ class DhcpEngine:
             "halted": self._halt_signal is not None,
             "halt_signal": self._halt_signal[0] if self._halt_signal else None,
         }
+        if self.cfg.mode is Mode.EXHAUST:
+            est, headroom = self._pool_headroom()
+            out["pool_size"] = est.size
+            out["pool_source"] = est.source
+            out["pool_is_estimate"] = est.is_estimate
+            out["pool_detail"] = est.detail
+            out["headroom"] = headroom
+            out["in_use_observed"] = len(self._neighbors_by_mac)
+        return out
 
     # ---------------------------------------------------------------- helpers
     def _src_mac(self, client_mac: str) -> str:
@@ -385,6 +406,7 @@ class DhcpEngine:
             sid, server_mac, offered_ip, subnet = packets.parse_offer(offer)
             out.offered_ip, out.server_id, out.subnet = offered_ip, sid, subnet
             out.server_mac = server_mac or None
+            self._note_offer_for_pool_estimate(offered_ip, subnet)
             lt = packets.dhcp_option(offer[DHCP].options, "lease_time")
             out.lease_time = int(lt) if isinstance(lt, int) else None
             self._debug(f"CONTROL[{phase}/{client}] OFFER {offered_ip} from {sid} subnet={subnet}")
@@ -471,6 +493,32 @@ class DhcpEngine:
                     ),
                 )
             )
+        if self.cfg.mode is Mode.EXHAUST and self._baseline_neighbor_count:
+            est, _ = self._pool_headroom()
+            if est.size:
+                utilization = self._baseline_neighbor_count / est.size
+                if utilization >= 0.8:
+                    self._raise(
+                        Finding(
+                            id="POOL_HEADROOM_LOW",
+                            title="The pool was already near full before this test began",
+                            verdict=INFO,
+                            severity="medium",
+                            evidence={
+                                "in_use_observed": self._baseline_neighbor_count,
+                                "pool_size": est.size,
+                                "source": est.source,
+                                "utilization_pct": round(utilization * 100, 1),
+                            },
+                            recommendation=(
+                                "A passive, pre-test finding independent of whether exhausting "
+                                "the pool succeeded: with the scope already this full, only a "
+                                "few more leases deny service to the next legitimate client. "
+                                "Consider widening the scope or adding a second one."
+                            ),
+                        )
+                    )
+
         if self.cfg.mode is Mode.EXHAUST:
             if self.acks > 0:
                 self._raise(
@@ -754,6 +802,69 @@ class DhcpEngine:
             self.bus.emit(ev.GarpSent(ip=n.ip))
         return sent
 
+    # ---------------------------------------------------------------- pool estimate / headroom
+    def _note_offer_for_pool_estimate(self, offered_ip: str, subnet: str | None) -> None:
+        """Remember the first OFFER's address+subnet, in case --scope was never given.
+
+        Called from both the real sender path and the control transaction, so the estimate
+        becomes available as soon as *any* OFFER is seen — usually the control/self leg, well
+        before the exhaust sender sends its first packet.
+        """
+        if self._first_offer_ip is None and subnet:
+            self._first_offer_ip, self._first_offer_subnet = offered_ip, subnet
+
+    def _estimate_pool(self) -> PoolEstimate:
+        """Best-effort pool size. Never fabricated — `size=None` when nothing is known yet.
+
+        Resolution order: an explicit --scope (deterministic host count) beats inferring the
+        subnet from an OFFER (option 1), which is itself only as good as what the server told
+        us — reservations, exclusions, and additional scopes on the same segment are invisible
+        from here.
+        """
+        import ipaddress
+
+        if self.cfg.scope_cidrs:
+            try:
+                total = sum(
+                    max(0, ipaddress.ip_network(c, strict=False).num_addresses - 2)
+                    for c in self.cfg.scope_cidrs
+                )
+                return PoolEstimate(
+                    size=total,
+                    source="scope",
+                    is_estimate=False,
+                    detail=f"usable hosts in {', '.join(self.cfg.scope_cidrs)}",
+                )
+            except ValueError:
+                pass
+        if self._first_offer_ip and self._first_offer_subnet:
+            from .netutils import cidr_from_mask
+
+            try:
+                prefixlen = cidr_from_mask(self._first_offer_subnet)
+                net = ipaddress.ip_network(f"{self._first_offer_ip}/{prefixlen}", strict=False)
+                return PoolEstimate(
+                    size=max(0, net.num_addresses - 2),
+                    source="observed",
+                    is_estimate=True,
+                    detail=f"subnet inferred from an OFFER ({net})",
+                )
+            except (ValueError, OSError):
+                pass
+        return PoolEstimate(
+            size=None, source="none", is_estimate=True, detail="no --scope and no OFFER seen yet"
+        )
+
+    def _pool_headroom(self) -> tuple[PoolEstimate, int | None]:
+        """(estimate, headroom). headroom is None whenever the estimate itself is unknown, and
+        floored at 0 rather than allowed to go negative (over-subscribed/misestimated scopes)."""
+        est = self._estimate_pool()
+        if est.size is None:
+            return est, None
+        in_use_observed = len(self._neighbors_by_mac)
+        headroom = max(0, est.size - self.acks - in_use_observed)
+        return est, headroom
+
     # ---------------------------------------------------------------- windowed handshake pipeline
     def _trigger_halt(self, signal: str, detail: str) -> None:
         """First control signal wins: stop sending, keep leases, finish the report.
@@ -958,6 +1069,7 @@ class DhcpEngine:
             return
         self._debug(f"arp sweep starting over {', '.join(cidrs)} (pre-run inventory)")
         found, _ = self._discover_neighbors(cidrs)
+        self._baseline_neighbor_count = len(found)
         self._debug(f"arp sweep: {len(found)} host(s) present before exhausting")
 
     def _sweep_cidrs(self) -> list[str]:
@@ -1089,6 +1201,7 @@ class DhcpEngine:
                 info["state"] = "REQUEST_SENT"
                 info["sent_at"] = time.time()  # restart the timeout clock for the ACK leg
         self._note_offer_for_duplicate_detection(offered_ip, lease.mac)
+        self._note_offer_for_pool_estimate(offered_ip, subnet)
         self.bus.emit(ev.OfferReceived(lease=lease, server=server))
         self._debug(
             f"OFFER xid=0x{pkt[BOOTP].xid:08x} yiaddr={offered_ip} server_id={server_id} "

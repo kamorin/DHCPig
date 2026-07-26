@@ -158,6 +158,21 @@ PASS, FAIL, INFO, INCONCLUSIVE = "PASS", "FAIL", "INFO", "INCONCLUSIVE"
 
 
 @dataclass
+class PoolEstimate:
+    """Best-effort size of the address pool being exhausted — always labelled as an estimate.
+
+    We cannot see the server's actual scope configuration (reservations, exclusions, multiple
+    scopes on one segment all skew this), so `size` must always be shown next to `source` and
+    `detail`, never presented as an authoritative denominator on its own.
+    """
+
+    size: int | None  # None when it cannot be determined at all — the UI must show "—"
+    source: str  # "scope" | "observed" | "none"
+    is_estimate: bool
+    detail: str = ""
+
+
+@dataclass
 class Finding:
     """An auditable conclusion with the evidence that produced it."""
 

@@ -41,6 +41,7 @@ class SessionRecorder:
         self.naks: list[dict] = []
         self.exhausted = False
         self.exhaustion_confirmed = False
+        self.final_status: dict = {}
 
     def handle(self, event: ev.Event) -> None:
         if isinstance(event, ev.ServerDiscovered):
@@ -63,6 +64,8 @@ class SessionRecorder:
             self.exhausted = True
             if event.confirmed:
                 self.exhaustion_confirmed = True
+        elif isinstance(event, ev.SessionEnded):
+            self.final_status = event.report
 
     def _config_redacted(self) -> dict:
         d = asdict(self.cfg)
@@ -97,6 +100,15 @@ class SessionRecorder:
                 "control_transactions": self.controls,
                 "pool_exhausted": self.exhausted,
                 "pool_exhaustion_confirmed": self.exhaustion_confirmed,
+                # always labelled as an estimate — see PoolEstimate / DhcpEngine._estimate_pool()
+                "pool_estimate": {
+                    "size": self.final_status.get("pool_size"),
+                    "source": self.final_status.get("pool_source"),
+                    "is_estimate": self.final_status.get("pool_is_estimate"),
+                    "detail": self.final_status.get("pool_detail"),
+                    "headroom": self.final_status.get("headroom"),
+                    "in_use_observed": self.final_status.get("in_use_observed"),
+                },
             }
         )
 
@@ -242,6 +254,22 @@ def _control_html(data: dict) -> str:
     )
 
 
+def _pool_estimate_line(data: dict) -> str:
+    from html import escape
+
+    est = data.get("pool_estimate") or {}
+    size = est.get("size")
+    if size is None:
+        return ""
+    headroom = est.get("headroom")
+    tag = "estimate" if est.get("is_estimate") else "from scope"
+    return (
+        f"<p><b>Pool headroom:</b> {escape(str(headroom))} / ~{escape(str(size))} "
+        f"({escape(tag)}, source: {escape(str(est.get('source')))}) &nbsp; "
+        f"<i>{escape(str(est.get('detail', '')))}</i></p>"
+    )
+
+
 def _to_html(data: dict) -> str:
     from html import escape
 
@@ -272,6 +300,7 @@ font-size:13px;text-align:left}}th{{background:#f2f2f2}}
 (confirmed: {escape(str(data.get("pool_exhaustion_confirmed")))}) &nbsp;
 <b>Scope:</b> {escape(str(data.get("scope_cidrs")))} &nbsp;
 <b>Fingerprint DB:</b> {escape(str(data.get("fingerprint_db")))}</p>
+{_pool_estimate_line(data)}
 <h2>Findings</h2>
 {_findings_html(data)}
 <h2>Control transactions</h2>
