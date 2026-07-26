@@ -181,31 +181,93 @@ def test_blocked_run_with_good_baseline_is_a_pass(monkeypatch):
     assert fs["DHCP_STARVATION_BLOCKED"].verdict == PASS
 
 
-def test_post_control_failure_confirms_exhaustion(monkeypatch):
+def test_exhaustion_confirmed_only_when_a_NEW_client_is_denied(monkeypatch):
     eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
     eng._started = time.time()
-    eng.control_pre = ControlOutcome(phase="pre", attempted=True, success=True)
-    eng.control_post = ControlOutcome(
-        phase="post", attempted=True, success=False, reason="no OFFER"
+    eng.control_pre = ControlOutcome(phase="pre", client="self", attempted=True, success=True)
+    eng.control_pre_new = ControlOutcome(
+        phase="pre", client="new", attempted=True, success=True, offered_ip="10.0.0.7"
+    )
+    # renewal still works (the server remembers our own MAC) but a new client is refused
+    eng.control_post = ControlOutcome(phase="post", client="self", attempted=True, success=True)
+    eng.control_post_new = ControlOutcome(
+        phase="post", client="new", attempted=True, success=False, reason="no OFFER"
     )
     eng.acks = 250
     eng._finalize_findings()
     fs = {e.finding.id: e.finding for e in events if isinstance(e, ev.FindingRaised)}
     assert fs["POOL_EXHAUSTED_CONFIRMED"].verdict == FAIL
+    assert fs["POOL_EXHAUSTED_CONFIRMED"].evidence["renewal_still_worked"] is True
 
 
-def test_post_control_success_means_not_exhausted(monkeypatch):
+def test_renewal_success_alone_does_not_disprove_exhaustion(monkeypatch):
+    """Regression: the self-MAC leg renews an existing binding and can succeed on a drained
+    pool, so it must not be what decides POOL_NOT_EXHAUSTED."""
     eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
     eng._started = time.time()
-    eng.control_pre = ControlOutcome(phase="pre", attempted=True, success=True)
+    eng.control_pre = ControlOutcome(phase="pre", client="self", attempted=True, success=True)
+    eng.control_pre_new = ControlOutcome(phase="pre", client="new", attempted=True, success=True)
     eng.control_post = ControlOutcome(
-        phase="post", attempted=True, success=True, offered_ip="10.0.0.9"
+        phase="post", client="self", attempted=True, success=True, offered_ip="10.0.0.35"
+    )
+    eng.control_post_new = ControlOutcome(
+        phase="post", client="new", attempted=True, success=False, reason="no OFFER"
+    )
+    eng.acks = 250
+    eng._finalize_findings()
+    ids = _finding_ids(events)
+    assert "POOL_EXHAUSTED_CONFIRMED" in ids
+    assert "POOL_NOT_EXHAUSTED" not in ids
+
+
+def test_new_client_served_means_not_exhausted(monkeypatch):
+    eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
+    eng._started = time.time()
+    eng.control_pre = ControlOutcome(phase="pre", client="self", attempted=True, success=True)
+    eng.control_pre_new = ControlOutcome(phase="pre", client="new", attempted=True, success=True)
+    eng.control_post_new = ControlOutcome(
+        phase="post", client="new", attempted=True, success=True, offered_ip="10.0.0.9"
     )
     eng.acks = 5
     eng._finalize_findings()
     ids = _finding_ids(events)
     assert "POOL_NOT_EXHAUSTED" in ids
     assert "POOL_EXHAUSTED_CONFIRMED" not in ids
+
+
+def test_offers_ceasing_while_new_client_served_is_a_throttle_not_exhaustion(monkeypatch):
+    """The real-network case: offers stop, but a brand-new client is still served."""
+    from dhcpig.core.engine import EXHAUSTED
+
+    eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
+    eng._started = time.time()
+    eng.state = EXHAUSTED  # senders saw offers cease
+    eng.control_pre = ControlOutcome(phase="pre", client="self", attempted=True, success=True)
+    eng.control_pre_new = ControlOutcome(phase="pre", client="new", attempted=True, success=True)
+    eng.control_post_new = ControlOutcome(
+        phase="post", client="new", attempted=True, success=True, offered_ip="192.168.4.35"
+    )
+    eng.acks = 56
+    eng.naks = 8
+    eng._finalize_findings()
+    fs = {e.finding.id: e.finding for e in events if isinstance(e, ev.FindingRaised)}
+    assert "POOL_EXHAUSTED_CONFIRMED" not in fs
+    assert "SERVER_STOPPED_SERVING_TEST_CLIENTS" in fs
+    assert fs["SERVER_STOPPED_SERVING_TEST_CLIENTS"].evidence["naks"] == 8
+
+
+def test_new_client_blocked_at_baseline_is_a_pass(monkeypatch):
+    """Own MAC served, unknown MAC refused = L2 admission control, not a broken test."""
+    eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
+    eng._started = time.time()
+    eng.control_pre = ControlOutcome(phase="pre", client="self", attempted=True, success=True)
+    eng.control_pre_new = ControlOutcome(
+        phase="pre", client="new", attempted=True, success=False, reason="no OFFER"
+    )
+    eng.discovers = 30
+    eng._finalize_findings()
+    fs = {e.finding.id: e.finding for e in events if isinstance(e, ev.FindingRaised)}
+    assert fs["NEW_CLIENT_BLOCKED_AT_BASELINE"].verdict == PASS
 
 
 def test_multiple_servers_and_naks_raise_findings(monkeypatch):
@@ -242,6 +304,65 @@ def test_sender_does_not_add_fixed_sleep(monkeypatch):
     # at 1000 pps a half-second window should comfortably clear 25; the old fixed 0.4s
     # sleep capped it at ~2/sec no matter what --rate said
     assert eng.discovers > 25, f"only {eng.discovers} discovers in 0.5s — is a fixed sleep back?"
+
+
+# ---------------------------------------------------------------- pre-run ARP sweep
+def test_prelude_sweeps_then_controls_then_senders(monkeypatch):
+    """Baseline inventory and controls must both precede the first DISCOVER."""
+    eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
+    order = []
+    monkeypatch.setattr(eng, "_baseline_arp_scan", lambda: order.append("arp"))
+    monkeypatch.setattr(
+        eng,
+        "_control_transaction",
+        lambda phase, client="self": (
+            order.append(f"ctl-{phase}-{client}") or ControlOutcome(phase=phase, client=client)
+        ),
+    )
+    monkeypatch.setattr(eng, "_start_senders", lambda: order.append("senders"))
+    eng._exhaust_prelude()
+    assert order == ["arp", "ctl-pre-self", "ctl-pre-new", "senders"]
+
+
+def test_arp_sweep_can_be_disabled(monkeypatch):
+    eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST, arp_sweep=False)
+    order = []
+    monkeypatch.setattr(eng, "_baseline_arp_scan", lambda: order.append("arp"))
+    monkeypatch.setattr(
+        eng,
+        "_control_transaction",
+        lambda phase, client="self": ControlOutcome(phase=phase, client=client),
+    )
+    monkeypatch.setattr(eng, "_start_senders", lambda: order.append("senders"))
+    eng._exhaust_prelude()
+    assert order == ["senders"]
+
+
+def test_sweep_range_falls_back_to_iface_network_for_exhaust(monkeypatch):
+    eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
+    monkeypatch.setattr("dhcpig.core.netutils.iface_network_cidr", lambda _i: "192.168.4.0/22")
+    assert eng._sweep_cidrs() == ["192.168.4.0/22"]
+
+
+def test_sweep_range_prefers_explicit_scope(monkeypatch):
+    eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST, scope_cidrs=["10.1.0.0/24"])
+    assert eng._sweep_cidrs() == ["10.1.0.0/24"]
+
+
+def test_destructive_discovery_is_not_widened_by_the_sweep_fallback(monkeypatch):
+    """_discover_neighbors must stay pinned to cfg.scope_cidrs unless told otherwise."""
+    eng, _, _ = _engine(
+        monkeypatch, mode=Mode.GARP_DOS, authorized=True, scope_cidrs=["10.9.9.0/30"]
+    )
+    seen = {}
+
+    def fake_srp(pkt, **kw):
+        seen["targets"] = pkt.pdst if hasattr(pkt, "pdst") else pkt[1].pdst
+        return [], []
+
+    monkeypatch.setattr("scapy.all.srp", fake_srp)
+    eng._discover_neighbors()  # no cidrs argument -> scope only
+    assert all(t.startswith("10.9.9.") for t in seen["targets"])
 
 
 # ---------------------------------------------------------------- auto-finalize

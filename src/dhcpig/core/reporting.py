@@ -228,8 +228,9 @@ def _control_html(data: dict) -> str:
             status = f"lease {c.get('offered_ip')} from {c.get('server_id')}"
         else:
             status = f"FAILED — {c.get('reason', '')}"
+        who = "own MAC (renewal)" if c.get("client", "self") == "self" else "new client"
         rows.append(
-            f"<tr><td>{escape(str(c.get('phase', '')))}</td>"
+            f"<tr><td>{escape(str(c.get('phase', '')))} / {escape(who)}</td>"
             f"<td>{escape(str(c.get('mac', '')))}</td>"
             f"<td>{escape(status)}</td>"
             f"<td>{escape(str(c.get('elapsed', '')))}s</td></tr>"

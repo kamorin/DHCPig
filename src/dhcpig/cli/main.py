@@ -64,7 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     ex = sub.add_parser("exhaust", help="consume the DHCP pool (non-destructive)")
     common(ex)
-    ex.add_argument("--rate", type=int, default=50, help="max packets/sec (safety cap)")
+    ex.add_argument("--rate", type=int, default=20, help="max packets/sec (safety cap)")
     ex.add_argument("--threads", type=int, default=1)
     ex.add_argument("--request-option", default=None, help="e.g. 12,14-19,23")
     ex.add_argument("--client-mac", action="append", dest="client_macs")
@@ -98,6 +98,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="skip the pre/post control transaction (loses PASS vs INCONCLUSIVE certainty)",
     )
+    ex.add_argument(
+        "--no-arp-scan",
+        dest="no_arp_scan",
+        action="store_true",
+        help="skip the pre-run ARP sweep that inventories who was on the segment beforehand",
+    )
 
     sc = sub.add_parser("scan", help="passive ARP + DHCP fingerprint (read-only)")
     common(sc)
@@ -113,7 +119,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="CIDR",
         help="network(s) to sweep; defaults to the interface's own network",
     )
-    asc.add_argument("--rate", type=int, default=50)
+    asc.add_argument("--rate", type=int, default=20)
     asc.add_argument("--dry-run", action="store_true")
 
     for name, helptext in (
@@ -160,7 +166,7 @@ def build_config(args) -> SessionConfig:
         request_options=req_opts,
         fuzz=getattr(args, "fuzz", False),
         threads=getattr(args, "threads", 1),
-        rate_limit_pps=getattr(args, "rate", 50),
+        rate_limit_pps=getattr(args, "rate", 20),
         dry_run=getattr(args, "dry_run", False),
         authorized=getattr(args, "authorized", False),
         scope_cidrs=scope,
@@ -169,6 +175,7 @@ def build_config(args) -> SessionConfig:
         ),
         report_path=Path(args.report) if getattr(args, "report", None) else None,
         control=not getattr(args, "no_control", False),
+        arp_sweep=not getattr(args, "no_arp_scan", False),
         status_interval=getattr(args, "status_interval", 5.0),
         timeouts=Timeouts(),
         verbosity=getattr(args, "verbosity", 2),

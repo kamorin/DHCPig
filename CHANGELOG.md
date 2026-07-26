@@ -1,5 +1,26 @@
 # Changelog
 
+## 2.0.0 (unreleased) — baseline inventory & a control that can actually detect exhaustion
+
+- **Fixed a false verdict.** The post-run control used this machine's real NIC MAC, which the
+  server usually already has a binding for — so it was really testing *renewal* and could
+  succeed against a completely drained pool, wrongly reporting `POOL_NOT_EXHAUSTED`. Controls
+  now run two legs at both `pre` and `post`: `self` (real MAC — proves DHCP is reachable) and
+  **`new` (a never-seen MAC that must come off the free list)**. Exhaustion is judged solely on
+  the `new` leg, and only when its own baseline succeeded.
+- New finding `SERVER_STOPPED_SERVING_TEST_CLIENTS`: offers ceased but a brand-new client is
+  still served — i.e. DHCP rate-limiting / offer-table saturation / anti-starvation protection,
+  not pool exhaustion. Carries the NAK count and rate as evidence.
+- New finding `NEW_CLIENT_BLOCKED_AT_BASELINE` (PASS): our own MAC is served but an unknown MAC
+  is refused before testing even starts — the signature of DHCP snooping or port security.
+- **Pre-run ARP sweep** (`arp_sweep`, on by default, `--no-arp-scan` / UI checkbox) inventories
+  which hosts were on the segment *before* exhausting; results populate the Neighbors tab.
+  Falls back to the interface's own network when no scope is given. Destructive modes are
+  unaffected — their discovery stays pinned to `--scope`.
+- The exhaust prelude (ARP sweep + controls) now runs off-thread, so `POST /api/session/start`
+  returns immediately instead of blocking for the duration.
+- Default `--rate` lowered from 50 to 20 pps.
+
 ## 2.0.0 (unreleased) — run visibility & MAC vendor identification
 
 - **Periodic status line, every 5s at normal verbosity.** The `StatusTick` event existed since

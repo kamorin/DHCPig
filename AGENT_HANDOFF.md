@@ -71,12 +71,16 @@ the browser's `EventSource` updates the DOM. **Handlers must be cheap/non-blocki
 ## 5a. Confidence model — why the tool can be believed
 The engine reports **verdicts backed by evidence**, not just counters. Three pieces work together
 and should be kept together:
-- **Control transaction** (`_control_transaction`, `ControlOutcome`): one legitimate DHCP cycle
-  from the *real* NIC MAC, run `pre` (in `_run_exhaust`) and `post` (in `stop()`, deliberately
-  **before** `restore()` so leases are still held). Replies are routed to it by xid via
-  `_consume_control()` so control traffic never pollutes run counters. The lease is released
-  immediately. **A failed `pre` means the test was broken, not that a defense worked** — that
-  distinction is the whole point; don't let a null result be reported as a PASS.
+- **Control transaction** (`_control_transaction`, `ControlOutcome`): a legitimate DHCP cycle,
+  run `pre` (in `_exhaust_prelude`) and `post` (in `stop()`, deliberately **before** `restore()`
+  so leases are still held). Replies route by xid via `_consume_control()` so control traffic
+  never pollutes run counters; the lease is released immediately.
+  **Two legs, and the distinction is load-bearing:** `client="self"` uses the real NIC MAC, which
+  the server usually already has a binding for — it is a *renewal* and will succeed on a drained
+  pool. `client="new"` uses a fresh unseen MAC that must come off the free list. **Exhaustion is
+  judged only on the `new` leg** (this was a real bug: the self leg reported POOL_NOT_EXHAUSTED
+  on a network where offers had stopped). A failed `pre/self` means the test was broken, not that
+  a defense worked; a failed `pre/new` with a good `pre/self` means L2 admission control.
 - **`EXHAUSTED` means the server stopped serving — nothing else.** There is no lease cap
   (`--max-leases` was removed precisely so nothing self-imposed could be mistaken for
   exhaustion); `--rate` is the only self-imposed bound. Exhaustion needs offers to have flowed
@@ -156,7 +160,7 @@ python3 -m ruff format --check src tests
 Roadmap V1.0 (CLI), V1.1 (web Exhaust), V2.0 (web all modes + packaging) are all **done**, plus
 these later additions: combined-DB fingerprinting (replacing FingerBank), distinct-MAC default,
 debug logging + verbosity dropdown, `active-scan`, and neighbor↔fingerprint correlation by MAC.
-**111 unit tests pass; ruff clean.** The user validated a real exhaust run on their Kali VM (pcap
+**119 unit tests pass; ruff clean.** The user validated a real exhaust run on their Kali VM (pcap
 reviewed — worked; the single-MAC finding drove the spoof-default change). The confidence work
 in §5a (control transaction, limit-vs-exhaustion, NAKs, findings, `--rate` pacing fix) is done
 but has **not yet been exercised against real hardware** — that's the next validation step.

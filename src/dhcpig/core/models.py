@@ -47,7 +47,7 @@ class SessionConfig:
     request_options: list[int] = field(default_factory=lambda: list(range(80)))
     fuzz: bool = False
     threads: int = 1
-    rate_limit_pps: int = 50  # required safety cap (the remaining bound on run impact)
+    rate_limit_pps: int = 20  # required safety cap (the remaining bound on run impact)
     v6_rapid_commit: bool = False
     dry_run: bool = False
     authorized: bool = False  # set by --i-am-authorized
@@ -59,6 +59,8 @@ class SessionConfig:
     # Run a legitimate DHCP cycle from the real NIC MAC before and after exhausting. This is
     # what separates "the network blocked us" (PASS) from "the test was broken" (INCONCLUSIVE).
     control: bool = True
+    # ARP-sweep the segment before exhausting, to record who was there beforehand
+    arp_sweep: bool = True
     status_interval: float = 5.0  # heartbeat period for StatusTick; 0 disables
     timeouts: Timeouts = field(default_factory=Timeouts)
     verbosity: int = 2
@@ -116,6 +118,11 @@ class ControlOutcome:
     """
 
     phase: str  # "pre" | "post"
+    # "self" = this machine's real NIC MAC. The server usually already has a binding for it, so
+    # this leg tests RENEWAL and proves DHCP is reachable — it can succeed on a drained pool.
+    # "new" = a never-seen MAC, which needs a fresh address off the free list. Only this leg can
+    # tell you whether a new client can still join.
+    client: str = "self"
     attempted: bool = False
     success: bool = False
     mac: str = ""

@@ -42,6 +42,7 @@ function currentConfig() {
     spoof_eth_src: $("spoofeth").checked,
     restore_on_exit: !$("norestore").checked,
     control: $("control").checked,
+    arp_sweep: $("arpscan").checked,
     verbosity: currentVerbosity(),
   };
 }
@@ -56,6 +57,7 @@ function applyConfig(c) {
   if (c.authorized != null) $("authorized").checked = c.authorized;
   if (c.spoof_eth_src != null) $("spoofeth").checked = c.spoof_eth_src;
   if (c.control != null) $("control").checked = c.control;
+  if (c.arp_sweep != null) $("arpscan").checked = c.arp_sweep;
   if (Array.isArray(c.scope_cidrs)) $("scope").value = c.scope_cidrs.join(", ");
   onModeChange();
 }
@@ -67,7 +69,7 @@ function setRunning(on) {
   $("stop").disabled = !on;
   $("restore").disabled = on;
   ["iface", "mode", "rate", "threads", "dryrun", "norestore", "scope",
-    "authorized", "spoofeth", "control"].forEach((id) => ($(id).disabled = on));
+    "authorized", "spoofeth", "control", "arpscan"].forEach((id) => ($(id).disabled = on));
 }
 
 function onModeChange() {
@@ -168,7 +170,9 @@ function renderFindings() {
           ? "OK — lease " + esc(c.offered_ip) + " from " + esc(c.server_id)
           : "FAILED — " + esc(c.reason);
       const cls = !c.attempted ? "skip" : c.success ? "ok" : "bad";
-      html += `<li class="${cls}"><b>${esc(c.phase)}</b>: ${status} <i>(${esc(c.elapsed)}s)</i></li>`;
+      const who = c.client === "self" ? "own MAC (renewal)" : "new client";
+      html += `<li class="${cls}"><b>${esc(c.phase)} / ${esc(who)}</b>: ${status} ` +
+        `<i>(${esc(c.elapsed)}s)</i></li>`;
     }
     html += "</ul></div>";
   }
@@ -287,6 +291,7 @@ function handleEvent(e) {
       break;
     case "ControlFinished": {
       const o = e.outcome;
+      const who = o.client === "self" ? "own MAC/renewal" : "NEW client";
       const msg = !o.attempted
         ? o.reason
         : o.success
@@ -294,7 +299,7 @@ function handleEvent(e) {
           : `FAILED — ${o.reason}`;
       controls.push(o); renderFindings();
       logLine(o.attempted && !o.success ? "alert" : "ctl",
-        `[CTL] CONTROL[${o.phase}] ${msg}`, 1);
+        `[CTL] CONTROL[${o.phase}/${who}] ${msg}`, 1);
       break;
     }
     case "FindingRaised":
@@ -414,6 +419,7 @@ function cliFromConfig() {
   if (c.authorized) s += " --i-am-authorized";
   if (c.dry_run) s += " --dry-run";
   if (!c.control && c.mode === "exhaust") s += " --no-control";
+  if (!c.arp_sweep && c.mode === "exhaust") s += " --no-arp-scan";
   return s;
 }
 

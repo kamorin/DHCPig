@@ -47,18 +47,30 @@ you are done. `--rate` is the remaining bound on how fast a run can consume a po
 CONTROL TRANSACTION & FINDINGS
 ------------------------------
 
-`exhaust` runs a **control transaction** before and after the test: one ordinary DHCP cycle
-(DISCOVER/OFFER/REQUEST/ACK/RELEASE) using the interface's real MAC, labelled `CONTROL[pre]`
-and `CONTROL[post]` in the output. The lease is released immediately, so the control consumes
-nothing.
+`exhaust` first **ARP-sweeps the segment** to record which hosts were present beforehand
+(`--no-arp-scan` to skip), then runs **control transactions** before and after the test: an
+ordinary DHCP cycle (DISCOVER/OFFER/REQUEST/ACK/RELEASE) whose lease is released immediately.
 
-This is what makes a null result meaningful:
+Each control runs as **two legs**, because they answer different questions:
 
-* `pre` **succeeds**, spoofed MACs get nothing → the network defended itself (**PASS**).
-* `pre` **fails** → the test itself is invalid (wrong VLAN, wrong interface, no server), so the
-  run is reported **INCONCLUSIVE** rather than as a pass.
-* `post` **fails** while leases are held → a real client is being denied service, which
-  confirms genuine pool exhaustion (**FAIL**).
+* **`self`** — this machine's real NIC MAC. The server usually already has a binding for it, so
+  this is effectively a *renewal*. It proves DHCP is reachable and you are on the right VLAN,
+  but it can succeed even against a completely drained pool.
+* **`new`** — a MAC the server has never seen, which must be given an address off the free
+  list. **This is the only leg that can tell you whether a new client can still join**, so it
+  is what the exhaustion verdict is based on.
+
+Reading the matrix:
+
+* `pre/self` **fails** → the test is invalid (wrong VLAN/interface/no server) → **INCONCLUSIVE**.
+* `pre/self` OK but `pre/new` **fails** → unknown MACs are refused up front: DHCP snooping or
+  port security → **PASS**.
+* Spoofed MACs get no addresses at all → the network defended itself → **PASS**.
+* `post/new` **fails** while leases are held → a new client is denied service → genuine
+  exhaustion (**FAIL**).
+* Offers stopped but `post/new` still **succeeds** → the server stopped answering *you*
+  specifically (rate-limiting, offer-table saturation, anti-starvation), which is reported as
+  `SERVER_STOPPED_SERVING_TEST_CLIENTS` rather than exhaustion. Retry with a lower `--rate`.
 
 Runs end with **findings** — an ID, verdict, severity, the evidence behind it, and a
 recommendation — printed by the CLI, shown in the web UI's Findings tab, and included in the
