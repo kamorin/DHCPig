@@ -71,13 +71,27 @@ def test_is_nak_helper():
 
 
 # ---------------------------------------------------------------- control transaction
-def test_control_skipped_in_dry_run(monkeypatch):
-    eng, events, sent = _engine(monkeypatch, dry_run=True)
+def test_control_skipped_when_offline(monkeypatch):
+    """offline=True is the hard skip-everything switch (2.3); dry_run alone no longer skips."""
+    eng, events, sent = _engine(monkeypatch, offline=True)
     out = eng._control_transaction("pre")
     assert out.attempted is False and out.success is False
-    assert "dry-run" in out.reason
+    assert "offline" in out.reason
     assert sent == []
     assert any(isinstance(e, ev.ControlFinished) for e in events)
+
+
+def test_control_still_probes_under_dry_run(monkeypatch):
+    """dry_run alone (offline=False) must not skip the control transaction (2.3): it's a probe
+    that self-cleans (DISCOVER/REQUEST/RELEASE), so a dry run is real recon, not a no-op."""
+    eng, _, sent = _engine(monkeypatch, dry_run=True)
+    monkeypatch.setattr("scapy.all.get_if_hwaddr", lambda _i: "00:11:22:33:44:55")
+    eng.cfg.timeouts.control = 0.15  # nobody answers -- we only care that it actually sent
+    out = eng._control_transaction("pre")
+    assert out.attempted is True
+    assert "dry-run" not in out.reason
+    assert len(sent) == 1  # the DISCOVER went out for real despite dry_run
+    assert packets.message_type(sent[0]) == packets.DISCOVER
 
 
 def test_control_succeeds_when_server_answers(monkeypatch):
@@ -312,12 +326,17 @@ def test_multiple_servers_and_naks_raise_findings(monkeypatch):
     assert "DHCP_NAK_OBSERVED" in ids
 
 
-def test_no_findings_in_dry_run(monkeypatch):
+def test_no_starvation_findings_in_dry_run(monkeypatch):
+    """Dry-run (2.3) still derives real findings (control/headroom), but never a starvation
+    verdict -- no leases were actually held. DRY_RUN_SUMMARY stands in for it instead."""
     eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST, dry_run=True)
     eng._started = time.time()
     eng.acks = 10
     eng._finalize_findings()
-    assert _finding_ids(events) == []
+    ids = _finding_ids(events)
+    assert "DHCP_STARVATION_ATTAINED" not in ids
+    assert "DHCP_STARVATION_NOT_ATTAINED" not in ids
+    assert "DRY_RUN_SUMMARY" in ids
 
 
 # ---------------------------------------------------------------- pacing (windowed pipeline)

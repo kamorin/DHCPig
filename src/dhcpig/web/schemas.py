@@ -54,6 +54,10 @@ def config_from_payload(payload: dict) -> SessionConfig:
         ip_version=IPVersion.V6 if payload.get("ipv6") else IPVersion.V4,
         rate_limit_pps=rate,
         dry_run=bool(payload.get("dry_run", False)),
+        # hard no-socket switch (2.3), distinct from dry_run -- lets a no-root web preview run
+        # without ever opening a raw-capture interface. Not exposed as a UI control; callers that
+        # need it (tests, an unprivileged preview mode) set it directly in the POST body.
+        offline=bool(payload.get("offline", False)),
         scope_cidrs=scope,
         spoof_ethernet_src=bool(payload.get("spoof_eth_src", True)),
         arp_sweep=bool(payload.get("arp_sweep", True)),

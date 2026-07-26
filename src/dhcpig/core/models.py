@@ -65,6 +65,14 @@ class SessionConfig:
     rate_limit_pps: int = 7  # the bound on how fast a run can consume a pool
     v6_rapid_commit: bool = False
     dry_run: bool = False
+    # Hard "never touch a socket" switch, distinct from dry_run (2.3). dry_run now runs every
+    # non-destructive phase for real -- ARP discovery, the control transaction's own
+    # DISCOVER/REQUEST/RELEASE -- and only suppresses mutating sends (release, re-acquisition,
+    # the windowed sender, eviction). That needs a raw-capable interface and root. `offline`
+    # restores the old skip-everything behavior unconditionally (no sniffer, no srp(), the
+    # control transaction short-circuits instantly) -- for the test suite and any no-root web
+    # preview. Do not use `dry_run` for this; the two are now genuinely different concerns.
+    offline: bool = False
     scope_cidrs: list[str] | None = None  # optional; bounds targets when supplied
     report_path: Path | None = None
     # NOTE: there is no opt-out for the control transaction. A legitimate DHCP cycle from the
