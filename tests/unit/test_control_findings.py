@@ -146,11 +146,15 @@ def test_failed_baseline_yields_inconclusive(monkeypatch):
     assert "CONTROL_BASELINE_FAILED" in ids
     f = next(e.finding for e in events if isinstance(e, ev.FindingRaised))
     assert f.verdict == INCONCLUSIVE
-    # a broken baseline must NOT be reported as the network defending itself
-    assert "DHCP_STARVATION_BLOCKED" not in ids
+    # a broken baseline must NOT be reported as the network defending itself, or as any
+    # starvation verdict at all (no post-control ever ran here)
+    assert "DHCP_STARVATION_NOT_ATTAINED" not in ids
+    assert "DHCP_STARVATION_ATTAINED" not in ids
 
 
-def test_leases_obtained_is_a_fail_finding(monkeypatch):
+def test_acks_alone_without_a_post_control_reaches_no_verdict(monkeypatch):
+    """The retired DHCP_STARVATION_POSSIBLE fired on acks>0 alone; the verdict now needs the
+    full post-run new-client control leg, not just held leases."""
     eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
     eng._started = time.time()
     eng.control_pre = ControlOutcome(phase="pre", attempted=True, success=True)
@@ -160,28 +164,31 @@ def test_leases_obtained_is_a_fail_finding(monkeypatch):
             Lease(f"de:ad:00:00:00:0{i}", f"10.0.0.{i}", SERVER, i, eng.cfg.ip_version)
         )
     eng._finalize_findings()
-    fs = {e.finding.id: e.finding for e in events if isinstance(e, ev.FindingRaised)}
-    assert "DHCP_STARVATION_POSSIBLE" in fs
-    f = fs["DHCP_STARVATION_POSSIBLE"]
-    assert f.verdict == FAIL and f.severity == "high"
-    assert f.evidence["distinct_client_macs"] == 3
+    ids = _finding_ids(events)
+    assert "DHCP_STARVATION_ATTAINED" not in ids
+    assert "DHCP_STARVATION_NOT_ATTAINED" not in ids
 
 
-def test_blocked_run_with_good_baseline_is_a_pass(monkeypatch):
+def test_blocked_at_baseline_reason_when_new_mac_already_refused(monkeypatch):
+    """Retired DHCP_STARVATION_BLOCKED: an unknown MAC refused pre-run now shows up as the
+    'blocked_at_baseline' reason on the (still-PASS) NOT_ATTAINED verdict."""
     eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
     eng._started = time.time()
-    eng.control_pre = ControlOutcome(
-        phase="pre", attempted=True, success=True, offered_ip="10.0.0.5"
+    eng.control_pre = ControlOutcome(phase="pre", client="self", attempted=True, success=True)
+    eng.control_pre_new = ControlOutcome(
+        phase="pre", client="new", attempted=True, success=False, reason="no OFFER"
     )
-    eng.acks = 0
+    eng.control_post_new = ControlOutcome(
+        phase="post", client="new", attempted=True, success=False, reason="no OFFER"
+    )
     eng.discovers = 40
     eng._finalize_findings()
     fs = {e.finding.id: e.finding for e in events if isinstance(e, ev.FindingRaised)}
-    assert "DHCP_STARVATION_BLOCKED" in fs
-    assert fs["DHCP_STARVATION_BLOCKED"].verdict == PASS
+    assert fs["DHCP_STARVATION_NOT_ATTAINED"].verdict == PASS
+    assert fs["DHCP_STARVATION_NOT_ATTAINED"].evidence["reason"] == "blocked_at_baseline"
 
 
-def test_exhaustion_confirmed_only_when_a_NEW_client_is_denied(monkeypatch):
+def test_exhaustion_attained_only_when_a_NEW_client_is_denied(monkeypatch):
     eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
     eng._started = time.time()
     eng.control_pre = ControlOutcome(phase="pre", client="self", attempted=True, success=True)
@@ -196,13 +203,13 @@ def test_exhaustion_confirmed_only_when_a_NEW_client_is_denied(monkeypatch):
     eng.acks = 250
     eng._finalize_findings()
     fs = {e.finding.id: e.finding for e in events if isinstance(e, ev.FindingRaised)}
-    assert fs["POOL_EXHAUSTED_CONFIRMED"].verdict == FAIL
-    assert fs["POOL_EXHAUSTED_CONFIRMED"].evidence["renewal_still_worked"] is True
+    assert fs["DHCP_STARVATION_ATTAINED"].verdict == FAIL
+    assert fs["DHCP_STARVATION_ATTAINED"].evidence["renewal_still_worked"] is True
 
 
 def test_renewal_success_alone_does_not_disprove_exhaustion(monkeypatch):
     """Regression: the self-MAC leg renews an existing binding and can succeed on a drained
-    pool, so it must not be what decides POOL_NOT_EXHAUSTED."""
+    pool, so it must not be what decides DHCP_STARVATION_NOT_ATTAINED."""
     eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
     eng._started = time.time()
     eng.control_pre = ControlOutcome(phase="pre", client="self", attempted=True, success=True)
@@ -216,11 +223,11 @@ def test_renewal_success_alone_does_not_disprove_exhaustion(monkeypatch):
     eng.acks = 250
     eng._finalize_findings()
     ids = _finding_ids(events)
-    assert "POOL_EXHAUSTED_CONFIRMED" in ids
-    assert "POOL_NOT_EXHAUSTED" not in ids
+    assert "DHCP_STARVATION_ATTAINED" in ids
+    assert "DHCP_STARVATION_NOT_ATTAINED" not in ids
 
 
-def test_new_client_served_means_not_exhausted(monkeypatch):
+def test_new_client_served_means_not_attained(monkeypatch):
     eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
     eng._started = time.time()
     eng.control_pre = ControlOutcome(phase="pre", client="self", attempted=True, success=True)
@@ -230,9 +237,28 @@ def test_new_client_served_means_not_exhausted(monkeypatch):
     )
     eng.acks = 5
     eng._finalize_findings()
-    ids = _finding_ids(events)
-    assert "POOL_NOT_EXHAUSTED" in ids
-    assert "POOL_EXHAUSTED_CONFIRMED" not in ids
+    fs = {e.finding.id: e.finding for e in events if isinstance(e, ev.FindingRaised)}
+    assert fs["DHCP_STARVATION_NOT_ATTAINED"].verdict == PASS
+    assert fs["DHCP_STARVATION_NOT_ATTAINED"].evidence["reason"] == "pool_headroom_remaining"
+    assert "DHCP_STARVATION_ATTAINED" not in fs
+
+
+def test_control_fired_is_the_reason_when_a_halt_signal_preceded_the_post_control(monkeypatch):
+    eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
+    eng._started = time.time()
+    eng.control_pre = ControlOutcome(phase="pre", client="self", attempted=True, success=True)
+    eng.control_pre_new = ControlOutcome(phase="pre", client="new", attempted=True, success=True)
+    eng.control_post_new = ControlOutcome(
+        phase="post", client="new", attempted=True, success=True, offered_ip="10.0.0.9"
+    )
+    eng.acks = 40
+    eng._halt_signal = ("nak_burst", "3 NAKs within 5s", 40)
+    eng._finalize_findings()
+    fs = {e.finding.id: e.finding for e in events if isinstance(e, ev.FindingRaised)}
+    ev_ = fs["DHCP_STARVATION_NOT_ATTAINED"].evidence
+    assert ev_["reason"] == "control_fired"
+    assert ev_["signal"] == "nak_burst"
+    assert ev_["leases_at_halt"] == 40
 
 
 def test_offers_ceasing_while_new_client_served_is_a_throttle_not_exhaustion(monkeypatch):
@@ -251,7 +277,7 @@ def test_offers_ceasing_while_new_client_served_is_a_throttle_not_exhaustion(mon
     eng.naks = 8
     eng._finalize_findings()
     fs = {e.finding.id: e.finding for e in events if isinstance(e, ev.FindingRaised)}
-    assert "POOL_EXHAUSTED_CONFIRMED" not in fs
+    assert "DHCP_STARVATION_ATTAINED" not in fs
     assert "SERVER_STOPPED_SERVING_TEST_CLIENTS" in fs
     assert fs["SERVER_STOPPED_SERVING_TEST_CLIENTS"].evidence["naks"] == 8
 
@@ -615,7 +641,7 @@ def test_report_carries_findings_and_controls():
     rec.handle(
         ev.FindingRaised(
             finding=Finding(
-                id="DHCP_STARVATION_POSSIBLE",
+                id="DHCP_STARVATION_ATTAINED",
                 title="t",
                 verdict=FAIL,
                 severity="high",
@@ -629,12 +655,12 @@ def test_report_carries_findings_and_controls():
         )
     )
     data = rec.to_dict()
-    assert data["findings"][0]["id"] == "DHCP_STARVATION_POSSIBLE"
+    assert data["findings"][0]["id"] == "DHCP_STARVATION_ATTAINED"
     assert data["control_transactions"][0]["phase"] == "pre"
     assert data["pool_exhausted"] is False
 
     text, _ = rec.render("html")
-    assert "DHCP_STARVATION_POSSIBLE" in text and "Control transactions" in text
+    assert "DHCP_STARVATION_ATTAINED" in text and "Control transactions" in text
 
 
 @pytest.mark.parametrize("confirmed", [True, False])
