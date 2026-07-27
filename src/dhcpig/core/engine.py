@@ -568,6 +568,154 @@ class DhcpEngine:
         self.findings.append(finding)
         self.bus.emit(ev.FindingRaised(finding=finding))
 
+    def _run_summary_steps(self) -> list[str]:
+        """Plain-language "what we did -> what happened", one line per phase, in run order.
+
+        Audience is a security engineer who is *not* a DHCP specialist, so every line names the
+        action in ordinary words and puts the protocol term in parentheses, never the other way
+        round. Deliberately **descriptive only** -- it reports steps and results and never infers
+        anything about the network's defenses. That inference is what the verdict findings
+        (`DHCP_STARVATION_*`, `CLIENTS_EVICTED_*`, `NEIGHBOR_LEASES_RELEASED`, ...) exist for, and
+        duplicating it here in softer language would produce two differently-worded conclusions
+        from one run. Read entirely off state other phases already recorded; computes nothing.
+        """
+        mode, steps = self.cfg.mode, []
+        dry = " [dry run -- nothing was actually sent]" if self.cfg.dry_run else ""
+
+        def ctl(outcome: ControlOutcome | None, action: str) -> None:
+            if outcome is None or not outcome.attempted:
+                return
+            if outcome.success:
+                where = f" from the server at {outcome.server_id}" if outcome.server_id else ""
+                steps.append(f"{action} -> received {outcome.offered_ip}{where}")
+            else:
+                steps.append(f"{action} -> refused or unanswered ({outcome.reason})")
+
+        if mode is Mode.SCAN:
+            steps.append(
+                "Watched DHCP and ARP traffic without sending anything (passive capture) -> "
+                f"saw {len(self._neighbors_by_mac)} device(s) and {len(self.servers)} DHCP "
+                "server(s)"
+            )
+            return steps
+
+        if self.cfg.arp_sweep or mode is Mode.ACTIVE_SCAN:
+            steps.append(
+                "Asked every address in range who owns it, to inventory what was already on "
+                f"the network (ARP sweep) -> {self._baseline_neighbor_count} device(s) answered"
+            )
+        if mode is Mode.ACTIVE_SCAN:
+            steps.append(
+                "Asked the DHCP server to describe itself without taking an address "
+                f"(DHCPINFORM) -> {len(self.servers)} server(s) identified"
+            )
+            return steps
+
+        if mode is Mode.RELEASE_PREVIOUS:
+            rec = self.recovery_result or {}
+            needed = (
+                "not needed, the pool was healthy"
+                if rec.get("outcome") == "not_needed"
+                else "confirmed the pool still needed recovery"
+            )
+            steps.append(
+                "Checked whether a brand-new device could already get an address, to see if "
+                f"recovery was needed at all -> {needed}"
+            )
+            steps.append(
+                "Re-read the record this tool keeps of every address it has taken (lease "
+                f"journal) -> {rec.get('targeted', 0)} address(es) still recorded as held"
+            )
+            steps.append(
+                "Handed those addresses back to the server so real devices can use them again "
+                f"(DHCPRELEASE){dry} -> {rec.get('frames_sent', 0)} release(s) sent over "
+                f"{rec.get('passes_run', 0)} pass(es)"
+            )
+            after = (
+                "it could -- the pool is usable again"
+                if rec.get("post_control_success")
+                else "it still could not"
+            )
+            steps.append(
+                f"Re-tested whether a brand-new device could get an address afterwards -> {after}"
+            )
+            return steps
+
+        # exhaust / release share the same prelude, so they share these steps
+        ctl(
+            self._prelude_pre_control(),
+            "Requested an address using this machine's own hardware address, to confirm DHCP "
+            "works here before testing anything (control transaction)",
+        )
+        ctl(
+            self.control_pre_new,
+            "Repeated that request pretending to be a device the network has never seen, which "
+            "the server must serve from its free pool",
+        )
+
+        released = self._dry_run_would_release if self.cfg.dry_run else self.releases
+        if not self.cfg.release_neighbors and mode is Mode.EXHAUST:
+            steps.append("Skipped telling the server other devices were finished (--no-release)")
+        elif released:
+            steps.append(
+                "Told the server that other devices on the network were finished with their "
+                "addresses. Nothing in DHCP requires proof of ownership to do this, so these "
+                f"were sent on their behalf (DHCPRELEASE){dry} -> {released} address(es) "
+                "reported as given up"
+            )
+        if self._reacquire_targets:
+            granted = sum(1 for o in self._reacquire_outcomes.values() if o == "granted")
+            steps.append(
+                "Asked the server for each of those addresses back by name, to find out whether "
+                "it had really let them go (DHCP option 50) -> the server handed over "
+                f"{granted} of {len(self._reacquire_targets)}"
+            )
+
+        if mode is Mode.EXHAUST:
+            if self.acks or self.discovers:
+                held = f"{self.acks} address(es) held from {self.discovers} request(s)"
+                if self._halt_signal is not None:
+                    signal, detail, at_halt = self._halt_signal
+                    tail = f"stopped early after {at_halt} ({signal}: {detail})"
+                elif self.state == EXHAUSTED:
+                    tail = "the server stopped answering"
+                else:
+                    tail = "stopped by the operator"
+                steps.append(
+                    "Requested addresses repeatedly from fabricated devices to consume the "
+                    f"free pool{dry} -> {held}; {tail}"
+                )
+            if self.races:
+                won = sum(1 for o in self._race_outcomes.values() if o == "granted")
+                steps.append(
+                    "Watched for addresses other devices gave up mid-run and immediately "
+                    f"requested those specific addresses{dry} -> took {won} of {self.races}"
+                )
+            ctl(self.control_post, "Re-tested DHCP from this machine's own hardware address")
+            ctl(
+                self.control_post_new,
+                "Re-tested whether a device the network has never seen could still get an "
+                "address, which is what decides whether the pool was actually drained",
+            )
+
+        if self._evict_outcomes:
+            by_rung: dict[str, int] = {}
+            for rung in self._evict_outcomes.values():
+                by_rung[rung] = by_rung.get(rung, 0) + 1
+            moved = {k: v for k, v in by_rung.items() if k != "no_reaction"}
+            steps.append(
+                "Broadcast forged ARP claiming the addresses we had taken, which is the same "
+                "duplicate-address warning a device uses to defend itself, turned against it "
+                f"(RFC 5227){dry} -> {len(self._evict_outcomes)} device(s) contested; "
+                + (f"outcomes: {moved}" if moved else "none of them reacted")
+            )
+        elif self.cfg.evict and mode in (Mode.EXHAUST, Mode.RELEASE_NEIGHBORS):
+            steps.append(
+                "Skipped contesting addresses by forged ARP -- there was nothing taken from "
+                "another device to contest"
+            )
+        return steps
+
     def _finalize_findings(self) -> None:
         """Turn what we observed into auditable verdicts. Called once, at stop().
 
@@ -580,6 +728,37 @@ class DhcpEngine:
         pre, post = self.control_pre, self.control_post
         distinct_macs = len({ln.mac for ln in self.cleanup.all()})
         elapsed = round(time.time() - self._started, 1) if self._started else 0.0
+
+        # Raised FIRST, on every run, in every mode, unconditionally -- it's the only finding a
+        # reader can rely on being present, and it exists so a report opens with "here is what
+        # this tool did to your network" before any verdict. Descriptive only; see
+        # _run_summary_steps() for why it deliberately draws no conclusions of its own.
+        self._raise(
+            Finding(
+                id="RUN_SUMMARY",
+                title="What this run did, step by step",
+                verdict=INFO,
+                severity="info",
+                evidence={
+                    "mode": self.cfg.mode.value,
+                    "interface": self.cfg.interface,
+                    "duration_sec": elapsed,
+                    "dry_run": self.cfg.dry_run,
+                    "steps": self._run_summary_steps(),
+                },
+                recommendation=(
+                    "Every step above works because DHCP has no way to check that a request "
+                    "really comes from the device it claims to be. Assuming this was run from "
+                    "Wi-Fi, the single highest-value control is to enable DHCP proxy on the "
+                    "WLAN and configure the controller to drop any DHCP message whose "
+                    "client-hardware-address does not match the MAC of the station that sent "
+                    "it. A wireless station's MAC is bound to its association (and, under "
+                    "WPA2/WPA3, to its encryption keys), so the controller is uniquely able to "
+                    "catch this -- and every step above that touched another device's address "
+                    "depended on being able to send DHCP on that device's behalf."
+                ),
+            )
+        )
 
         # A failed baseline invalidates everything else — say so first and loudly.
         if pre is not None and pre.attempted and not pre.success:

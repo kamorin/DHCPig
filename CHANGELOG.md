@@ -1,5 +1,32 @@
 # Changelog
 
+## 2.3.2 (unreleased) — every run now explains itself
+
+Every finding until now was conditional, so a report was a pile of verdicts with no reliable
+answer to "what did this thing actually do to my network?" — and the verdicts assume the reader
+knows DHCP.
+
+- **New `RUN_SUMMARY` (INFO), raised first on every run, in every mode**, including dry-run and
+  the read-only scans. A numbered, plain-language account of each phase and what it returned,
+  written for a security engineer who isn't a DHCP specialist — the action in ordinary words,
+  the protocol term in parentheses ("Told the server that other devices were finished with their
+  addresses. Nothing in DHCP requires proof of ownership to do this, so these were sent on their
+  behalf (DHCPRELEASE) -> 12 address(es) reported as given up").
+- **Descriptive only, by design.** It reports steps and results and infers nothing about the
+  network's defenses; that stays with the verdict findings, so one run can't produce two
+  differently-worded conclusions. A regression test asserts the step text carries no posture
+  vocabulary.
+- **One Wi-Fi defense.** Its recommendation assumes a wireless attacker and names a single
+  control: DHCP proxy on the WLAN plus controller-side enforcement that a DHCP message's
+  client-hardware-address matches the associated station's MAC. Every step in the chain depends
+  on sending DHCP on another device's behalf, and a station's MAC is bound to its association
+  under WPA2/3 — so that one control breaks all of them.
+- **Evidence rendering is now list-aware** in both front ends: list-valued evidence keys render
+  as their own indented (CLI) / bulleted (web) block instead of being flattened into a single
+  JSON blob, while scalars keep the compact one-line form and empty lists stay in it. Needed for
+  the step narrative; `servers`/`sample_hosts` on existing findings read better for it too.
+- 326 unit tests passing (up from 312); ruff clean.
+
 ## 2.3.1 (unreleased) — race to grab addresses the moment they're freed
 
 Design doc: `EXECUTION-PLAN-race-freed.md`. §5f's targeted re-acquisition only reacts to
