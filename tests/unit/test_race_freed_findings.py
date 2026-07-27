@@ -71,6 +71,16 @@ def test_raced_freed_addresses_finding_summarizes_outcomes(monkeypatch):
     }
 
 
+def test_raced_freed_addresses_finding_breaks_down_by_trigger(monkeypatch):
+    eng, events = _engine(monkeypatch)
+    eng.races = 3
+    eng._race_outcomes = {1: "granted", 2: "granted", 3: "naked"}
+    eng._race_triggers = {1: "nak", 2: "decline", 3: "nak"}
+    eng._finalize_findings()
+    finding = _findings_by_id(events)["RACED_FREED_ADDRESSES"]
+    assert finding.evidence["by_trigger"] == {"nak": 2, "decline": 1}
+
+
 def test_raced_freed_addresses_finding_gated_off_under_dry_run(monkeypatch):
     """Races still increment under dry-run (only _send()'s chokepoint suppresses the wire send),
     but the finding itself is gated off -- DRY_RUN_SUMMARY's would_race covers that case instead,
