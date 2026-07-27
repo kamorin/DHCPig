@@ -190,6 +190,7 @@ def status_summary(s: dict) -> str:
     col("arp_conflicts", "arp_conflicts")
     col("foreign_discovers", "foreign_discovers")
     col("foreign_unanswered", "foreign_discovers_unanswered")
+    col("races", "races")
     if s.get("servers"):
         parts.append(f"servers {s['servers']}")
     if s.get("neighbors"):
