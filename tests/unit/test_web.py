@@ -297,6 +297,44 @@ def test_evict_flag_as_cli_also_covers_release_mode():
     assert "--no-evict" in schemas.as_cli(cfg)
 
 
+def test_race_freed_flags_from_payload_and_as_cli():
+    cfg = schemas.config_from_payload({"interface": "eth1", "mode": "exhaust"})
+    assert cfg.race_freed_addresses is True
+    assert cfg.race_on_rediscover is False
+    assert "--no-race-freed" not in schemas.as_cli(cfg)
+    assert "--race-on-rediscover" not in schemas.as_cli(cfg)
+
+    cfg = schemas.config_from_payload(
+        {
+            "interface": "eth1",
+            "mode": "exhaust",
+            "race_freed_addresses": False,
+            "race_on_rediscover": True,
+        }
+    )
+    assert cfg.race_freed_addresses is False
+    assert cfg.race_on_rediscover is True
+    line = schemas.as_cli(cfg)
+    assert "--no-race-freed" in line
+    assert "--race-on-rediscover" in line
+
+
+def test_race_freed_flags_do_not_surface_as_cli_outside_exhaust():
+    """race-freed is exhaust-only -- as_cli() must not print its flags for other modes even if
+    the (otherwise-ignored) config fields happen to be set."""
+    cfg = schemas.config_from_payload(
+        {
+            "interface": "eth1",
+            "mode": "release",
+            "race_freed_addresses": False,
+            "race_on_rediscover": True,
+        }
+    )
+    line = schemas.as_cli(cfg)
+    assert "--no-race-freed" not in line
+    assert "--race-on-rediscover" not in line
+
+
 def test_token_helpers():
     assert auth.token_ok("abc", "abc")
     assert not auth.token_ok("abc", "xyz")

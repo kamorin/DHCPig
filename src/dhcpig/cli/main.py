@@ -119,6 +119,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="skip ARP-conflict eviction of re-acquired addresses (default: on) -- see "
         "RFC 5227 SS2.4; contests ownership to force a DECLINE/restart-at-INIT",
     )
+    ex.add_argument(
+        "--no-race-freed",
+        dest="no_race_freed",
+        action="store_true",
+        help="skip racing a targeted DISCOVER for an address a live foreign NAK/DECLINE shows "
+        "just became free (default: on) -- see EXECUTION-PLAN-race-freed.md",
+    )
+    ex.add_argument(
+        "--race-on-rediscover",
+        dest="race_on_rediscover",
+        action="store_true",
+        help="also race on a foreign DISCOVER from a MAC our ARP inventory already has an IP "
+        "for (default: off -- the highest-volume, lowest-precision trigger)",
+    )
 
     sc = sub.add_parser("scan", help="passive ARP + DHCP fingerprint (read-only)")
     common(sc)
@@ -243,6 +257,8 @@ def build_config(args) -> SessionConfig:
         arp_sweep=not getattr(args, "no_arp_scan", False),
         release_neighbors=not getattr(args, "no_release", False),
         evict=not getattr(args, "no_evict", False),
+        race_freed_addresses=not getattr(args, "no_race_freed", False),
+        race_on_rediscover=getattr(args, "race_on_rediscover", False),
         status_interval=getattr(args, "status_interval", 5.0),
         journal=not getattr(args, "no_journal", False),
         journal_path=Path(args.journal) if getattr(args, "journal", None) else None,
