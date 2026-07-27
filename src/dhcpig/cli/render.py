@@ -66,7 +66,20 @@ class Renderer:
         sys.stdout.write(f"{label} {f.title}  ({f.id})\n")
         if self.verbosity >= 2:
             if f.evidence:
-                sys.stdout.write(f"        evidence: {f.evidence}\n")
+                # List-valued evidence gets its own indented block; a narrative like
+                # RUN_SUMMARY's `steps` is unreadable flattened into a single dict repr, and
+                # existing list keys (servers, sample_hosts, ...) read better this way too.
+                # an empty list stays in the compact dict -- a bare "servers:" header with
+                # nothing under it reads like truncated output
+                scalars = {k: v for k, v in f.evidence.items() if not (isinstance(v, list) and v)}
+                if scalars:
+                    sys.stdout.write(f"        evidence: {scalars}\n")
+                for key, items in f.evidence.items():
+                    if not isinstance(items, list) or not items:
+                        continue
+                    sys.stdout.write(f"        {key}:\n")
+                    for item in items:
+                        sys.stdout.write(f"          - {item}\n")
             if f.recommendation:
                 sys.stdout.write(f"        {f.recommendation}\n")
         sys.stdout.flush()

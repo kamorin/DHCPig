@@ -95,6 +95,9 @@ th { color: var(--muted); font-weight: 600; }
 .finding.INCONCLUSIVE .v { background: #d9a441; color: #2b1e00; }
 .finding code { color: var(--muted); font-size: 10px; }
 .finding .ev { font-size: 11px; color: var(--muted); margin-top: 4px; word-break: break-all; }
+.finding .evlist { word-break: normal; }
+.finding .evlist ul { margin: 2px 0 0; padding-left: 16px; }
+.finding .evlist li { margin: 2px 0; line-height: 1.4; }
 .finding .rec { font-size: 11px; color: var(--fg); margin-top: 4px; opacity: .85; }
 .ctlbox { border: 1px solid var(--edge); border-radius: 6px; padding: 8px 10px; margin-bottom: 10px;
   font-size: 12px; }

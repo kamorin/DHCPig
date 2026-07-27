@@ -172,7 +172,11 @@ def test_failed_baseline_yields_inconclusive(monkeypatch):
     eng._finalize_findings()
     ids = _finding_ids(events)
     assert "CONTROL_BASELINE_FAILED" in ids
-    f = next(e.finding for e in events if isinstance(e, ev.FindingRaised))
+    f = next(
+        e.finding
+        for e in events
+        if isinstance(e, ev.FindingRaised) and e.finding.id == "CONTROL_BASELINE_FAILED"
+    )
     assert f.verdict == INCONCLUSIVE
     # a broken baseline must NOT be reported as the network defending itself, or as any
     # starvation verdict at all (no post-control ever ran here)

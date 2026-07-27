@@ -162,6 +162,25 @@ function esc(s) {
   return d.innerHTML;
 }
 
+// List-valued evidence gets its own bulleted block; a narrative like RUN_SUMMARY's `steps` is
+// unreadable flattened into one JSON blob, and existing list keys read better this way too.
+function evidenceHtml(ev) {
+  if (!ev) return "";
+  const scalars = {};
+  let out = "", lists = "";
+  for (const [k, v] of Object.entries(ev)) {
+    if (Array.isArray(v) && v.length) {
+      lists += `<div class="ev evlist"><b>${esc(k)}</b><ul>` +
+        v.map((i) => `<li>${esc(typeof i === "string" ? i : JSON.stringify(i))}</li>`).join("") +
+        "</ul></div>";
+    } else {
+      scalars[k] = v;
+    }
+  }
+  if (Object.keys(scalars).length) out += `<div class="ev">${esc(JSON.stringify(scalars))}</div>`;
+  return out + lists;
+}
+
 function renderFindings() {
   const el = $("t-findings");
   if (!findings.length && !controls.length) return;
@@ -186,7 +205,7 @@ function renderFindings() {
       `<div class="finding ${esc(f.verdict)}">` +
       `<span class="v">${esc(f.verdict)}</span> <b>${esc(f.title)}</b> ` +
       `<code>${esc(f.id)}</code>` +
-      `<div class="ev">${esc(JSON.stringify(f.evidence))}</div>` +
+      evidenceHtml(f.evidence) +
       (f.recommendation ? `<div class="rec">${esc(f.recommendation)}</div>` : "") +
       "</div>";
   }

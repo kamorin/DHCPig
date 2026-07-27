@@ -131,6 +131,30 @@ Runs end with **findings** — an ID, verdict, severity, the evidence behind it,
 recommendation — printed by the CLI, shown in the web UI's Findings tab, and included in the
 JSON/HTML reports.
 
+Every run, in every mode, opens with **`RUN_SUMMARY`** (INFO): a plain-language, step-by-step
+account of what the tool actually did and what each step returned, written for a reader who
+isn't a DHCP specialist. It reports actions and results only and draws no conclusions — the
+verdict findings below it do that. Example:
+
+    [INFO] What this run did, step by step  (RUN_SUMMARY)
+            evidence: {'mode': 'exhaust', 'interface': 'wlan0', 'duration_sec': 214.0}
+            steps:
+              - Asked every address in range who owns it, to inventory what was already on the
+                network (ARP sweep) -> 47 device(s) answered
+              - Told the server that other devices on the network were finished with their
+                addresses. Nothing in DHCP requires proof of ownership to do this, so these were
+                sent on their behalf (DHCPRELEASE) -> 12 address(es) reported as given up
+              - Asked the server for each of those addresses back by name, to find out whether it
+                had really let them go (DHCP option 50) -> the server handed over 4 of 12
+              - Requested addresses repeatedly from fabricated devices to consume the free pool
+                -> 412 address(es) held from 690 request(s); stopped early after 412 (nak_burst)
+
+Its recommendation assumes the run came from **Wi-Fi** and names one control: enable DHCP proxy
+on the WLAN and have the controller drop any DHCP message whose client-hardware-address doesn't
+match the MAC of the station that sent it. Every step above that touched another device's
+address depended on being able to send DHCP on that device's behalf, and a wireless station's
+MAC is bound to its association — so the controller is uniquely placed to catch it.
+
 A run **ends by itself**: once offers stop arriving for `offer_silence` seconds (10s by
 default), or a defensive control fires (EXHAUST PIPELINE above), the engine runs the post-control
 and produces the verdict without waiting for you to press Stop. `POOL EXHAUSTED` therefore only
