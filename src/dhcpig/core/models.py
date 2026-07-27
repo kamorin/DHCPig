@@ -133,6 +133,28 @@ class SessionConfig:
     # DISCOVER arrived, so its outcome locked in at "declined" instead of the stronger
     # "discover_unanswered"/"apipa" the extra settle time would have let land in time.
     evict_settle: float = 16.0
+    # race-freed (2.3): when a live signal shows a specific address just became free at the
+    # server -- a foreign DHCPNAK (strongest: the server itself refused a binding) or a foreign
+    # DHCPDECLINE (weaker: many servers quarantine rather than free a declined address, but it's
+    # cheap and observable) -- fire a targeted DISCOVER for that exact address ahead of the
+    # normal exhaust flood, instead of hoping the untargeted flood happens to land on it.
+    # Exhaust-only: see EXECUTION-PLAN-race-freed.md for why release mode doesn't get this (no
+    # concurrent flood for "racing" to mean anything against) and why DHCPRELEASE is not a
+    # trigger (unicast to the server -- on a switched segment it never reaches us).
+    race_freed_addresses: bool = True
+    # Highest-volume, lowest-precision trigger: a foreign DISCOVER from a MAC our ARP inventory
+    # already has an IP for. The host is at INIT and has abandoned that address at the OS level,
+    # but the *server's* binding may still be intact until lease expiry -- off by default so a
+    # busy segment full of ordinary DHCP churn doesn't flood the race queue with low-yield
+    # attempts. Turn on deliberately once the won/lost counters show the NAK/DECLINE triggers
+    # alone are worth having.
+    race_on_rediscover: bool = False
+    # Races get up to this many _inflight slots *above* self._window -- a bounded overtake, not
+    # a bypass of the window/rate-limit discipline itself (see _exhaust_sender()). Deliberately
+    # small: exhaust's rate_limit_pps is pinned high enough not to bind, so the window is the
+    # only real pacing left, and reintroducing an unbounded burst here is exactly the
+    # pending-offer-table saturation §5c/Phase 2 exists to prevent.
+    race_max_inflight: int = 4
     timeouts: Timeouts = field(default_factory=Timeouts)
     verbosity: int = 2
 

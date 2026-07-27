@@ -222,6 +222,14 @@ def is_decline(pkt) -> bool:
     return message_type(pkt) == DECLINE
 
 
+def is_request(pkt) -> bool:
+    """DHCPREQUEST — client->server, sent both by us (selecting/renewing) and by every other
+    client on the segment. Used (2.3, race-freed) to briefly track a foreign REQUEST's
+    requested address, so a later NAK for the same xid -- which carries no address of its own,
+    per RFC 2131 -- can still be resolved to a specific IP."""
+    return message_type(pkt) == REQUEST
+
+
 def is_offer(pkt) -> bool:
     return message_type(pkt) == OFFER
 
