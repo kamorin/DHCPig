@@ -78,8 +78,8 @@ class Renderer:
                     if not isinstance(items, list) or not items:
                         continue
                     sys.stdout.write(f"        {key}:\n")
-                    for item in items:
-                        sys.stdout.write(f"          - {item}\n")
+                    for line in _evidence_lines(items):
+                        sys.stdout.write(f"          {line}\n")
             if f.recommendation:
                 sys.stdout.write(f"        {f.recommendation}\n")
         sys.stdout.flush()
@@ -162,6 +162,16 @@ class Renderer:
         elif isinstance(e, ev.Debug):
             if self.verbosity >= 3:  # debug detail only at highest verbosity
                 self._line("DBG", e.message)
+
+
+def _evidence_lines(items: list) -> list[str]:
+    """Render a list-valued evidence key. `{"did": ..., "got": ...}` pairs (RUN_SUMMARY's steps)
+    become two aligned columns -- the left column is scannable on its own, which is the whole
+    point of that finding. Anything else falls back to one bulleted item per line."""
+    if items and all(isinstance(i, dict) and "did" in i and "got" in i for i in items):
+        width = max(len(str(i["did"])) for i in items)
+        return [f"- {str(i['did']):<{width}}  ->  {i['got']}" for i in items]
+    return [f"- {i}" for i in items]
 
 
 def _opt50_hostname(option50: str | None, hostname: str | None) -> str:

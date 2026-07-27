@@ -568,152 +568,127 @@ class DhcpEngine:
         self.findings.append(finding)
         self.bus.emit(ev.FindingRaised(finding=finding))
 
-    def _run_summary_steps(self) -> list[str]:
-        """Plain-language "what we did -> what happened", one line per phase, in run order.
+    def _run_summary_steps(self) -> list[dict[str, str]]:
+        """One `{"did": ..., "got": ...}` pair per phase, in run order -- a scannable list.
 
-        Audience is a security engineer who is *not* a DHCP specialist, so every line names the
-        action in ordinary words and puts the protocol term in parentheses, never the other way
-        round. Deliberately **descriptive only** -- it reports steps and results and never infers
-        anything about the network's defenses. That inference is what the verdict findings
-        (`DHCP_STARVATION_*`, `CLIENTS_EVICTED_*`, `NEIGHBOR_LEASES_RELEASED`, ...) exist for, and
-        duplicating it here in softer language would produce two differently-worded conclusions
-        from one run. Read entirely off state other phases already recorded; computes nothing.
+        Audience is a security engineer who is *not* a DHCP specialist, so `did` is always
+        ordinary English (protocol names appear in `got`, as results, never as something you must
+        already know to read the left column). Deliberately terse: the *why* behind these
+        primitives is stated once in RUN_SUMMARY's recommendation, so repeating it per step turned
+        a list into ~290 words of prose. Keep new steps to roughly this width.
+
+        Also deliberately **descriptive only** -- it reports what was done and what came back, and
+        never infers anything about the network's defenses. That inference is what the verdict
+        findings (`DHCP_STARVATION_*`, `CLIENTS_EVICTED_*`, `NEIGHBOR_LEASES_RELEASED`, ...) exist
+        for; duplicating it here in softer language would produce two differently-worded
+        conclusions from one run. Reads state other phases already recorded; computes nothing.
         """
-        mode, steps = self.cfg.mode, []
-        dry = " [dry run -- nothing was actually sent]" if self.cfg.dry_run else ""
+        mode = self.cfg.mode
+        steps: list[dict[str, str]] = []
+        dry = " [dry run, not sent]" if self.cfg.dry_run else ""
 
-        def ctl(outcome: ControlOutcome | None, action: str) -> None:
+        def step(did: str, got: str) -> None:
+            steps.append({"did": did, "got": got})
+
+        def ctl(outcome: ControlOutcome | None, did: str) -> None:
             if outcome is None or not outcome.attempted:
                 return
             if outcome.success:
-                where = f" from the server at {outcome.server_id}" if outcome.server_id else ""
-                steps.append(f"{action} -> received {outcome.offered_ip}{where}")
+                where = f" from {outcome.server_id}" if outcome.server_id else ""
+                step(did, f"got {outcome.offered_ip}{where}")
             else:
-                steps.append(f"{action} -> refused or unanswered ({outcome.reason})")
+                step(did, f"DENIED ({outcome.reason})")
 
         if mode is Mode.SCAN:
-            steps.append(
-                "Watched DHCP and ARP traffic without sending anything (passive capture) -> "
-                f"saw {len(self._neighbors_by_mac)} device(s) and {len(self.servers)} DHCP "
-                "server(s)"
+            step(
+                "Listened without sending anything",
+                f"{len(self._neighbors_by_mac)} devices, {len(self.servers)} DHCP servers",
             )
             return steps
 
         if self.cfg.arp_sweep or mode is Mode.ACTIVE_SCAN:
-            steps.append(
-                "Asked every address in range who owns it, to inventory what was already on "
-                f"the network (ARP sweep) -> {self._baseline_neighbor_count} device(s) answered"
-            )
+            step("Inventoried the network by ARP", f"{self._baseline_neighbor_count} devices found")
         if mode is Mode.ACTIVE_SCAN:
-            steps.append(
-                "Asked the DHCP server to describe itself without taking an address "
-                f"(DHCPINFORM) -> {len(self.servers)} server(s) identified"
-            )
+            step("Asked the DHCP server to identify itself", f"{len(self.servers)} servers found")
             return steps
 
         if mode is Mode.RELEASE_PREVIOUS:
             rec = self.recovery_result or {}
-            needed = (
-                "not needed, the pool was healthy"
+            step(
+                "Checked whether recovery was needed",
+                "not needed, pool was healthy"
                 if rec.get("outcome") == "not_needed"
-                else "confirmed the pool still needed recovery"
+                else "confirmed the pool needed recovery",
             )
-            steps.append(
-                "Checked whether a brand-new device could already get an address, to see if "
-                f"recovery was needed at all -> {needed}"
+            step(
+                "Re-read our record of addresses taken",
+                f"{rec.get('targeted', 0)} still held (lease journal)",
             )
-            steps.append(
-                "Re-read the record this tool keeps of every address it has taken (lease "
-                f"journal) -> {rec.get('targeted', 0)} address(es) still recorded as held"
+            step(
+                f"Handed those addresses back{dry}",
+                f"{rec.get('frames_sent', 0)} DHCPRELEASE sent, "
+                f"{rec.get('passes_run', 0)} passes",
             )
-            steps.append(
-                "Handed those addresses back to the server so real devices can use them again "
-                f"(DHCPRELEASE){dry} -> {rec.get('frames_sent', 0)} release(s) sent over "
-                f"{rec.get('passes_run', 0)} pass(es)"
-            )
-            after = (
-                "it could -- the pool is usable again"
+            step(
+                "Retested an unknown device",
+                "got an address -- pool usable again"
                 if rec.get("post_control_success")
-                else "it still could not"
-            )
-            steps.append(
-                f"Re-tested whether a brand-new device could get an address afterwards -> {after}"
+                else "still DENIED",
             )
             return steps
 
         # exhaust / release share the same prelude, so they share these steps
-        ctl(
-            self._prelude_pre_control(),
-            "Requested an address using this machine's own hardware address, to confirm DHCP "
-            "works here before testing anything (control transaction)",
-        )
-        ctl(
-            self.control_pre_new,
-            "Repeated that request pretending to be a device the network has never seen, which "
-            "the server must serve from its free pool",
-        )
+        ctl(self._prelude_pre_control(), "Proved DHCP works from this machine")
+        ctl(self.control_pre_new, "Proved DHCP works for an unknown device")
 
         released = self._dry_run_would_release if self.cfg.dry_run else self.releases
         if not self.cfg.release_neighbors and mode is Mode.EXHAUST:
-            steps.append("Skipped telling the server other devices were finished (--no-release)")
+            step("Skipped declaring other devices' leases done", "--no-release")
         elif released:
-            steps.append(
-                "Told the server that other devices on the network were finished with their "
-                "addresses. Nothing in DHCP requires proof of ownership to do this, so these "
-                f"were sent on their behalf (DHCPRELEASE){dry} -> {released} address(es) "
-                "reported as given up"
+            step(
+                f"Declared {released} other devices' leases done{dry}",
+                f"{released} DHCPRELEASE sent, no ownership proof required",
             )
         if self._reacquire_targets:
             granted = sum(1 for o in self._reacquire_outcomes.values() if o == "granted")
-            steps.append(
-                "Asked the server for each of those addresses back by name, to find out whether "
-                "it had really let them go (DHCP option 50) -> the server handed over "
-                f"{granted} of {len(self._reacquire_targets)}"
+            step(
+                "Asked for those addresses back by name",
+                f"server gave us {granted} of {len(self._reacquire_targets)} (DHCP option 50)",
             )
 
         if mode is Mode.EXHAUST:
             if self.acks or self.discovers:
-                held = f"{self.acks} address(es) held from {self.discovers} request(s)"
                 if self._halt_signal is not None:
-                    signal, detail, at_halt = self._halt_signal
-                    tail = f"stopped early after {at_halt} ({signal}: {detail})"
+                    signal, _detail, at_halt = self._halt_signal
+                    tail = f"stopped early at {at_halt} ({signal})"
                 elif self.state == EXHAUSTED:
-                    tail = "the server stopped answering"
+                    tail = "server stopped answering"
                 else:
                     tail = "stopped by the operator"
-                steps.append(
-                    "Requested addresses repeatedly from fabricated devices to consume the "
-                    f"free pool{dry} -> {held}; {tail}"
+                step(
+                    f"Requested addresses to drain the pool{dry}",
+                    f"{self.acks} held of {self.discovers} asked; {tail}",
                 )
             if self.races:
                 won = sum(1 for o in self._race_outcomes.values() if o == "granted")
-                steps.append(
-                    "Watched for addresses other devices gave up mid-run and immediately "
-                    f"requested those specific addresses{dry} -> took {won} of {self.races}"
+                step(
+                    f"Grabbed addresses as others freed them{dry}",
+                    f"took {won} of {self.races}",
                 )
-            ctl(self.control_post, "Re-tested DHCP from this machine's own hardware address")
-            ctl(
-                self.control_post_new,
-                "Re-tested whether a device the network has never seen could still get an "
-                "address, which is what decides whether the pool was actually drained",
-            )
+            ctl(self.control_post, "Retested DHCP from this machine")
+            ctl(self.control_post_new, "Retested an unknown device")
 
         if self._evict_outcomes:
             by_rung: dict[str, int] = {}
             for rung in self._evict_outcomes.values():
                 by_rung[rung] = by_rung.get(rung, 0) + 1
-            moved = {k: v for k, v in by_rung.items() if k != "no_reaction"}
-            steps.append(
-                "Broadcast forged ARP claiming the addresses we had taken, which is the same "
-                "duplicate-address warning a device uses to defend itself, turned against it "
-                f"(RFC 5227){dry} -> {len(self._evict_outcomes)} device(s) contested; "
-                + (f"outcomes: {moved}" if moved else "none of them reacted")
+            detail = ", ".join(f"{n} {rung}" for rung, n in sorted(by_rung.items()))
+            step(
+                f"Forged ARP to contest the addresses we took{dry}",
+                f"{len(self._evict_outcomes)} contested: {detail} (RFC 5227)",
             )
         elif self.cfg.evict and mode in (Mode.EXHAUST, Mode.RELEASE_NEIGHBORS):
-            steps.append(
-                "Skipped contesting addresses by forged ARP -- there was nothing taken from "
-                "another device to contest"
-            )
+            step("Skipped contesting addresses by ARP", "nothing was taken to contest")
         return steps
 
     def _finalize_findings(self) -> None:

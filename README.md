@@ -131,23 +131,28 @@ Runs end with **findings** — an ID, verdict, severity, the evidence behind it,
 recommendation — printed by the CLI, shown in the web UI's Findings tab, and included in the
 JSON/HTML reports.
 
-Every run, in every mode, opens with **`RUN_SUMMARY`** (INFO): a plain-language, step-by-step
-account of what the tool actually did and what each step returned, written for a reader who
-isn't a DHCP specialist. It reports actions and results only and draws no conclusions — the
-verdict findings below it do that. Example:
+Every run, in every mode, opens with **`RUN_SUMMARY`** (INFO): a two-column list of what the
+tool actually did and what each step returned, written for a reader who isn't a DHCP specialist
+— the left column is plain English, the protocol name appears on the right as a result. It
+reports actions and results only and draws no conclusions; the verdict findings below it do
+that. Example:
 
     [INFO] What this run did, step by step  (RUN_SUMMARY)
             evidence: {'mode': 'exhaust', 'interface': 'wlan0', 'duration_sec': 214.0}
             steps:
-              - Asked every address in range who owns it, to inventory what was already on the
-                network (ARP sweep) -> 47 device(s) answered
-              - Told the server that other devices on the network were finished with their
-                addresses. Nothing in DHCP requires proof of ownership to do this, so these were
-                sent on their behalf (DHCPRELEASE) -> 12 address(es) reported as given up
-              - Asked the server for each of those addresses back by name, to find out whether it
-                had really let them go (DHCP option 50) -> the server handed over 4 of 12
-              - Requested addresses repeatedly from fabricated devices to consume the free pool
-                -> 412 address(es) held from 690 request(s); stopped early after 412 (nak_burst)
+              - Inventoried the network by ARP               ->  47 devices found
+              - Proved DHCP works from this machine          ->  got 172.20.3.12 from 172.20.0.1
+              - Proved DHCP works for an unknown device      ->  got 172.20.3.19
+              - Declared 12 other devices' leases done       ->  12 DHCPRELEASE sent, no
+                                                                 ownership proof required
+              - Asked for those addresses back by name       ->  server gave us 4 of 12
+                                                                 (DHCP option 50)
+              - Requested addresses to drain the pool        ->  412 held of 690 asked; stopped
+                                                                 early at 412 (nak_burst)
+              - Grabbed addresses as others freed them       ->  took 2 of 5
+              - Retested an unknown device                   ->  DENIED (no OFFER within timeout)
+              - Forged ARP to contest the addresses we took  ->  4 contested: 1 declined,
+                                                                 1 defended, 2 no_reaction
 
 Its recommendation assumes the run came from **Wi-Fi** and names one control: enable DHCP proxy
 on the WLAN and have the controller drop any DHCP message whose client-hardware-address doesn't

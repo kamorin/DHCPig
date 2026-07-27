@@ -31,7 +31,7 @@ def _summary(events):
 
 
 def _steps_text(events):
-    return "\n".join(_summary(events).evidence["steps"])
+    return "\n".join(f"{s['did']} -> {s['got']}" for s in _summary(events).evidence["steps"])
 
 
 # ---------------------------------------------------------------- always present
@@ -75,26 +75,56 @@ def test_exhaust_steps_report_actions_and_results_in_run_order(monkeypatch):
     eng.acks, eng.discovers = 412, 690
     eng._evict_outcomes = {"10.0.1.0": "declined"}
     eng._finalize_findings()
-    steps = _summary(events).evidence["steps"]
-    text = "\n".join(steps)
+    text = _steps_text(events)
 
-    assert "47 device(s) answered" in text  # ARP inventory result
-    assert "10.0.0.5" in text and "10.0.0.1" in text  # control result
-    assert "12 address(es) reported as given up" in text  # release result
-    assert "handed over 4 of 12" in text  # re-acquisition result
-    assert "412 address(es) held" in text  # sender result
-    assert "1 device(s) contested" in text  # eviction result
+    assert "47 devices found" in text  # ARP inventory result
+    assert "got 10.0.0.5 from 10.0.0.1" in text  # control result
+    assert "12 DHCPRELEASE sent" in text  # release result
+    assert "gave us 4 of 12" in text  # re-acquisition result
+    assert "412 held of 690 asked" in text  # sender result
+    assert "1 contested: 1 declined" in text  # eviction result
     # order matters: the narrative must read chronologically
-    assert text.index("47 device(s)") < text.index("given up") < text.index("contested")
+    assert text.index("47 devices") < text.index("DHCPRELEASE") < text.index("contested")
 
 
-def test_steps_name_the_action_in_plain_words_before_the_protocol_term(monkeypatch):
-    """Audience is a security engineer who isn't a DHCP specialist."""
+def test_every_step_is_a_did_got_pair(monkeypatch):
+    """The two-column shape is what lets the left column be scannable on its own."""
+    eng, events = _engine(monkeypatch)
+    eng._baseline_neighbor_count = 2
+    eng.releases = 3
+    eng.acks = 9
+    eng._finalize_findings()
+    steps = _summary(events).evidence["steps"]
+    assert steps
+    for s in steps:
+        assert set(s) == {"did", "got"}
+        assert s["did"] and s["got"]
+
+
+def test_did_column_stays_short_enough_to_scan(monkeypatch):
+    """Regression against the original wall-of-prose version: the left column is a label, not
+    an explanation. The 'why' is stated once in the recommendation instead."""
+    eng, events = _engine(monkeypatch)
+    eng._baseline_neighbor_count = 4
+    eng.releases = 12
+    eng._reacquire_targets = {1: "10.0.1.1"}
+    eng.acks, eng.discovers = 412, 690
+    eng.races = 5
+    eng._evict_outcomes = {"10.0.1.0": "declined"}
+    eng._finalize_findings()
+    for s in _summary(events).evidence["steps"]:
+        assert len(s["did"]) <= 60, s["did"]
+
+
+def test_plain_english_action_with_the_protocol_name_in_the_result(monkeypatch):
+    """Audience is a security engineer who isn't a DHCP specialist: the left column must be
+    readable without knowing the protocol term, which belongs on the right."""
     eng, events = _engine(monkeypatch)
     eng.releases = 3
     eng._finalize_findings()
-    step = next(s for s in _summary(events).evidence["steps"] if "DHCPRELEASE" in s)
-    assert step.index("finished with their addresses") < step.index("DHCPRELEASE")
+    step = next(s for s in _summary(events).evidence["steps"] if "DHCPRELEASE" in s["got"])
+    assert "DHCPRELEASE" not in step["did"]
+    assert "leases done" in step["did"]
 
 
 def test_release_mode_summary_omits_the_flood_and_new_client_legs(monkeypatch):
@@ -106,9 +136,9 @@ def test_release_mode_summary_omits_the_flood_and_new_client_legs(monkeypatch):
     eng.releases = 5
     eng._finalize_findings()
     text = _steps_text(events)
-    assert "consume the free pool" not in text
-    assert "never seen" not in text
-    assert "5 address(es) reported as given up" in text
+    assert "drain the pool" not in text
+    assert "unknown device" not in text
+    assert "5 DHCPRELEASE sent" in text
 
 
 def test_scan_mode_summary_says_only_that_it_listened(monkeypatch):
@@ -116,7 +146,7 @@ def test_scan_mode_summary_says_only_that_it_listened(monkeypatch):
     eng._finalize_findings()
     steps = _summary(events).evidence["steps"]
     assert len(steps) == 1
-    assert "without sending anything" in steps[0]
+    assert "without sending anything" in steps[0]["did"]
 
 
 def test_release_previous_summary_describes_the_journal_replay(monkeypatch):
@@ -130,9 +160,9 @@ def test_release_previous_summary_describes_the_journal_replay(monkeypatch):
     }
     eng._finalize_findings()
     text = _steps_text(events)
-    assert "9 address(es) still recorded as held" in text
-    assert "18 release(s) sent over 2 pass(es)" in text
-    assert "usable again" in text
+    assert "9 still held (lease journal)" in text
+    assert "18 DHCPRELEASE sent, 2 passes" in text
+    assert "pool usable again" in text
 
 
 def test_halt_signal_is_reported_as_the_senders_result(monkeypatch):
@@ -140,8 +170,8 @@ def test_halt_signal_is_reported_as_the_senders_result(monkeypatch):
     eng.acks, eng.discovers = 56, 120
     eng._halt_signal = ("nak_burst", "4 NAKs in 5s", 56)
     eng._finalize_findings()
-    step = next(s for s in _summary(events).evidence["steps"] if "consume the free pool" in s)
-    assert "stopped early after 56" in step and "nak_burst" in step
+    step = next(s for s in _summary(events).evidence["steps"] if "drain the pool" in s["did"])
+    assert "stopped early at 56" in step["got"] and "nak_burst" in step["got"]
 
 
 def test_dry_run_steps_say_nothing_was_sent(monkeypatch):
@@ -150,8 +180,8 @@ def test_dry_run_steps_say_nothing_was_sent(monkeypatch):
     eng._finalize_findings()
     f = _summary(events)
     assert f.evidence["dry_run"] is True
-    step = next(s for s in f.evidence["steps"] if "DHCPRELEASE" in s)
-    assert "nothing was actually sent" in step
+    step = next(s for s in f.evidence["steps"] if "DHCPRELEASE" in s["got"])
+    assert "[dry run, not sent]" in step["did"]
 
 
 # ---------------------------------------------------------------- boundaries
@@ -177,13 +207,14 @@ def test_recommendation_gives_one_wifi_control(monkeypatch):
 
 
 # ---------------------------------------------------------------- CLI rendering
-def test_cli_renders_list_evidence_one_item_per_line(capsys, monkeypatch):
+def test_cli_renders_steps_as_two_aligned_columns(capsys, monkeypatch):
     """A narrative flattened into a single dict repr is unreadable -- the whole reason
     RUN_SUMMARY needed the renderer to grow list handling."""
     from dhcpig.cli.render import Renderer
 
     eng, events = _engine(monkeypatch)
     eng._baseline_neighbor_count = 3
+    eng.releases = 4
     eng._finalize_findings()
     r = Renderer(verbosity=2, color=False)
     for e in events:
@@ -191,9 +222,32 @@ def test_cli_renders_list_evidence_one_item_per_line(capsys, monkeypatch):
             r.handle(e)
     out = capsys.readouterr().out
     assert "steps:" in out
-    for step in _summary(events).evidence["steps"]:
-        assert f"          - {step}" in out
     assert "'steps'" not in out  # not flattened into the compact dict
+
+    rendered = [ln for ln in out.splitlines() if "  ->  " in ln]
+    assert len(rendered) == len(_summary(events).evidence["steps"])
+    # the arrows line up, which is what makes the left column scannable
+    assert len({ln.index("  ->  ") for ln in rendered}) == 1
+
+
+def test_cli_still_bullets_plain_list_evidence(capsys):
+    """Non-pair lists (servers, sample_hosts, ...) keep the simple bulleted form."""
+    from dhcpig.cli.render import Renderer
+    from dhcpig.core.models import Finding
+
+    r = Renderer(verbosity=2, color=False)
+    r._finding(
+        Finding(
+            id="X",
+            title="t",
+            verdict="INFO",
+            severity="info",
+            evidence={"servers": ["10.0.0.1", "10.0.0.2"]},
+        )
+    )
+    out = capsys.readouterr().out
+    assert "          - 10.0.0.1\n" in out
+    assert "  ->  " not in out
 
 
 def test_cli_keeps_empty_lists_out_of_their_own_block(capsys):

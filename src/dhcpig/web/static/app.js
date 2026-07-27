@@ -170,9 +170,16 @@ function evidenceHtml(ev) {
   let out = "", lists = "";
   for (const [k, v] of Object.entries(ev)) {
     if (Array.isArray(v) && v.length) {
-      lists += `<div class="ev evlist"><b>${esc(k)}</b><ul>` +
-        v.map((i) => `<li>${esc(typeof i === "string" ? i : JSON.stringify(i))}</li>`).join("") +
-        "</ul></div>";
+      // {did, got} pairs (RUN_SUMMARY's steps) render as two columns; the left column is
+      // scannable on its own, which is the point of that finding.
+      const pairs = v.every((i) => i && typeof i === "object" && "did" in i && "got" in i);
+      lists += pairs
+        ? `<div class="ev evsteps"><b>${esc(k)}</b><table>` +
+          v.map((i) => `<tr><td>${esc(i.did)}</td><td>${esc(i.got)}</td></tr>`).join("") +
+          "</table></div>"
+        : `<div class="ev evlist"><b>${esc(k)}</b><ul>` +
+          v.map((i) => `<li>${esc(typeof i === "string" ? i : JSON.stringify(i))}</li>`).join("") +
+          "</ul></div>";
     } else {
       scalars[k] = v;
     }

@@ -114,22 +114,29 @@ together and should be kept together:
 - **`RUN_SUMMARY` (INFO) is the one finding raised unconditionally**, first, in every mode
   including dry-run and read-only scans — it's the only finding a reader can rely on being
   present, so a report always opens with "here is what this tool did to your network" before any
-  verdict. Its `steps` evidence is built by **`_run_summary_steps()`**, which is **descriptive
-  only**: it reads phases' recorded state and reports action → result in plain language for a
-  security engineer who is *not* a DHCP specialist (ordinary words first, protocol term in
-  parentheses). **Do not make it infer defensive posture** — "the server ignored this, so
-  snooping is probably on" belongs in the verdict findings, and a second differently-worded
-  conclusion from the same run is worse than one. A regression test asserts the step text
-  contains no posture vocabulary. Its single recommendation assumes a **Wi-Fi-based** attacker
-  (controller DHCP proxy + client-MAC/chaddr consistency enforcement) — that's the one control
-  that breaks every step in the chain, since all of them depend on sending DHCP on another
-  device's behalf.
-- **Evidence rendering is list-aware** in both front ends (`cli/render.py` `_finding()`,
-  `web/static/app.js` `evidenceHtml()`): list-valued keys render as their own indented/bulleted
-  block, scalars stay in the compact one-line dict, and **empty lists stay in the compact dict**
-  (a bare `servers:` header with nothing under it reads like truncated output). `RUN_SUMMARY`'s
-  narrative forced this, but `servers`/`sample_hosts` benefit too — if you add a finding whose
-  evidence carries a list, it renders correctly for free.
+  verdict. Its `steps` evidence is built by **`_run_summary_steps()`**, a list of
+  **`{"did": ..., "got": ...}`** pairs (not pre-joined strings — each surface aligns the columns
+  to its own width, and JSON/CSV consumers get parseable fields). Two rules govern the content:
+  - **`did` is plain English and short (≤60 chars, asserted by a test); protocol names live in
+    `got`.** The audience is a security engineer who is *not* a DHCP specialist, so the left
+    column must be readable without knowing what DHCPRELEASE or option 50 are. It's terse on
+    purpose: the *why* behind these primitives is stated **once** in the recommendation, and an
+    earlier version that explained it per step ran ~290 words and read as prose, not a list.
+  - **Descriptive only — do not make it infer defensive posture.** "The server ignored this, so
+    snooping is probably on" belongs in the verdict findings; a second differently-worded
+    conclusion from the same run is worse than one. A regression test asserts the step text
+    contains no posture vocabulary.
+
+  Its single recommendation assumes a **Wi-Fi-based** attacker (controller DHCP proxy +
+  client-MAC/chaddr consistency enforcement) — that's the one control that breaks every step in
+  the chain, since all of them depend on sending DHCP on another device's behalf.
+- **Evidence rendering is list-aware** in both front ends (`cli/render.py` `_evidence_lines()`,
+  `web/static/app.js` `evidenceHtml()`): a list of `{did, got}` pairs renders as two aligned
+  columns (CLI padding / an HTML table), any other list renders as indented bullets, scalars stay
+  in the compact one-line dict, and **empty lists stay in the compact dict** (a bare `servers:`
+  header with nothing under it reads like truncated output). `RUN_SUMMARY` forced this, but
+  `servers`/`sample_hosts` benefit too — a new finding whose evidence carries a list renders
+  correctly for free.
 
 ## 5b. ARP-conflict eviction — why `_do_arp_conflict()` is shaped the way it is (2.3)
 `Mode.GARP_DOS` (standalone sustained ARP-cache poisoning, no exhaustion phase) was **retired**
@@ -439,7 +446,7 @@ Sandbox Python is **3.10**, but the package targets **3.11+**, so **do NOT `pip 
 in the sandbox** — run against the source path instead:
 ```
 cd /sessions/<id>/mnt/DHCPig
-PYTHONPATH=src python3 -m pytest -q          # 326 pass, 1 integration deselected
+PYTHONPATH=src python3 -m pytest -q          # 329 pass, 1 integration deselected
 python3 -m ruff check src tests
 python3 -m ruff format --check src tests
 ```
@@ -559,7 +566,7 @@ finishing and auto-`stop()`, mirroring the CLI, instead of stalling ~65s) and in
 option50/chaddr/hostname logging landed alongside it. Then **2.3.2**: the always-raised
 `RUN_SUMMARY` finding (§5a) that opens every report with a plain-language, step-by-step account
 of what the run did, plus list-aware evidence rendering in both front ends to display it.
-**326 unit tests pass; ruff clean.** The
+**329 unit tests pass; ruff clean.** The
 user validated a real exhaust run on their Kali VM against a live `/22` (pcap reviewed) — that
 run is what exposed the pending-offer saturation bug §5c fixes and the renewal-vs-fresh-allocation
 control-transaction bug §5a fixes. **Neither 2.1, 2.2, 2.3, nor 2.3.1 has been exercised against
