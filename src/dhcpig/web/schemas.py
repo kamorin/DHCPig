@@ -63,6 +63,8 @@ def config_from_payload(payload: dict) -> SessionConfig:
         arp_sweep=bool(payload.get("arp_sweep", True)),
         release_neighbors=bool(payload.get("release_neighbors", True)),
         evict=bool(payload.get("evict", True)),
+        race_freed_addresses=bool(payload.get("race_freed_addresses", True)),
+        race_on_rediscover=bool(payload.get("race_on_rediscover", False)),
         status_interval=float(payload.get("status_interval", 5.0) or 0),
         journal=bool(payload.get("journal", True)),
         journal_path=Path(journal_path) if journal_path else None,
@@ -91,6 +93,11 @@ def as_cli(cfg: SessionConfig) -> str:
         parts.append("--no-journal")
     if not cfg.evict and cfg.mode in (Mode.EXHAUST, Mode.RELEASE_NEIGHBORS):
         parts.append("--no-evict")
+    if cfg.mode is Mode.EXHAUST:  # race-freed is exhaust-only (§ EXECUTION-PLAN-race-freed.md)
+        if not cfg.race_freed_addresses:
+            parts.append("--no-race-freed")
+        if cfg.race_on_rediscover:
+            parts.append("--race-on-rediscover")
     if cfg.mode is Mode.RELEASE_PREVIOUS:
         if cfg.journal_path:
             parts += ["--journal", str(cfg.journal_path)]

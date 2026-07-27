@@ -126,6 +126,26 @@ def test_build_config_evict_opt_out_also_available_on_release():
     assert cli.build_config(args).evict is False
 
 
+def test_build_config_race_freed_default_on_and_opt_out():
+    args = cli.build_parser().parse_args(["exhaust", "eth1"])
+    cfg = cli.build_config(args)
+    assert cfg.race_freed_addresses is True
+    assert cfg.race_on_rediscover is False
+    args = cli.build_parser().parse_args(["exhaust", "eth1", "--no-race-freed"])
+    assert cli.build_config(args).race_freed_addresses is False
+    args = cli.build_parser().parse_args(["exhaust", "eth1", "--race-on-rediscover"])
+    assert cli.build_config(args).race_on_rediscover is True
+
+
+def test_race_freed_flags_not_available_on_release():
+    """race-freed is exhaust-only (no concurrent flood in release to race against) -- the flags
+    simply don't exist on that subcommand, rather than existing and doing nothing."""
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["release", "eth1", "--no-race-freed"])
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["release", "eth1", "--race-on-rediscover"])
+
+
 def test_exhaust_has_no_restore_on_exit_flag():
     """Auto-restore-on-exit was removed -- release-previous is the caller-initiated recovery
     path now, so exhaust always keeps its leases until the operator explicitly releases them."""
