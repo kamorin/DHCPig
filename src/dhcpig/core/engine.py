@@ -279,6 +279,7 @@ class DhcpEngine:
             "arp_conflicts": self.arp_conflicts,
             "foreign_discovers": observed,
             "foreign_discovers_unanswered": unanswered,
+            "races": self.races,
         }
 
     def _status_ticker(self) -> None:
@@ -398,6 +399,7 @@ class DhcpEngine:
             "releases": self.releases,
             "foreign_discovers": foreign_observed,
             "foreign_discovers_unanswered": foreign_unanswered,
+            "races": self.races,
             "servers": len(self.servers),
             "elapsed": round(time.time() - self._started, 1) if self._started else 0.0,
             "control_pre": self.control_pre.success if self.control_pre else None,
@@ -778,6 +780,7 @@ class DhcpEngine:
                         "headroom": headroom,
                         "would_release": self._dry_run_would_release,
                         "would_evict": len(self._evict_targets),
+                        "would_race": self.races,
                     },
                     recommendation=(
                         "The control transaction and ARP discovery ran for real, but the "
@@ -961,6 +964,44 @@ class DhcpEngine:
                         ),
                     )
                 )
+
+        # Race-freed addresses (race-freed plan, commit 5/6). Gated on not dry-run for the same
+        # reason as the eviction block above: under dry-run every race is suppressed at _send()'s
+        # chokepoint, so every outcome would read no_response -- DRY_RUN_SUMMARY's would_race
+        # covers that case instead.
+        if self.races > 0 and not self.cfg.dry_run:
+            by_outcome: dict[str, int] = {}
+            for outcome in self._race_outcomes.values():
+                by_outcome[outcome] = by_outcome.get(outcome, 0) + 1
+            won = by_outcome.get("granted", 0)
+            lost = (
+                by_outcome.get("offered_different", 0)
+                + by_outcome.get("naked", 0)
+                + by_outcome.get("no_response", 0)
+            )
+            self._raise(
+                Finding(
+                    id="RACED_FREED_ADDRESSES",
+                    title="Raced to re-acquire addresses as soon as they were observed freed",
+                    verdict=INFO,
+                    severity="info",
+                    evidence={
+                        "attempted": self.races,
+                        "won": won,
+                        "lost": lost,
+                        "by_outcome": by_outcome,
+                    },
+                    recommendation=(
+                        "A foreign NAK, DECLINE, or (if --race-on-rediscover) a rediscovering "
+                        "known neighbor was treated as a signal that an address just came free, "
+                        "and this tool immediately raced to grab it ahead of the address's "
+                        "original owner. A high win rate here demonstrates that a departing "
+                        "or bounced client cannot reliably reclaim its own address on this "
+                        "segment without additional protection (DHCP snooping binding "
+                        "persistence, static reservations)."
+                    ),
+                )
+            )
 
     def _note_neighbor(self, mac: str, ip: str) -> Neighbor:
         """Record/refresh a neighbor, attaching any DHCP fingerprint already seen for this MAC.

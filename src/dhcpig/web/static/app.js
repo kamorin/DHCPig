@@ -299,6 +299,7 @@ function handleEvent(e) {
       col("releases", "releases"); col("arp_conflicts", "arp_conflicts");
       col("foreign_discovers", "foreign_discovers");
       col("foreign_unanswered", "foreign_discovers_unanswered");
+      col("races", "races");
       if (s.servers) bits.push(`servers ${s.servers}`);
       if (s.neighbors) bits.push(`neighbors ${s.neighbors}`);
       if (s.send_window != null) bits.push(`window ${s.send_window} (inflight ${s.inflight || 0})`);
