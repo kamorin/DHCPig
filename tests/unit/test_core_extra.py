@@ -105,7 +105,12 @@ def _engine(monkeypatch, **cfg):
 
 
 def test_engine_offer_then_ack_flow(monkeypatch):
+    import time as _t
+
     eng, events, _ = _engine(monkeypatch)
+    # xid 0x99 (the fixed xid _dhcp() bakes in) must be ours -- _handle_offer()/_handle_ack() now
+    # require ownership before acting (2.3 bug fix: they used to act on any OFFER/ACK observed).
+    eng._inflight[0x99] = {"mac": "de:ad:00:00:00:07", "sent_at": _t.time(), "state": "x"}
     offer = _dhcp("offer", chaddr=mac2str("de:ad:00:00:00:07") + b"\x00" * 10)
     ack = _dhcp("ack", chaddr=mac2str("de:ad:00:00:00:07") + b"\x00" * 10)
     eng._on_dhcp(offer)

@@ -5,10 +5,12 @@ The whole point of this module is surviving a killed process, so the crash-simul
 """
 
 import json
+import time
 
 from scapy.all import BOOTP, DHCP, IP, UDP, Ether, mac2str
 
 from dhcpig.core import engine as engine_mod
+from dhcpig.core import events as ev
 from dhcpig.core import journal
 from dhcpig.core.engine import DhcpEngine
 from dhcpig.core.events import EventBus
@@ -177,9 +179,17 @@ def _ack_packet(xid, mac, yiaddr="172.20.0.83"):
     )
 
 
+def _mark_ours(eng, xid: int, mac: str) -> None:
+    """Register xid in _inflight, simulating that we actually sent the DISCOVER/REQUEST this ACK
+    is replying to -- _handle_ack() now requires this (2.3 bug fix: it used to journal/count any
+    ACK seen, ours or not)."""
+    eng._inflight[xid] = {"mac": mac, "sent_at": time.time(), "state": "DISCOVER_SENT"}
+
+
 def test_engine_writes_an_ack_record_to_the_journal(monkeypatch, tmp_path):
     jpath = tmp_path / "leases-lo.jsonl"
     eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST, journal_path=jpath)
+    _mark_ours(eng, 0xAAAA, "de:ad:00:00:00:09")
     eng._handle_ack(_ack_packet(0xAAAA, "de:ad:00:00:00:09"))
     entries, warnings = journal.load_open_leases(jpath)
     assert warnings == []
@@ -188,9 +198,24 @@ def test_engine_writes_an_ack_record_to_the_journal(monkeypatch, tmp_path):
     assert entries[0].lease_time == 1200
 
 
+def test_foreign_ack_is_not_journaled_or_counted(monkeypatch, tmp_path):
+    """BUG FIX regression (2.3): an ACK whose xid we never sent must not be registered in
+    Cleanup or the journal -- that used to mean a later restore()/release-previous could RELEASE
+    an address a real, uninvolved client is actively using."""
+    jpath = tmp_path / "leases-lo.jsonl"
+    eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST, journal_path=jpath)
+    assert 0xFFFF not in eng._inflight
+    eng._handle_ack(_ack_packet(0xFFFF, "de:ad:00:00:00:ff"))
+    assert eng.acks == 0
+    assert not jpath.exists()
+    assert eng.cleanup.pending() == []
+    assert not any(isinstance(e, ev.AckReceived) for e in events)
+
+
 def test_dry_run_writes_no_journal_records(monkeypatch, tmp_path):
     jpath = tmp_path / "leases-lo.jsonl"
     eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST, dry_run=True, journal_path=jpath)
+    _mark_ours(eng, 0xBBBB, "de:ad:00:00:00:0a")
     eng._handle_ack(_ack_packet(0xBBBB, "de:ad:00:00:00:0a"))
     assert not jpath.exists()
 
@@ -198,6 +223,7 @@ def test_dry_run_writes_no_journal_records(monkeypatch, tmp_path):
 def test_no_journal_flag_writes_nothing(monkeypatch, tmp_path):
     jpath = tmp_path / "leases-lo.jsonl"
     eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST, journal=False, journal_path=jpath)
+    _mark_ours(eng, 0xCCCC, "de:ad:00:00:00:0b")
     eng._handle_ack(_ack_packet(0xCCCC, "de:ad:00:00:00:0b"))
     assert not jpath.exists()
 
@@ -205,6 +231,7 @@ def test_no_journal_flag_writes_nothing(monkeypatch, tmp_path):
 def test_release_bindings_writes_a_released_record_closing_the_ack(monkeypatch, tmp_path):
     jpath = tmp_path / "leases-lo.jsonl"
     eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST, journal_path=jpath)
+    _mark_ours(eng, 0xDDDD, "de:ad:00:00:00:0c")
     eng._handle_ack(_ack_packet(0xDDDD, "de:ad:00:00:00:0c"))
     assert len(journal.load_open_leases(jpath)[0]) == 1
 
@@ -223,10 +250,9 @@ def test_journal_write_failure_is_swallowed_as_debug_not_raised(monkeypatch, tmp
         raise OSError("disk full")
 
     monkeypatch.setattr(journal, "record_ack", _boom)
+    _mark_ours(eng, 0xEEEE, "de:ad:00:00:00:0d")
     eng._handle_ack(_ack_packet(0xEEEE, "de:ad:00:00:00:0d"))  # must not raise
     assert eng.acks == 1  # the run itself proceeded normally
-    from dhcpig.core import events as ev
-
     assert any(
         isinstance(e, ev.Debug) and "journal" in e.message.lower() and "disk full" in e.message
         for e in events

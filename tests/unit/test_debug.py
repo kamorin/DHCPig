@@ -31,17 +31,43 @@ def _offer():
     )
 
 
+def _mark_ours(eng, xid: int, mac: str = "de:ad:00:00:00:07") -> None:
+    """Register xid in _inflight, simulating that we actually sent the DISCOVER/REQUEST this
+    OFFER/ACK/NAK is replying to -- the ownership check _handle_offer()/_handle_ack()/
+    _handle_nak() now require (2.3 bug fix: they used to act on every packet regardless)."""
+    import time as _time
+
+    eng._inflight[xid] = {"mac": mac, "sent_at": _time.time(), "state": "DISCOVER_SENT"}
+
+
 def test_engine_emits_debug_on_offer(monkeypatch):
     monkeypatch.setattr(engine_mod, "sendp", lambda *a, **k: None)
     bus = EventBus()
     events: list = []
     bus.subscribe(events.append)
     eng = engine_mod.DhcpEngine(SessionConfig(interface="lo", dry_run=True), bus)
+    _mark_ours(eng, 0x99)
     eng._handle_offer(_offer())
     dbg = [e for e in events if isinstance(e, ev.Debug)]
     assert dbg, "offer handling should emit Debug events"
     text = " ".join(e.message for e in dbg)
     assert "OFFER" in text and "server_id=172.20.15.1" in text and "REQUEST" in text
+
+
+def test_engine_ignores_offer_it_never_solicited(monkeypatch):
+    """BUG FIX regression (2.3): an OFFER whose xid we never sent must not produce a REQUEST --
+    that used to mean impersonating whoever the offer was actually meant for."""
+    monkeypatch.setattr(engine_mod, "sendp", lambda *a, **k: None)
+    bus = EventBus()
+    events: list = []
+    bus.subscribe(events.append)
+    eng = engine_mod.DhcpEngine(SessionConfig(interface="lo", dry_run=True), bus)
+    assert 0x99 not in eng._inflight
+    eng._handle_offer(_offer())
+    assert not any(isinstance(e, ev.RequestSent) for e in events)
+    assert not any(isinstance(e, ev.OfferReceived) for e in events)
+    dbg = " ".join(e.message for e in events if isinstance(e, ev.Debug))
+    assert "foreign OFFER" in dbg and "not requesting" in dbg
 
 
 def test_handle_offer_emits_request_sent_with_option50_and_hostname(monkeypatch):
@@ -52,6 +78,7 @@ def test_handle_offer_emits_request_sent_with_option50_and_hostname(monkeypatch)
     events: list = []
     bus.subscribe(events.append)
     eng = engine_mod.DhcpEngine(SessionConfig(interface="lo", dry_run=True), bus)
+    _mark_ours(eng, 0x99)
     eng._handle_offer(_offer())
     req_sent = [e for e in events if isinstance(e, ev.RequestSent)]
     assert len(req_sent) == 1

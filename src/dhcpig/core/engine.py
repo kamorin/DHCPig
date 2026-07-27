@@ -1829,6 +1829,29 @@ class DhcpEngine:
             self.bus.emit(ev.ServerDiscovered(server=server))
         server.offers_seen += 1
         xid = pkt[BOOTP].xid
+        # BUG FIX (2.3, found while designing race-freed): this used to build and send a REQUEST
+        # for *every* OFFER seen on the wire, with no check that the xid was ours. Since
+        # client_mac_from_offer() reads chaddr straight off the OFFER, an offer meant for some
+        # other real client on the segment made us send a REQUEST impersonating *their* MAC,
+        # trying to steal their own offered address out from under them -- not scoped to
+        # anything we deliberately targeted, just every offer the sniffer happened to see.
+        # `xid in self._inflight` is the same ownership check `_handle_nak()` uses: populated
+        # for every DISCOVER we actually sent (exhaust flood, re-acquisition, racing).
+        with self._inflight_lock:
+            info = self._inflight.get(xid)
+            ours = info is not None
+            if ours:
+                info["state"] = "REQUEST_SENT"
+                info["sent_at"] = time.time()  # restart the timeout clock for the ACK leg
+        foreign = self._foreign_discovers.get(xid)
+        if foreign is not None:
+            foreign["answered"] = True  # legitimate to record either way -- we're not acting on it
+        if not ours:
+            self._debug(
+                f"foreign OFFER xid=0x{xid:08x} yiaddr={offered_ip} server_id={server_id} "
+                "(not ours, not requesting)"
+            )
+            return
         lease = Lease(
             packets.client_mac_from_offer(pkt),
             offered_ip,
@@ -1836,14 +1859,6 @@ class DhcpEngine:
             xid,
             self.cfg.ip_version,
         )
-        with self._inflight_lock:
-            info = self._inflight.get(xid)
-            if info is not None:
-                info["state"] = "REQUEST_SENT"
-                info["sent_at"] = time.time()  # restart the timeout clock for the ACK leg
-        foreign = self._foreign_discovers.get(xid)
-        if foreign is not None:
-            foreign["answered"] = True
         self._note_offer_for_duplicate_detection(offered_ip, lease.mac)
         self._note_offer_for_pool_estimate(offered_ip, subnet)
         self.bus.emit(ev.OfferReceived(lease=lease, server=server))
@@ -1864,16 +1879,32 @@ class DhcpEngine:
         )
 
     def _handle_ack(self, pkt) -> None:
+        """BUG FIX (2.3, found alongside the OFFER fix above): this used to register, journal,
+        and count *every* ACK seen, ours or not. A foreign ACK we merely witnessed (possible
+        whenever a server broadcasts, or after the OFFER bug above made us impersonate someone
+        else's REQUEST) would land in `Cleanup` and the lease journal as if we held it -- so a
+        later `restore()`/`release-previous` could send a RELEASE for an address a real,
+        uninvolved client is actively using. Same `xid in self._inflight` ownership check."""
         from scapy.all import BOOTP, DHCP
 
+        xid = pkt[BOOTP].xid
+        with self._inflight_lock:
+            ours = xid in self._inflight
+            self._inflight.pop(xid, None)
         mac = packets.client_mac_from_offer(pkt)
         server_id, server_mac, ip, _ = packets.parse_offer(pkt)
+        if not ours:
+            self._debug(
+                f"foreign ACK xid=0x{xid:08x} yiaddr={ip} server_id={server_id} chaddr={mac} "
+                "(not ours, not registered)"
+            )
+            return
         lease_time = packets.lease_time_from(pkt[DHCP].options)
         lease = Lease(
             mac,
             ip,
             server_id,
-            pkt[BOOTP].xid,
+            xid,
             self.cfg.ip_version,
             lease_time=lease_time,
             acquired_at=time.time(),
@@ -1882,17 +1913,15 @@ class DhcpEngine:
         self.cleanup.register(lease)
         self._journal_ack(lease)
         self.acks += 1
-        with self._inflight_lock:
-            self._inflight.pop(pkt[BOOTP].xid, None)
-        requested = self._reacquire_targets.get(pkt[BOOTP].xid)
+        requested = self._reacquire_targets.get(xid)
         if requested is not None:
             outcome = "granted" if ip == requested else "offered_different"
-            self._reacquire_outcomes[pkt[BOOTP].xid] = outcome
+            self._reacquire_outcomes[xid] = outcome
         self._consecutive_timeouts = 0  # a clean handshake resets the timeout-storm counter
         self._grow_window()
         self.bus.emit(ev.AckReceived(lease=lease))
         self._debug(
-            f"ACK xid=0x{pkt[BOOTP].xid:08x} yiaddr={ip} server_id={server_id} "
+            f"ACK xid=0x{xid:08x} yiaddr={ip} server_id={server_id} "
             f"chaddr={mac} lease#{self.acks} opts=[{_opts_summary(pkt)}]"
         )
 
