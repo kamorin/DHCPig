@@ -1409,8 +1409,7 @@ class DhcpEngine:
         if not expired:
             return
         for xid in expired:
-            if xid in self._reacquire_targets and xid not in self._reacquire_outcomes:
-                self._reacquire_outcomes[xid] = "no_response"
+            self._classify_targeted(xid, "no_response", overwrite=False)
         self.timeouts_seen += len(expired)
         self._consecutive_timeouts += len(expired)
         self._shrink_window("timeout")
@@ -1780,6 +1779,48 @@ class DhcpEngine:
                     )
                 )
             self._reap_timeouts()
+            # race-freed (2.3): drain the race queue ahead of the untargeted path, one per
+            # iteration so a burst empties steadily rather than all at once. Deliberately NOT
+            # gated on the window/inflight room check below -- a race is a single, bounded,
+            # time-sensitive send, not a sustained load pattern; waiting for a normal window
+            # slot to free up would defeat the point. `race_max_inflight` is the actual bound
+            # (a handful of slots *above* the window, not an unlimited bypass), and every send
+            # still goes through _send()'s rate limiter -- see SessionConfig.race_max_inflight's
+            # docstring for why the limiter alone isn't a sufficient backstop in exhaust.
+            if (
+                self.cfg.race_freed_addresses
+                and self._race_queue
+                and self._race_inflight < self.cfg.race_max_inflight
+            ):
+                race_ip = self._race_queue.popleft()
+                race_mac = random_mac()
+                race_xid = _rand_xid()
+                race_src = self._src_mac(race_mac)
+                self._our_macs.add(race_src)
+                race_pkt = packets.build_discover_v4(
+                    race_mac, race_xid, race_src, requested_addr=race_ip
+                )
+                self._send(race_pkt)
+                with self._inflight_lock:
+                    self._inflight[race_xid] = {
+                        "mac": race_mac,
+                        "sent_at": time.time(),
+                        "state": "DISCOVER_SENT",
+                    }
+                self._race_targets[race_xid] = race_ip
+                self._race_inflight += 1
+                self.discovers += 1
+                self.races += 1
+                self.bus.emit(
+                    ev.DiscoverSent(
+                        mac=race_mac, option50=race_ip, hostname=packets.packet_hostname(race_pkt)
+                    )
+                )
+                self._debug(
+                    f"race: DISCOVER xid=0x{race_xid:08x} option50={race_ip} chaddr={race_mac} "
+                    f"(freed address, inflight {self._race_inflight}/{self.cfg.race_max_inflight})"
+                )
+                continue
             with self._inflight_lock:
                 room = self._window - len(self._inflight)
             if room <= 0:
@@ -1975,6 +2016,37 @@ class DhcpEngine:
             f"REQUEST xid=0x{pkt[BOOTP].xid:08x} requested_addr={offered_ip} server_id={server_id}"
         )
 
+    def _classify_targeted(self, xid: int, outcome: str, overwrite: bool = True) -> bool:
+        """Record `outcome` for `xid` in whichever table owns it -- targeted re-acquisition
+        (`_reacquire_targets`/`_reacquire_outcomes`, §5f) or racing
+        (`_race_targets`/`_race_outcomes`, race-freed) -- so the two mechanisms share one
+        classification path and can never drift apart in how they call granted/offered_different/
+        naked/no_response. The two target dicts are mutually exclusive by construction (see
+        `_maybe_race()`'s exclusions), so at most one branch below ever fires.
+
+        `overwrite=False` (used by `_reap_timeouts()`) only writes if nothing is recorded yet,
+        matching the original re-acquisition behavior of never letting a late timeout sweep
+        clobber an outcome an ACK/NAK already settled.
+
+        Decrements `_race_inflight` exactly once, only on the write that actually happens --
+        each xid reaches a terminal state (ACK, NAK, or timeout) at most once in practice, since
+        `_handle_ack()`/`_handle_nak()` both pop the xid from `_inflight` before classifying, and
+        `_reap_timeouts()` only ever sees xids still present there.
+
+        Returns True if `xid` belonged to either table (informational; no caller currently needs
+        the return value, but "was this actually one of ours" is cheap to make available).
+        """
+        if xid in self._reacquire_targets:
+            if overwrite or xid not in self._reacquire_outcomes:
+                self._reacquire_outcomes[xid] = outcome
+            return True
+        if xid in self._race_targets:
+            if overwrite or xid not in self._race_outcomes:
+                self._race_outcomes[xid] = outcome
+                self._race_inflight = max(0, self._race_inflight - 1)
+            return True
+        return False
+
     def _handle_ack(self, pkt) -> None:
         """BUG FIX (2.3, found alongside the OFFER fix above): this used to register, journal,
         and count *every* ACK seen, ours or not. A foreign ACK we merely witnessed (possible
@@ -2010,10 +2082,12 @@ class DhcpEngine:
         self.cleanup.register(lease)
         self._journal_ack(lease)
         self.acks += 1
-        requested = self._reacquire_targets.get(xid)
+        # requested-IP lookup covers both tables -- they're mutually exclusive, so at most one
+        # ever has this xid; _classify_targeted() then writes into whichever one does.
+        requested = self._reacquire_targets.get(xid, self._race_targets.get(xid))
         if requested is not None:
             outcome = "granted" if ip == requested else "offered_different"
-            self._reacquire_outcomes[xid] = outcome
+            self._classify_targeted(xid, outcome)
         self._consecutive_timeouts = 0  # a clean handshake resets the timeout-storm counter
         self._grow_window()
         self.bus.emit(ev.AckReceived(lease=lease))
@@ -2051,8 +2125,7 @@ class DhcpEngine:
             self._maybe_race(self._foreign_requests.pop(xid, None), "nak")
             return
         self.naks += 1
-        if xid in self._reacquire_targets:
-            self._reacquire_outcomes[xid] = "naked"
+        self._classify_targeted(xid, "naked")
         self._shrink_window("nak")
         self._note_nak_for_burst_detection()
         self.bus.emit(ev.NakReceived(server_ip=server_id))
