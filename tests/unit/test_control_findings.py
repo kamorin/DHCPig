@@ -431,6 +431,7 @@ def test_only_acks_increment_the_lease_counter_not_timeouts(monkeypatch):
     assert eng.acks == 0
     assert eng.timeouts_seen == 1
     assert eng._inflight == {}
+    eng._inflight[0xBBBB] = {"mac": "de:ad:00:00:00:02", "sent_at": time.time(), "state": "x"}
     eng._on_dhcp(_reply("ack", 0xBBBB, "de:ad:00:00:00:02"))
     assert eng.acks == 1
 
@@ -439,6 +440,7 @@ def test_ack_populates_lease_time_from_option_51(monkeypatch):
     """Regression: Lease.lease_time used to be dropped on the floor at _handle_ack -- the
     journal (2.2) needs it to know when a phantom lease naturally expires."""
     eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
+    eng._inflight[0xCCCC] = {"mac": "de:ad:00:00:00:03", "sent_at": time.time(), "state": "x"}
     eng._on_dhcp(_reply("ack", 0xCCCC, "de:ad:00:00:00:03"))
     acked = [e for e in events if isinstance(e, ev.AckReceived)]
     assert acked and acked[-1].lease.lease_time == 600  # _reply() bakes in lease_time=600
@@ -480,9 +482,18 @@ def test_timeout_storm_triggers_halt(monkeypatch):
     assert eng._halt_signal[0] == "timeout_storm"
 
 
+def _mark_ours(eng, xid: int, mac: str) -> None:
+    """Register xid in _inflight, simulating that we actually sent the DISCOVER this OFFER is
+    replying to -- _handle_offer() now requires this (2.3 bug fix: it used to build and send a
+    REQUEST for any OFFER seen, ours or not -- see the docstring on _handle_offer())."""
+    eng._inflight[xid] = {"mac": mac, "sent_at": time.time(), "state": "DISCOVER_SENT"}
+
+
 def test_duplicate_offer_shrinks_the_window_immediately(monkeypatch):
     """Each duplicate shrinks the window right away, not just at the halt threshold (3)."""
     eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST, window_initial=8, window_max=64)
+    _mark_ours(eng, 0x2000, "de:ad:00:00:00:01")
+    _mark_ours(eng, 0x2001, "de:ad:00:00:00:02")
     eng._on_dhcp(_reply("offer", 0x2000, "de:ad:00:00:00:01", yiaddr="172.20.0.80"))
     eng._on_dhcp(_reply("offer", 0x2001, "de:ad:00:00:00:02", yiaddr="172.20.0.80"))
     assert eng._window == 4  # one duplicate seen -> halved once
@@ -494,6 +505,8 @@ def test_duplicate_offers_to_our_macs_triggers_halt(monkeypatch):
     eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
     for i in range(3):
         ip = f"172.20.0.{80 + i}"
+        _mark_ours(eng, 0x1000 + i * 2, "de:ad:00:00:00:01")
+        _mark_ours(eng, 0x1000 + i * 2 + 1, "de:ad:00:00:00:02")
         eng._on_dhcp(_reply("offer", 0x1000 + i * 2, "de:ad:00:00:00:01", yiaddr=ip))
         eng._on_dhcp(_reply("offer", 0x1000 + i * 2 + 1, "de:ad:00:00:00:02", yiaddr=ip))
     assert eng._halt_signal is not None
