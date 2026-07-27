@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import deque
 from pathlib import Path
 
 from scapy.all import sendp  # module-level so tests can monkeypatch dhcpig.core.engine.sendp
@@ -154,6 +155,22 @@ class DhcpEngine:
         # separate from _inflight, which is cleared as each transaction completes/times out.
         self._reacquire_targets: dict[int, str] = {}
         self._reacquire_outcomes: dict[int, str] = {}
+        # race-freed (2.3): a foreign REQUEST's requested address, kept just long enough to
+        # resolve a same-xid NAK to a specific IP (a NAK carries no address of its own, RFC
+        # 2131). Popped once consumed by _handle_nak() so this doesn't grow unbounded on a
+        # healthy segment where foreign REQUESTs mostly get ACKed, not NAKed.
+        self._foreign_requests: dict[int, str] = {}
+        # race-freed (2.3): addresses queued for a priority targeted DISCOVER, deduped so one
+        # freed address is never queued twice. Kept entirely separate from _reacquire_targets/
+        # _reacquire_outcomes -- _evict_phase() derives its target set from those, and a race
+        # xid must never silently become an eviction target (see EXECUTION-PLAN-race-freed.md's
+        # "Boundaries" section).
+        self._race_queue: deque[str] = deque()
+        self._raced_ips: set[str] = set()
+        self._race_targets: dict[int, str] = {}
+        self._race_outcomes: dict[int, str] = {}
+        self._race_inflight = 0
+        self.races = 0
         # lease journal (2.2): resolved once so the CLI/report can display the path used.
         # Never active for dry-run -- a dry run must not pollute the recovery record with
         # leases that were never actually acquired.
@@ -1187,8 +1204,16 @@ class DhcpEngine:
 
     def _handle_client_decline(self, pkt) -> None:
         """DHCPDECLINE from a known eviction target's MAC -- gold-standard proof it gave up
-        the address (though not the only path to eviction; see the outcome ladder)."""
-        from scapy.all import BOOTP
+        the address (though not the only path to eviction; see the outcome ladder).
+
+        (2.3, race-freed) A decline from any *other* MAC -- not one we're evicting -- is a
+        second, weaker race trigger: the declining client refuses to use the address, though
+        many DHCP server implementations quarantine a declined address rather than returning it
+        to the free pool, so this is offered on a best-effort basis (see
+        EXECUTION-PLAN-race-freed.md's "Decisions taken"). A DECLINE carries its own address via
+        option 50 (RFC 2131 Table 5), unlike a NAK.
+        """
+        from scapy.all import BOOTP, DHCP
 
         try:
             if BOOTP not in pkt:
@@ -1200,8 +1225,71 @@ class DhcpEngine:
             )
             if ip is not None:
                 self._evict_declined_ips.add(ip)
+                return
+            declined = None
+            if DHCP in pkt:
+                declined = packets.dhcp_option(pkt[DHCP].options, "requested_addr")
+            if declined:
+                self._maybe_race(declined, "decline")
         except Exception as exc:
             self.bus.emit(ev.ErrorEvent(message=f"decline parse error: {exc!r}"))
+
+    def _handle_foreign_request(self, pkt) -> None:
+        """Track a foreign DHCPREQUEST just long enough to resolve which address a later NAK
+        for the same xid was refusing (2.3, race-freed) -- a NAK carries no address of its own
+        (RFC 2131), so this is the only way to turn "somebody got NAK'd" into "this specific IP
+        is contested". Not itself a race trigger; _handle_nak() consumes this."""
+        from scapy.all import BOOTP, DHCP
+
+        try:
+            if BOOTP not in pkt or DHCP not in pkt:
+                return
+            xid = pkt[BOOTP].xid
+            requested = packets.dhcp_option(pkt[DHCP].options, "requested_addr")
+            if not requested:
+                ciaddr = pkt[BOOTP].ciaddr
+                requested = ciaddr if ciaddr and ciaddr != "0.0.0.0" else None
+            if requested:
+                self._foreign_requests[xid] = requested
+        except Exception as exc:
+            self.bus.emit(ev.ErrorEvent(message=f"foreign request parse error: {exc!r}"))
+
+    def _maybe_race(self, ip: str | None, why: str) -> None:
+        """Single entry point for every race trigger (foreign NAK, foreign DECLINE, optionally
+        foreign DISCOVER from a known neighbor) -- keeps every exclusion in exactly one place.
+        See EXECUTION-PLAN-race-freed.md.
+
+        Exhaust-only: release/scan/active-scan have no concurrent flood for "racing ahead of"
+        to mean anything -- release's own sends (RELEASE, re-acquisition) are already deliberate
+        and targeted.
+
+        Exclusions, in order:
+          * `ip` unresolved -- nothing to queue.
+          * already queued this run (`_raced_ips`) -- dedup, e.g. a decline retransmit.
+          * already targeted by *our own* re-acquisition (`_reacquire_targets.values()`) -- the
+            release phase's own victims DISCOVER/DECLINE right after being released and evicted
+            (that's the `rediscovered` rung, §5f); without this check every one of those would
+            queue a duplicate race for an address we already hold. Deliberately not
+            `_is_own_traffic()` -- `_release_bindings()` spoofs the victim's MAC as both chaddr
+            and Ethernet source with a fresh xid never registered in `_inflight`, so that filter
+            cannot recognise our own release-phase frames as ours.
+          * the gateway or the DHCP server -- same exclusion `_release_phase()`/`_evict_phase()`
+            apply, via `_prelude_pre_control()`/`_release_gateway()`.
+        """
+        if self.cfg.mode is not Mode.EXHAUST or not self.cfg.race_freed_addresses:
+            return
+        if not ip or ip in self._raced_ips:
+            return
+        if ip in self._reacquire_targets.values():
+            self._debug(f"race: {ip} already targeted by re-acquisition, not queuing ({why})")
+            return
+        pre = self._prelude_pre_control()
+        server_id = pre.server_id if pre else None
+        if ip in (server_id, self._release_gateway()):
+            return
+        self._raced_ips.add(ip)
+        self._race_queue.append(ip)
+        self._debug(f"race: queued {ip} ({why})")
 
     # ---------------------------------------------------------------- pool estimate / headroom
     def _note_offer_for_pool_estimate(self, offered_ip: str, subnet: str | None) -> None:
@@ -1737,6 +1825,8 @@ class DhcpEngine:
                 return  # our own DISCOVER/REQUEST/RELEASE, echoed back by the widened BPF (2.3)
             elif packets.is_discover(pkt):
                 self._handle_foreign_discover(pkt)
+            elif packets.is_request(pkt):  # (2.3, race-freed) NAK-address resolution only
+                self._handle_foreign_request(pkt)
             else:
                 from scapy.all import ARP
 
@@ -1804,6 +1894,13 @@ class DhcpEngine:
                 fp = resolve(extract_signature(pkt, role="client"), role="client")
                 self._note_fingerprint(fp)
                 self.bus.emit(ev.ForeignDiscover(mac=mac, xid=xid, hostname=hostname))
+                # (2.3, race-freed) Weakest, opt-in trigger: this MAC is at INIT and has
+                # abandoned the IP our ARP inventory recorded for it -- but the *server's*
+                # binding isn't necessarily gone, hence off by default (race_on_rediscover).
+                if self.cfg.race_on_rediscover:
+                    neighbor = self._neighbors_by_mac.get(mac)
+                    if neighbor is not None:
+                        self._maybe_race(neighbor.ip, "rediscover")
             else:
                 # Rate-limited: a retrying client would otherwise flood the log every few
                 # seconds. Debug is gated to verbosity >= 3, well below the first sighting.
@@ -1949,6 +2046,9 @@ class DhcpEngine:
             self._inflight.pop(xid, None)
         if not ours:
             self._debug(f"foreign NAK xid=0x{xid:08x} from {server_id} (not ours)")
+            # (2.3, race-freed) A NAK carries no address of its own -- resolve it via whatever
+            # foreign REQUEST for this xid _handle_foreign_request() tracked, if any.
+            self._maybe_race(self._foreign_requests.pop(xid, None), "nak")
             return
         self.naks += 1
         if xid in self._reacquire_targets:
