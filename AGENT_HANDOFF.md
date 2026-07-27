@@ -315,6 +315,94 @@ Ties §5b/§5c together into the actual attack chain both `exhaust` and `release
   like exhaust — because the sniffer needs to still be up to observe eviction's rounds+settle,
   and for `release` that means staying inside the worker thread `stop()` is about to `join()`.
 
+## 5g. Race-freed addresses — grab a freed address ahead of the untargeted flood (2.3.1)
+Design doc: `EXECUTION-PLAN-race-freed.md`. Answers a gap §5f's re-acquisition doesn't cover:
+re-acquisition only reacts to addresses **we** just freed via our own RELEASE phase; any address
+that becomes free *some other way* mid-run (a NAK'd renewal, a DECLINE, a rediscovering neighbor)
+previously only got picked up if the untargeted exhaust flood happened to land on it. `exhaust`
+only — `release` has no concurrent flood for "racing ahead of" to mean anything against.
+
+- **Triggers, ranked by how strongly they imply the *server* now considers the binding free**
+  (not just that the client stopped using it — the server can hold a binding to lease expiry
+  regardless of what the client does), all broadcast/observable. **DHCPRELEASE is deliberately
+  never a trigger** — it's unicast to the server (`build_release_v4`'s `Ether(dst=server_mac or
+  broadcast)`), invisible on a switched segment; the first draft of this plan got this wrong,
+  see the plan doc's "Read this before implementing" section if you're tempted to add it back.
+  1. **Foreign NAK** (strongest) — `_handle_nak()`'s foreign branch resolves the address via
+     `_foreign_requests` (populated by `_handle_foreign_request()` off any foreign REQUEST) and
+     calls `_maybe_race(ip, "nak")`.
+  2. **Foreign DECLINE** — `_handle_client_decline()`'s `else` branch (a decline from a MAC that
+     isn't a known eviction target) resolves the address and calls `_maybe_race(ip, "decline")`.
+     Weaker signal (most servers quarantine a declined address rather than freeing it), kept on
+     by default so the win/lose counters can show the actual hit rate empirically.
+  3. **Foreign DISCOVER from a known neighbor** (weakest) — opt-in only via
+     `cfg.race_on_rediscover` (default **False**), inside `_handle_foreign_discover()`'s
+     `first_sighting` branch.
+- **One entry point, `_maybe_race(ip, why)`**, so every exclusion lives in exactly one place:
+  unresolved ip, already queued this run (`_raced_ips`), already targeted by *our own*
+  re-acquisition (`ip in self._reacquire_targets.values()` — without this, every one of the
+  release phase's own victims re-DISCOVERing/DECLINEing right after being released+evicted would
+  queue a duplicate race for an address we already hold), and the gateway/DHCP server (via
+  `_prelude_pre_control()`/`_release_gateway()`). **Deliberately not `_is_own_traffic()`** —
+  `_release_bindings()` spoofs the victim's MAC as both `chaddr` and Ethernet source with a fresh
+  xid never registered in `_inflight`, so that filter structurally cannot recognise our own
+  release-phase frames.
+- **Race state is entirely separate from `_reacquire_targets`/`_reacquire_outcomes`** —
+  `_race_queue`/`_raced_ips`/`_race_reasons`/`_race_targets`/`_race_outcomes`/`_race_triggers`/
+  `_race_inflight`. This is load-bearing: `_evict_phase()` derives its target set (`granted_ips`)
+  from `_reacquire_targets`/`_reacquire_outcomes` alone — writing a race xid into either would
+  silently widen eviction's blast radius past what §5f documents ("targets **only** addresses
+  this run actually re-acquired"). A regression test asserts this never happens.
+- **`_exhaust_sender()` drains the race queue ahead of the untargeted path**, one per loop
+  iteration, gated on `self._race_inflight < cfg.race_max_inflight` (default 4) —
+  **deliberately not gated on window/inflight room** (`self._window - len(self._inflight)`): a
+  race is a single, bounded, time-sensitive send, not a sustained load pattern, so it takes a
+  reserve of slots *above* the window rather than waiting a turn. This is a bounded overtake, not
+  a window bypass — §5c's window exists because a real `/22` run stalled at 56 addresses from
+  pending-offer-table saturation; don't widen the reserve into a general bypass. Every race send
+  still goes through `_send()`'s rate limiter, but that limiter is **not** a meaningful backstop
+  in exhaust (`rate_limit_pps` pinned at `EXHAUST_DEFAULT_RATE_PPS=500`, deliberately
+  non-binding) — the reserve is the only real bound.
+- **`_classify_targeted(xid, outcome, overwrite=True)`** is the outcome classifier shared by
+  re-acquisition and racing — `granted`/`offered_different` (from `_handle_ack()`), `naked`
+  (from `_handle_nak()`'s owned branch), `no_response` (from `_reap_timeouts()`, `overwrite=
+  False` so a later NAK/ACK for a xid that already timed out doesn't get silently discarded).
+  Whichever of `_reacquire_targets`/`_race_targets` owns the xid is where the outcome lands;
+  decrements `_race_inflight` exactly once, only for a race-owned xid.
+- **Counters land in all four required surfaces** (`engine._counters()`/`.status()`,
+  `cli/render.py`'s `status_summary()`, `web/static/app.js`'s `StatusTick` handler) — see §6's
+  `garps`→`arp_conflicts` rename precedent for why this list is enumerated explicitly rather
+  than trusted to memory.
+- **`RACED_FREED_ADDRESSES` (INFO)**, raised only when `self.races > 0` **and** `not
+  cfg.dry_run` — under dry-run every race send is suppressed at `_send()`'s chokepoint so every
+  outcome would misleadingly read `no_response`; `DRY_RUN_SUMMARY` carries a `would_race` count
+  instead, same pattern as eviction's `would_evict` (§5f). Evidence: `attempted`/
+  `won`(`granted`)/`lost`(`offered_different`+`naked`+`no_response`)/`by_outcome`/`by_trigger`.
+  Not PASS/FAIL by design — winning a race is the tool working as intended, not itself a network
+  weakness; `DHCP_STARVATION_*`/`FOREIGN_DISCOVERS_UNANSWERED` already report the weakness, if
+  any.
+- **Config**: `SessionConfig.race_freed_addresses` (default `True`, `--no-race-freed` to opt
+  out), `race_on_rediscover` (default `False`, `--race-on-rediscover` to opt in),
+  `race_max_inflight` (default 4) — all exhaust-only; the flags don't exist on `release`'s
+  argparse subcommand rather than existing and silently doing nothing.
+- **Related pre-existing bugs found and fixed while building this** (independent of racing
+  itself, but the ownership-check pattern this feature needed exposed both):
+  - `_handle_nak()` used to count **every** NAK on the segment as ours — including ones
+    addressed to other clients — shrinking our send window and feeding the `nak_burst` halt
+    signal off traffic we had nothing to do with. Fixed by checking `xid in self._inflight`
+    before touching `self.naks`/`_shrink_window()`/`_note_nak_for_burst_detection()`; the foreign
+    branch is debug-logged only (and now also feeds the race trigger above).
+  - **More severe**: `_handle_offer()` and `_handle_ack()` had no ownership check at all —
+    `_handle_offer()` would build and send a REQUEST impersonating whichever MAC *any* observed
+    OFFER's `chaddr` belonged to (potentially a real third-party client's), and `_handle_ack()`
+    would unconditionally `cleanup.register()`/journal/count **any** ACK witnessed on the
+    segment, meaning `restore()`/`release-previous` could later send DHCPRELEASE for a real,
+    uninvolved client's active lease. Both now check `xid in self._inflight` first and return
+    early (debug-logged) if the xid isn't ours; `_handle_offer()` still passively marks a
+    tracked foreign DISCOVER as answered and still learns server identity/fingerprint from
+    foreign traffic (both read-only, not the send-side bug). Ten existing tests were unknowingly
+    relying on the old always-act behavior and had to be corrected, not just re-asserted.
+
 ## 6. Modes (`Mode` enum)
 `EXHAUST` (default; runs the shared prelude — ARP inventory, control, release, re-acquisition —
 then its windowed sender, then eviction in `stop()` — see §5c/§5f), `SCAN` (passive, read-only),
@@ -332,7 +420,7 @@ Sandbox Python is **3.10**, but the package targets **3.11+**, so **do NOT `pip 
 in the sandbox** — run against the source path instead:
 ```
 cd /sessions/<id>/mnt/DHCPig
-PYTHONPATH=src python3 -m pytest -q          # 265 pass, 1 integration deselected
+PYTHONPATH=src python3 -m pytest -q          # 312 pass, 1 integration deselected
 python3 -m ruff check src tests
 python3 -m ruff format --check src tests
 ```
@@ -373,6 +461,15 @@ python3 -m ruff format --check src tests
   RELEASE) — never to OFFER/ACK/NAK/DECLINE, none of which we ever originate (DECLINE included:
   we never send one); `_on_dhcp()`'s dispatch checks those never-self-originated types first, for
   exactly this reason.
+- **For OFFER/ACK/NAK/DECLINE, `xid in self._inflight` is the ownership test — not
+  `_is_own_traffic()`.** Since we never originate these, the self-filter above doesn't apply to
+  them, but that means a naive handler processes *every* such packet on the segment as if it were
+  ours (2.3.1's §5g found this had actually happened in `_handle_nak()`/`_handle_offer()`/
+  `_handle_ack()` — the last two had real blast radius: an unowned ACK being journaled meant
+  `restore()`/`release-previous` could later RELEASE a genuine third party's active lease). Any
+  new handler for these four message types must check xid ownership before acting, and should
+  still passively learn from foreign traffic where safe (server identity, fingerprints, marking a
+  tracked foreign DISCOVER as answered) — the bug was in the *send/mutate* side, not observation.
 - **JSON serialization**: always route event/report dicts through `jsonable()` — a live run once
   crashed because an `IPVersion` enum hit `json.dumps`. Regression test exists.
 - **Ethernet source MAC** defaults to the per-client random MAC (`spoof_ethernet_src=True`) so
@@ -431,13 +528,22 @@ sniffer BPF widened + a self-filter to see foreign DISCOVER/DECLINE traffic,
 `Mode.GARP_DOS` retired in favor of targeted re-acquisition (option 50) + RFC 5227 §2.4
 ARP-conflict eviction shared by `exhaust` and a restructured `release` (both via
 `_common_prelude()`), mode-aware eviction findings, the web UI's mode labels relabeled (Phase 6),
-and the window-growth ratchet slowed from 0.5 to 0.01 per clean ACK (Phase 7). **265 unit tests
-pass; ruff clean.** The user validated a real exhaust run on their Kali VM against a live `/22`
-(pcap reviewed) — that run is what exposed the pending-offer saturation bug §5c fixes and the
-renewal-vs-fresh-allocation control-transaction bug §5a fixes. **Neither 2.1, 2.2, nor 2.3 has
-been exercised against real hardware yet** — that's the next validation step, and 2.3 in
-particular (re-acquisition, eviction, the restructured `release` chain) is the least-proven of
-the three: it has 265 passing unit tests but zero live-network confirmation.
+and the window-growth ratchet slowed from 0.5 to 0.01 per clean ACK (Phase 7). On top of that,
+**2.3.1** (§5g, `EXECUTION-PLAN-race-freed.md`): race-to-grab-freed-addresses (foreign NAK/
+DECLINE/opt-in rediscover triggers, a bounded reserve above the exhaust window, the
+`RACED_FREED_ADDRESSES` finding), plus the two ownership-check bugs it surfaced and fixed along
+the way (foreign NAKs no longer pollute our window/halt state; `_handle_offer()`/`_handle_ack()`
+no longer act on traffic that isn't ours — the latter had real blast radius, since an unowned ACK
+being journaled meant `restore()`/`release-previous` could send DHCPRELEASE for a genuine third
+party's active lease). The web auto-stop fix (run-once modes now poll for their worker thread
+finishing and auto-`stop()`, mirroring the CLI, instead of stalling ~65s) and info-level DHCP
+option50/chaddr/hostname logging landed alongside it. **312 unit tests pass; ruff clean.** The
+user validated a real exhaust run on their Kali VM against a live `/22` (pcap reviewed) — that
+run is what exposed the pending-offer saturation bug §5c fixes and the renewal-vs-fresh-allocation
+control-transaction bug §5a fixes. **Neither 2.1, 2.2, 2.3, nor 2.3.1 has been exercised against
+real hardware yet** — that's the next validation step, and 2.3/2.3.1 (re-acquisition, eviction,
+the restructured `release` chain, and now racing) are the least-proven: passing unit tests only,
+zero live-network confirmation.
 
 ## 10. Open follow-ups (not yet done)
 - **IPv6**: `IPVersion.V6` is a seam only; v6 packet builders/flows are NOT implemented. The v4

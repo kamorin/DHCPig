@@ -49,6 +49,9 @@ Safety flags:
     --no-journal         don't record acquired leases to the recovery journal (see RECOVERY)
     --no-evict           skip RFC 5227 ARP-conflict eviction (exhaust and release; see EVICTION)
     --status-interval N  periodic status line, default every 5s (0 disables)
+    --no-race-freed      exhaust only: don't race to grab addresses freed mid-run (see RACING
+                         FREED ADDRESSES below)
+    --race-on-rediscover exhaust only: also race a known neighbor's address on rediscovery
 
 DRY-RUN
 -------
@@ -277,6 +280,32 @@ verdict is offered here; check DAI drop counters to tell them apart.
 
 Under `--dry-run` the phase still runs and logs its target list and round count, but sends
 nothing — `DRY_RUN_SUMMARY`'s `would_evict` count covers that case instead of the findings above.
+
+RACING FREED ADDRESSES
+-----------------------
+
+`exhaust` also reacts to addresses that come free **mid-run for reasons other than its own
+RELEASE phase** — a NAK'd renewal, a client DECLINE, or (opt-in) a known neighbor restarting at
+INIT — by firing a priority, targeted DISCOVER (option 50) for that exact address ahead of the
+normal untargeted flood, rather than waiting for the flood to land on it by chance. `release`
+does not do this — it has no concurrent flood to race ahead of.
+
+Expected yield is low by design: the trigger set only includes signals that are both *observable*
+(broadcast, not the unicast DHCPRELEASE a departing client actually sends) and *actually imply the
+server considers the binding free* — a client can abandon an address while the server holds the
+binding until lease expiry regardless. That's why the win/loss counters exist: they tell you
+empirically whether this is worth anything on a given segment rather than assuming it.
+
+    --no-race-freed        disable racing entirely (exhaust only; on by default)
+    --race-on-rediscover   also race a known neighbor's address the moment it re-DISCOVERs
+                            (off by default — highest-volume, lowest-precision trigger)
+
+Races take at most a handful of extra send slots (`race_max_inflight`, default 4) **above** the
+normal window — bounded, not an open bypass of the pacing that EXHAUST PIPELINE describes above.
+Results land in the `races` counter and a `RACED_FREED_ADDRESSES` (INFO) finding once any race
+has actually run, broken down by how many were won (`granted`) vs. lost, and by which trigger
+fired. Under `--dry-run` the sends are suppressed like everything else mutating; `DRY_RUN_SUMMARY`
+carries a `would_race` count instead.
 
 STATUS OUTPUT
 -------------

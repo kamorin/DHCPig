@@ -118,6 +118,16 @@ def test_race_freed_addresses_false_ignores_queue(monkeypatch):
     assert eng.races == 0
 
 
+def test_race_trigger_reason_travels_from_maybe_race_to_race_triggers(monkeypatch):
+    """_maybe_race()'s `why` (e.g. "nak"/"decline"/"rediscover") must survive the queue hop so
+    the RACED_FREED_ADDRESSES finding can break outcomes down by trigger."""
+    eng, events = _engine(monkeypatch)
+    eng._maybe_race("10.0.0.50", "decline")
+    calls = _run_one_iteration(eng)
+    xid = calls[0][BOOTP].xid
+    assert eng._race_triggers[xid] == "decline"
+
+
 def test_race_xid_lands_in_race_targets_never_reacquire_targets(monkeypatch):
     """Regression guarding _evict_phase()'s target selection: a raced xid must never appear in
     _reacquire_targets, which is exactly what _evict_phase() reads to pick eviction targets."""

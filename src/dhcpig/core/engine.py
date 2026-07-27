@@ -167,8 +167,10 @@ class DhcpEngine:
         # "Boundaries" section).
         self._race_queue: deque[str] = deque()
         self._raced_ips: set[str] = set()
+        self._race_reasons: dict[str, str] = {}  # ip -> trigger ("nak"/"decline"/"rediscover")
         self._race_targets: dict[int, str] = {}
         self._race_outcomes: dict[int, str] = {}
+        self._race_triggers: dict[int, str] = {}  # xid -> trigger, for the finding's breakdown
         self._race_inflight = 0
         self.races = 0
         # lease journal (2.2): resolved once so the CLI/report can display the path used.
@@ -979,6 +981,9 @@ class DhcpEngine:
                 + by_outcome.get("naked", 0)
                 + by_outcome.get("no_response", 0)
             )
+            by_trigger: dict[str, int] = {}
+            for trigger in self._race_triggers.values():
+                by_trigger[trigger] = by_trigger.get(trigger, 0) + 1
             self._raise(
                 Finding(
                     id="RACED_FREED_ADDRESSES",
@@ -990,6 +995,7 @@ class DhcpEngine:
                         "won": won,
                         "lost": lost,
                         "by_outcome": by_outcome,
+                        "by_trigger": by_trigger,
                     },
                     recommendation=(
                         "A foreign NAK, DECLINE, or (if --race-on-rediscover) a rediscovering "
@@ -1329,6 +1335,7 @@ class DhcpEngine:
         if ip in (server_id, self._release_gateway()):
             return
         self._raced_ips.add(ip)
+        self._race_reasons[ip] = why
         self._race_queue.append(ip)
         self._debug(f"race: queued {ip} ({why})")
 
@@ -1834,6 +1841,7 @@ class DhcpEngine:
                 and self._race_inflight < self.cfg.race_max_inflight
             ):
                 race_ip = self._race_queue.popleft()
+                race_reason = self._race_reasons.pop(race_ip, "unknown")
                 race_mac = random_mac()
                 race_xid = _rand_xid()
                 race_src = self._src_mac(race_mac)
@@ -1849,6 +1857,7 @@ class DhcpEngine:
                         "state": "DISCOVER_SENT",
                     }
                 self._race_targets[race_xid] = race_ip
+                self._race_triggers[race_xid] = race_reason
                 self._race_inflight += 1
                 self.discovers += 1
                 self.races += 1
@@ -1859,6 +1868,7 @@ class DhcpEngine:
                 )
                 self._debug(
                     f"race: DISCOVER xid=0x{race_xid:08x} option50={race_ip} chaddr={race_mac} "
+                    f"trigger={race_reason} "
                     f"(freed address, inflight {self._race_inflight}/{self.cfg.race_max_inflight})"
                 )
                 continue

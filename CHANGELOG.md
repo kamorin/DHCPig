@@ -1,5 +1,52 @@
 # Changelog
 
+## 2.3.1 (unreleased) — race to grab addresses the moment they're freed
+
+Design doc: `EXECUTION-PLAN-race-freed.md`. §5f's targeted re-acquisition only reacts to
+addresses `exhaust`/`release` freed themselves via their own RELEASE phase; any address freed
+mid-run some other way previously only got picked up if the untargeted exhaust flood happened to
+land on it. This release reacts to those addresses too, plus two ownership-check bugs the work
+surfaced along the way, and a web-UI stall fix.
+
+- **Race to grab freed addresses (`exhaust` only).** Three triggers, ranked by how strongly they
+  imply the *server* considers a binding free: a foreign NAK (strongest — the server told some
+  other client its binding is invalid), a foreign DECLINE (weaker — most servers quarantine
+  rather than free a declined address, kept on by default so the counters can show the real hit
+  rate), and — opt-in via `--race-on-rediscover`, off by default — a foreign DISCOVER from a MAC
+  already in the ARP inventory (weakest signal, highest volume). **Never DHCPRELEASE-triggered**:
+  it's unicast to the server and invisible on a switched segment. Each trigger fires a priority,
+  targeted DISCOVER (option 50) into a bounded reserve of up to `race_max_inflight` (default 4)
+  slots *above* the normal exhaust window — not a window bypass, a small overtake. Race state
+  (`_race_targets`/`_race_outcomes`) is kept entirely separate from re-acquisition's, so racing
+  can never silently widen eviction's target set. New `races`/`d_races` counters (CLI status
+  line, web dashboard, `status()`/report); new `RACED_FREED_ADDRESSES` (INFO) finding once any
+  race has run, broken down by outcome and trigger; `would_race` in `DRY_RUN_SUMMARY` under
+  `--dry-run`. New flags `--no-race-freed` (on by default) / `--race-on-rediscover` (off by
+  default), exhaust-only on both CLI and web.
+- **Fixed: foreign NAKs were polluting our own window/halt state.** `_handle_nak()` counted
+  *every* NAK on the segment as ours, shrinking the send window and feeding the `nak_burst` halt
+  signal off traffic addressed to other clients. Now gated on `xid in self._inflight`; a foreign
+  NAK is observed (it's a race trigger) but no longer touches `self.naks`/the window/halt
+  detection.
+- **Fixed, more severe: `_handle_offer()`/`_handle_ack()` had no ownership check at all.**
+  `_handle_offer()` would build and send a REQUEST impersonating whichever MAC any observed
+  OFFER's `chaddr` belonged to — potentially a real third-party client. `_handle_ack()` would
+  unconditionally register/journal/count any ACK witnessed on the segment, meaning `restore()` /
+  `release-previous` could later send DHCPRELEASE for a genuine, uninvolved client's active
+  lease. Both now check `xid in self._inflight` first; a foreign packet is debug-logged and
+  otherwise ignored (server identity/fingerprint learning from foreign traffic is unaffected —
+  that was never the bug).
+- **Web UI no longer stalls after a run-once mode finishes.** `release`/`release-previous` ended
+  their worker thread on completion, but only the CLI polled for that and called `stop()` — the
+  web UI sat idle for up to ~65s (the sniffer's own idle timeout) before a verdict appeared.
+  `WebApp` now runs the same polling loop (`RUN_ONCE_MODES`, promoted to `core/models.py` as the
+  canonical definition both the CLI and web import).
+- **Info-level packet logging.** `DiscoverSent`/`RequestSent` now carry `option50`/`hostname`;
+  the CLI renderer and web log show `chaddr=`/`option50=`/`hostname=` on every outbound
+  DISCOVER/REQUEST line at normal verbosity, not just at `-v3` debug.
+- 312 unit tests passing (up from 265 at the start of 2.3.1); ruff clean. Not yet exercised
+  against real hardware — see AGENT_HANDOFF.md §9.
+
 ## 2.3.0 (unreleased) — targeted re-acquisition, RFC 5227 ARP-conflict eviction, restructured `release`
 
 Design doc: `EXECUTION-PLAN-eviction.md`. Prompted by four goals: force a still-connected client
