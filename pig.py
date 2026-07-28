@@ -96,7 +96,7 @@ Defaults
 conf.checkIPaddr = False
 conf.iface = "lo"
 conf.verb = False
-SHOW_ARP = True
+SHOW_ARP = False
 SHOW_ICMP = False
 SHOW_DHCPOPTIONS = False
 SHOW_LEASE_CONFIRM = False
@@ -168,7 +168,7 @@ def checkArgs():
             usage()
             sys.exit()
         elif o in ("-a", "--show-arp"):
-            SHOW_ARP = False
+            SHOW_ARP = True
         elif o in ("-i", "--show-icmp"):
             SHOW_ICMP = True
         elif o in ("-o", "--show-options"):
@@ -211,7 +211,7 @@ def checkArgs():
                 if "-" in o:
                     x = o.split("-")
                     if len(x) == 2:
-                        REQUEST_OPTS += range(int(x[0]),int(x[1]))
+                        REQUEST_OPTS += range(int(x[0]),int(x[1])+1)
                     else:
                         print("Error in option - request-options")
                         usage()
@@ -235,7 +235,7 @@ def checkArgs():
         IPv6                            %s
         fuzz                            %s
 
-        DONT_SHOW_ARP                   %s
+        SHOW_ARP                        %s
         SHOW_ICMP                       %s
         SHOW_DHCPOPTIONS                %s
         SHOW_LEASE_CONFIRMATION         %s
@@ -408,8 +408,8 @@ def v6_build_release(p_advertise,mac,iaid=0xf,trid=None):
     return dhcp_request
 
 def sendPacket(pkt):
-    if MODE_FUZZ:
-        # only fuzz: UDP with payload of UDP (DHCP messages)
+    if MODE_FUZZ and UDP in pkt:
+        # only fuzz: UDP with payload of UDP (DHCP messages); ARP frames have no UDP layer
         pkt[UDP] = fuzz(pkt[UDP])
     #pkt = [pkt]*100
     sendp(pkt, iface=conf.iface)
@@ -452,7 +452,7 @@ def release():
             myxid = random.randint(1, 900000000)
             LOG(type="-->", message= "Releasing %s - %s serverip=%s  xid=%i"%(cmac,cip,dhcpsip,myxid))
             dhcp_release =  IP(src=cip,dst=dhcpsip)/UDP(sport=68,dport=67)/BOOTP(ciaddr=cip,chaddr=[mac2str(cmac)],xid=myxid)/\
-                            DHCP(options=[("message-type","release"),("server_id",dhcpsip),("client_id",chr(1),mac2str(cmac)),"end"])
+                            DHCP(options=[("message-type","release"),("server_id",dhcpsip),("client_id", b'\x01' + mac2str(cmac)),"end"])
             sendPacket(dhcp_release)
             if conf.verb: LOG(type="DEBUG", message= "%r"%dhcp_release )
 
@@ -521,7 +521,7 @@ class send_dhcp(threading.Thread):
                 46 # NetBIOS over TCP/IP Node Type
                 ),
                 ("max_dhcp_size",1500),
-                ("client_id", chr(1), mac2str(m)),
+                ("client_id", b'\x01' + mac2str(m)),
                 ("lease_time",10000),
                 ("hostname", hostname),
                 ("end",'00000000000000')
@@ -656,16 +656,18 @@ class sniff_dhcp(threading.Thread):
                         LOG(type="DEBUG", message=  "%r"%icmp_req )
                     sendPacket(icmp_req)
 
-            elif SHOW_ARP and ARP in pkt:
+            elif ARP in pkt:
                 myip = pkt[ARP].pdst
                 mydst = pkt[ARP].psrc
                 if pkt[ARP].op ==1:        #op=1 who has, 2 is at
-                    LOG(type="DEBUG", message="ARP_Request " + myip + " from " + mydst)
+                    if SHOW_ARP:
+                        LOG(type="DEBUG", message="ARP_Request " + myip + " from " + mydst)
                 elif pkt[ARP].op ==2:
                     myip=pkt[ARP].psrc
                     myhw=pkt[ARP].hwsrc
-                    LOG(type="<-", message= "ARP_Response %s : %s" %(myip, myhw))
-                    nodes[myhw] = myip
+                    nodes[myhw] = myip                     # always record so release() has targets
+                    if SHOW_ARP:
+                        LOG(type="<-", message= "ARP_Response %s : %s" %(myip, myhw))
 
 
 def main():
@@ -705,7 +707,13 @@ def main():
         signal_handler(signal.SIGINT,fail_cnt)
 
     if DO_ARP: neighbors()
-    if DO_RELEASE: release()
+    if DO_RELEASE:
+        if DO_ARP:
+            # ARP replies arrive asynchronously on the sniffer thread; wait for them
+            # to populate `nodes` before releasing, otherwise we release almost nothing
+            LOG(type="NOTICE", message="Waiting %ss for ARP responses before release"%TIMEOUT['dos'])
+            time.sleep(TIMEOUT['dos'])
+        release()
        
     while not dhcpdos:
         time.sleep(TIMEOUT['dos'])
