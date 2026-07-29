@@ -18,10 +18,42 @@ tested package. It requires `scapy>=2.5` and root/CAP_NET_RAW. The destructive m
 (`release`) is opt-in by subcommand, takes an optional `--scope`, and is rate-limited
 and reversible (`dhcpig restore`) — there is no separate authorization gate; see DISCLAIMER.
 
+QUICKSTART — web UI on a Linux VM
+---------------------------------
+
+Three commands from a clean VM:
+
+    git clone https://github.com/kamorin/DHCPig && cd DHCPig
+    python3 -m venv .venv && .venv/bin/pip install -e .
+    sudo .venv/bin/dhcpig-web --open
+
+The last one prints a URL with a one-time token in it — open that, not a bare `host:port`:
+
+    dhcpig-web listening on http://127.0.0.1:8787
+    open: http://127.0.0.1:8787/?token=Xf3...
+
+Three things that trip people up, in the order they bite:
+
+* **Run the venv binary by full path under `sudo`.** `sudo` resets `PATH`, so a plain
+  `sudo dhcpig-web` won't find it even with the venv "active". Root is required — raw
+  sockets — so there's no non-`sudo` shortcut.
+* **The token is mandatory.** The UI is loopback-bound and same-origin-checked; without the
+  `?token=` you get 401s and an empty page.
+* **Headless VM?** Loopback-only is deliberate — this is a Layer-2 attack tool's control
+  plane. Forward it rather than re-binding:
+
+      ssh -L 8787:127.0.0.1:8787 user@<vm-ip>
+
+  then open the printed URL on your own machine. `--open` only helps on a VM with a desktop.
+
+Needs Python 3.11+. On Debian/Kali, if `python3 -m venv` fails, `sudo apt install -y
+python3-venv` first. Drop `--open` for a headless box.
+
 INSTALL
 -------
 
-    pipx install dhcpig        # or: pip install .
+    python3 -m venv .venv && .venv/bin/pip install -e .   # from a clone, as above
+    pipx install dhcpig                                   # once published to PyPI
 
 USAGE (CLI)
 -----------
@@ -219,15 +251,16 @@ file when an engagement ends; nothing else reads it.
 WEB UI
 ------
 
-    sudo dhcpig-web            # prints a tokenized loopback URL; open it in a browser
+    sudo .venv/bin/dhcpig-web   # prints a tokenized loopback URL; open it in a browser
+
+See QUICKSTART above for the three-command setup and the `sudo`/token/port-forward gotchas.
 
 The web UI (`dhcpig-web`) is Python-stdlib only (no framework, no build step). It is bound to
 `127.0.0.1`, requires the printed bearer token, and enforces same-origin. All modes are
 available with a live dashboard (including the headroom counter for exhaust), OS-inventory
-tables, JSON/CSV/HTML export, "Copy as CLI", and profile save/load. For a headless VM, reach it
-from your host with:
-
-    ssh -L 8787:127.0.0.1:8787 kali@<vm-ip>
+tables, JSON/CSV/HTML export, "Copy as CLI", and profile save/load. Results — findings, the
+per-host roll-call and the outcome roll-up — land in the event log at the bottom; there is no
+separate findings pane. Set Verbosity to 0 for a results-only view.
 
 MODES
 -----
