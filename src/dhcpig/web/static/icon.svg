@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64"
+     role="img" aria-label="DHCPig">
+  <title>DHCPig</title>
+  <!-- Literal hex, not CSS vars: this file is also the favicon and the .desktop icon, where
+       the stylesheet's :root palette isn't available. Colours mirror styles.css anyway
+       (--pig #e0679a, --edge #2a3342, --accent #4ec9b0, --bg #12161c). -->
+  <defs>
+    <linearGradient id="snoutg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e88bb1"/>
+      <stop offset="1" stop-color="#c9527f"/>
+    </linearGradient>
+  </defs>
+
+  <!-- hoodie: dark shell framing the face -->
+  <path d="M32 3C16.5 3 5 14 5 30v14c0 8 5.5 13 13.5 13h27C53.5 57 59 52 59 44V30C59 14 47.5 3 32 3Z"
+        fill="#2a3342"/>
+  <path d="M32 3C16.5 3 5 14 5 30v6c3-13 13-21 27-21s24 8 27 21v-6C59 14 47.5 3 32 3Z"
+        fill="#3a465a"/>
+
+  <!-- ears, poking out through the hood opening -->
+  <path d="M13 26 8.5 8.5 26 15Z" fill="#c9527f"/>
+  <path d="M51 26 55.5 8.5 38 15Z" fill="#c9527f"/>
+
+  <!-- face -->
+  <ellipse cx="32" cy="35" rx="19" ry="17" fill="#e0679a"/>
+
+  <!-- shades: one visor bar, with a scanline glint for the hacker read -->
+  <path d="M14 29h36v5.5c0 3.6-3 6.5-6.6 6.5h-4.2c-2.6 0-4.9-1.6-5.8-4-.9 2.4-3.2 4-5.8 4h-4.2
+           c-3.6 0-6.6-2.9-6.6-6.5Z" fill="#12161c"/>
+  <path d="M17 31.5h13.5v1.6H17Zm19 0h11v1.6H36Z" fill="#4ec9b0" opacity=".85"/>
+
+  <!-- snout -->
+  <ellipse cx="32" cy="46.5" rx="10" ry="6.5" fill="url(#snoutg)"/>
+  <ellipse cx="28.4" cy="46.5" rx="2" ry="2.9" fill="#12161c" opacity=".8"/>
+  <ellipse cx="35.6" cy="46.5" rx="2" ry="2.9" fill="#12161c" opacity=".8"/>
+</svg>

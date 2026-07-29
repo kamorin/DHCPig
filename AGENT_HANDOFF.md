@@ -50,8 +50,11 @@ Both front ends drive the SAME `DhcpEngine` and never touch scapy directly.
 `web/server.py` (`WebApp` + `Handler` + `main`), `web/api.py` (route handlers → `(status,dict)`),
 `web/stream.py` (`SseSubscriber`: bus→per-client `queue.Queue`→SSE frames), `web/auth.py`
 (loopback + bearer token + same-origin + security headers), `web/schemas.py` (dataclass
-validation, no pydantic; `config_from_payload`, `as_cli`), `web/static/{index.html,app.js,styles.css}`
-(vanilla JS SPA, no build step, hand-rolled canvas sparkline).
+validation, no pydantic; `config_from_payload`, `as_cli`), `web/static/{index.html,app.js,styles.css,icon.svg}`
+(vanilla JS SPA, no build step, hand-rolled canvas sparkline). `icon.svg` is the hacker-pig
+logo -- served unauthenticated alongside the css/js because the browser fetches it as a
+favicon before any token exists; the same file is copied to `packaging/dhcpig.svg` for the
+`.desktop` entry and the README header.
 
 ## 4. Event flow
 `engine (worker threads) → bus.emit(Event) → subscribers`. CLI `Renderer.handle` prints;
@@ -133,12 +136,13 @@ together and should be kept together:
 - **`NeighborSummary` (2.3.3) is the event-log counterpart to `RUN_SUMMARY`**: emitted once from
   `stop()` (after `_evict_phase()` so outcomes are settled, before `_finalize_findings()` so the
   log reads "who was affected" then "the verdicts about it"), built by
-  `_emit_neighbor_summary()`. It buckets every ARP-discovered neighbor and **names** hosts rather
-  than only counting them. Silent when the ARP sweep found nothing. The bucket boundaries are
+  `_emit_neighbor_summary()`. It emits **one row per host and lists every discovered neighbor** -- including untouched ones,
+  so `unaffected` is visibly distinct from `not examined` -- sorted worst-first. Silent when the ARP sweep found nothing. The bucket boundaries are
   load-bearing and are pinned by tests in both directions:
-  - `offline` — only `discover_unanswered`/`apipa` (`_OFFLINE_RUNGS`). These are the two rungs
-    that mean "no working address right now". `rediscovered` is **not** one of them: it restarted
-    and *was served*.
+  - `offline` — `discover_unanswered`/`apipa`, **or** (any mode, but this is exhaust's whole
+    point) a neighbor whose DISCOVER during the run went unanswered because the pool was
+    drained. Reading only `_evict_outcomes` reported those as `unaffected`, exactly backwards.
+    `rediscovered` is **not** offline: it restarted and *was served*.
   - `lease_taken` — re-acquisition `granted` for that IP with no eviction reaction observed. **Do
     not merge this into either neighbouring bucket.** The host is working at the moment the
     summary is emitted (so it isn't offline) but the server has handed us its address, so it
@@ -463,7 +467,7 @@ Sandbox Python is **3.10**, but the package targets **3.11+**, so **do NOT `pip 
 in the sandbox** — run against the source path instead:
 ```
 cd /sessions/<id>/mnt/DHCPig
-PYTHONPATH=src python3 -m pytest -q          # 341 pass, 1 integration deselected
+PYTHONPATH=src python3 -m pytest -q          # 344 pass, 1 integration deselected
 python3 -m ruff check src tests
 python3 -m ruff format --check src tests
 ```
@@ -583,7 +587,7 @@ finishing and auto-`stop()`, mirroring the CLI, instead of stalling ~65s) and in
 option50/chaddr/hostname logging landed alongside it. Then **2.3.2**: the always-raised
 `RUN_SUMMARY` finding (§5a) that opens every report with a plain-language, step-by-step account
 of what the run did, plus list-aware evidence rendering in both front ends to display it.
-**341 unit tests pass; ruff clean.** The
+**344 unit tests pass; ruff clean.** The
 user validated a real exhaust run on their Kali VM against a live `/22` (pcap reviewed) — that
 run is what exposed the pending-offer saturation bug §5c fixes and the renewal-vs-fresh-allocation
 control-transaction bug §5a fixes. **Neither 2.1, 2.2, 2.3, nor 2.3.1 has been exercised against

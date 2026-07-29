@@ -80,30 +80,31 @@ class ClientEvicted(Event):
 
 @dataclass
 class NeighborSummary(Event):
-    """End-of-run roll-call of every ARP-discovered neighbor, bucketed by what this run did to
-    it (2.3.3). Emitted once, from `stop()`, after eviction has been measured.
+    """End-of-run roll-call of every ARP-discovered neighbor (2.3.3). Emitted once, from
+    `stop()`, after eviction has been measured.
 
-    The three impact buckets are deliberately kept apart because they are *not* the same claim:
+    **One row per host, and every discovered host appears** -- including untouched ones. A
+    roll-call that silently omits the hosts nothing happened to isn't a roll-call; the reader
+    can't tell "unaffected" from "not looked at".
 
-      * `offline` -- reached `discover_unanswered` or `apipa`. It asked for an address and got
-        nothing, or fell back to 169.254/16. It has no working address right now.
+    `rows` are `(ip, mac, outcome, category)`, sorted by category severity then address.
+    `category` drives how a front end colors the line and is one of:
+
+      * `offline` -- the host has no working address right now: it reached the `apipa` or
+        `discover_unanswered` eviction rung, or (exhaust) it asked for an address during the run
+        and got no answer because the pool was drained.
       * `lease_taken` -- the server handed us its address (re-acquisition `granted`) but the
         host showed no reaction. **It is still using that address and does not know the lease
-        is gone**; it fails at its next renewal (T1), not now. Reporting these as "offline"
-        overstates present-tense impact; folding them into "unaffected" hides a population that
-        is going to drop with no warning. Hence a bucket of their own.
+        is gone**; it fails at its next renewal (T1), not now. Reporting these as `offline`
+        overstates present-tense impact; folding them into `unaffected` hides a population that
+        is going to drop with no warning. Hence a category of their own.
       * `reacted` -- `defended`, `declined` or `rediscovered`: it noticed and is working now,
         possibly on a different address.
-
-    Everything else is `unaffected`. Each bucket holds `(ip, mac, detail)` triples so the log
-    can name hosts rather than only counting them.
+      * `unaffected` -- nothing this run did left a mark on it that we can see.
     """
 
     total: int
-    offline: list[tuple[str, str, str]] = field(default_factory=list)
-    lease_taken: list[tuple[str, str, str]] = field(default_factory=list)
-    reacted: list[tuple[str, str, str]] = field(default_factory=list)
-    unaffected: int = 0
+    rows: list[tuple[str, str, str, str]] = field(default_factory=list)
 
 
 @dataclass
