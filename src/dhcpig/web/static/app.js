@@ -31,13 +31,15 @@ const ifaceCidr = {};       // iface name -> network cidr (for scope auto-fill)
 const MODE_NOTES = {
   exhaust: {
     harm: true,
-    text: "Releases every neighbour's address, takes them back by name, then drains the pool. " +
-      "Neighbours lose their leases; new devices are denied one.",
+    text: "Releases every neighbour's address and requests it back from the server for a " +
+      "random MAC, then keeps requesting addresses until the pool is empty. Connected devices " +
+      "should lose their address, and no device should be able to get a new one.",
   },
   release: {
     harm: true,
-    text: "Releases every neighbour's address and takes it back by name, then contests it with " +
-      "forged ARP. Hits devices connected right now; the pool is left intact.",
+    text: "Releases every neighbour's address and requests it back from the server for a " +
+      "random MAC, then contests the neighbour's IP with forged ARP. Connected devices should " +
+      "lose their address and have to request a new one from the pool.",
   },
   "release-previous": {
     harm: false,
@@ -182,70 +184,43 @@ function renderNeighbors() {
       `<td>${fp.os || fp.device || fp.vendor || ""}</td><td>${fp.confidence ?? ""}</td></tr>`);
   }
 }
-const findings = [];
-const controls = [];
-
 function esc(s) {
   const d = document.createElement("div");
   d.textContent = s == null ? "" : String(s);
   return d.innerHTML;
 }
 
-// List-valued evidence gets its own bulleted block; a narrative like RUN_SUMMARY's `steps` is
-// unreadable flattened into one JSON blob, and existing list keys read better this way too.
-function evidenceHtml(ev) {
-  if (!ev) return "";
-  const scalars = {};
-  let out = "", lists = "";
-  for (const [k, v] of Object.entries(ev)) {
-    if (Array.isArray(v) && v.length) {
-      // {did, got} pairs (RUN_SUMMARY's steps) render as two columns; the left column is
-      // scannable on its own, which is the point of that finding.
-      const pairs = v.every((i) => i && typeof i === "object" && "did" in i && "got" in i);
-      lists += pairs
-        ? `<div class="ev evsteps"><b>${esc(k)}</b><table>` +
-          v.map((i) => `<tr><td>${esc(i.did)}</td><td>${esc(i.got)}</td></tr>`).join("") +
-          "</table></div>"
-        : `<div class="ev evlist"><b>${esc(k)}</b><ul>` +
-          v.map((i) => `<li>${esc(typeof i === "string" ? i : JSON.stringify(i))}</li>`).join("") +
-          "</ul></div>";
-    } else {
-      scalars[k] = v;
-    }
-  }
-  if (Object.keys(scalars).length) out += `<div class="ev">${esc(JSON.stringify(scalars))}</div>`;
-  return out + lists;
-}
+// A finding as two summary lines: its numbers, then the first sentence of its recommendation.
+// This is a summary surface -- the full evidence and the full multi-sentence recommendation
+// still go to report["findings"] and so to the JSON/HTML export, which is where someone
+// writing up the engagement reads them. Dumping all of it here just rebuilt the wall of text
+// the findings tab was deleted for.
+//
+// The one exception is RUN_SUMMARY's `steps`, which is itself the run's summary and is the
+// reason that finding exists; it renders a line per step.
+const EVIDENCE_SKIP = new Set(["mode", "interface", "dry_run", "duration_sec", "elapsed_sec"]);
 
-function renderFindings() {
-  const el = $("t-findings");
-  if (!findings.length && !controls.length) return;
-  let html = "";
-  if (controls.length) {
-    html += '<div class="ctlbox"><b>Control transactions</b> (real NIC MAC)<ul>';
-    for (const c of controls) {
-      const status = !c.attempted
-        ? "skipped — " + esc(c.reason)
-        : c.success
-          ? "OK — lease " + esc(c.offered_ip) + " from " + esc(c.server_id)
-          : "FAILED — " + esc(c.reason);
-      const cls = !c.attempted ? "skip" : c.success ? "ok" : "bad";
-      const who = c.client === "self" ? "own MAC (renewal)" : "new client";
-      html += `<li class="${cls}"><b>${esc(c.phase)} / ${esc(who)}</b>: ${status} ` +
-        `<i>(${esc(c.elapsed)}s)</i></li>`;
+function findingDetail(f) {
+  const out = [];
+  const nums = [];
+  for (const [k, v] of Object.entries(f.evidence || {})) {
+    if (EVIDENCE_SKIP.has(k)) continue;
+    if (Array.isArray(v)) {
+      if (f.id === "RUN_SUMMARY") {
+        for (const i of v) out.push(`${i.did}  ->  ${i.got}`);
+      } else if (v.length) {
+        nums.push(`${k}=${v.length}`);
+      }
+    } else if (v && typeof v === "object") {
+      for (const [k2, v2] of Object.entries(v)) nums.push(`${k2}=${v2}`);
+    } else if (v !== null && v !== "") {
+      nums.push(`${k}=${v}`);
     }
-    html += "</ul></div>";
   }
-  for (const f of findings) {
-    html +=
-      `<div class="finding ${esc(f.verdict)}">` +
-      `<span class="v">${esc(f.verdict)}</span> <b>${esc(f.title)}</b> ` +
-      `<code>${esc(f.id)}</code>` +
-      evidenceHtml(f.evidence) +
-      (f.recommendation ? `<div class="rec">${esc(f.recommendation)}</div>` : "") +
-      "</div>";
-  }
-  el.innerHTML = html;
+  if (nums.length) out.unshift(nums.join(" · "));
+  const rec = (f.recommendation || "").split(/(?<=\.)\s/)[0];
+  if (rec) out.push(rec);
+  return out;
 }
 
 function renderLeases() {
@@ -420,22 +395,25 @@ function handleEvent(e) {
         : o.success
           ? `OK — obtained ${o.offered_ip} from ${o.server_id} in ${o.elapsed}s (released)`
           : `FAILED — ${o.reason}`;
-      controls.push(o); renderFindings();
       logLine(o.attempted && !o.success ? "alert" : "ctl",
         `[CTL] CONTROL[${o.phase}/${who}] ${msg}`, 1);
       break;
     }
-    case "FindingRaised":
-      findings.push(e.finding); renderFindings();
-      // the Findings tab stays out of the way until there's actually a verdict to show,
-      // then it's the one thing worth interrupting the operator's current view for
-      if (findings.length === 1) activateTab("findings");
-      // No verdict word on the log: f.verdict still colours the Findings tab and still carries
-      // PASS/FAIL into the report, but a bare FAIL beside a title mid-run reads as a judgement
-      // on the operator's network when the log's job is to say what happened. The run's
-      // conclusion is the OUTCOME roll-up at the end, in host counts.
-      logLine("finding", `[==] ${e.finding.title} (${e.finding.id})`, 0);
+    case "FindingRaised": {
+      // The log is the only results surface now -- no findings tab, no client-side finding
+      // store. `verdict`/`severity` still ride along on the object and still reach
+      // report["findings"], so the JSON/HTML export is unchanged; this is a view being
+      // removed, not data. High/medium sit at level 0 so verbosity 0 == "results only";
+      // info drops to level 1 so it doesn't crowd them out.
+      const f = e.finding;
+      const sev = { high: "HIGH", medium: "MED " }[f.severity] || (f.verdict === "PASS" ? "PASS" : "INFO");
+      const cls = f.severity === "high" ? "alert"
+        : f.severity === "medium" ? "warnline"
+          : f.verdict === "PASS" ? "in" : "notice";
+      logLine(cls, `[==] ${sev}  ${f.title}`, f.severity === "info" ? 1 : 0);
+      for (const line of findingDetail(f)) logLine("notice", `        ${line}`, 1);
       break;
+    }
     case "SessionEnded": $("state").textContent = "DONE"; setRunning(false); break;
     case "ErrorEvent": logLine("alert", "[XX] " + e.message, 0); break;
     case "Debug": logLine("dbg", "[DBG] " + e.message, 3); break;
@@ -483,9 +461,6 @@ async function doStart() {
     await api("/api/session/start", "POST", cfg);
     rate.last = 0; rate.series = []; leases.length = 0;
     servers.clear(); neighbors.clear();
-    findings.length = 0; controls.length = 0;
-    $("t-findings").innerHTML =
-      '<p class="hint">Run in progress — verdicts appear here when it ends.</p>';
     renderServers(); renderNeighbors(); renderLeases();
     setRunning(true);
   } catch (err) { logLine("alert", "[XX] " + err.message); }
@@ -548,7 +523,7 @@ $("loadprofile").addEventListener("change", (ev) => {
 });
 
 // ---- tabs -----------------------------------------------------------------
-const TAB_NAMES = ["neighbors", "servers", "leases", "findings"];
+const TAB_NAMES = ["neighbors", "servers", "leases"];
 function activateTab(name) {
   document.querySelectorAll(".tab").forEach((t) =>
     t.classList.toggle("active", t.dataset.tab === name));

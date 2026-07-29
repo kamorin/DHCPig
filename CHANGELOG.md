@@ -1,5 +1,24 @@
 # Changelog
 
+## 2.3.5 (unreleased) — the event log is the only results surface
+
+- **The Findings tab is gone**, along with its client-side finding/control stores, the
+  control-transaction box (which duplicated a log line it already printed), and the auto-switch
+  that yanked you off the Neighbors table the moment a run ended. Tabs are now Neighbors /
+  Servers / Leases.
+- **Findings print into the event log**, worst severity first: one headline line per finding,
+  then its numbers, then the first sentence of its recommendation. High/medium sit at log level
+  0 and info at level 1, so verbosity 0 is a results-only view — the same thing `-v0` means in
+  the CLI.
+- **`_finalize_findings()` buffers and emits in severity order.** A log is a stream and can't be
+  re-ranked after the fact, so the ranking has to happen before it's written; the CLI gets it
+  too. Findings raised *during* a run (`NEIGHBOR_LEASES_RELEASED`, the release-previous
+  verdicts) still emit immediately — on a long run those are live progress.
+- **Nothing was deleted from the data.** `Finding`, `verdict`, `severity`, `evidence`, the full
+  multi-sentence `recommendation` and `report["findings"]` are untouched, so the JSON/CSV/HTML
+  exports still carry everything. This removed a view, not a deliverable — the log shows the
+  summary, the report holds the detail.
+
 ## 2.3.4 (unreleased) — roll-call is one line per host; two toggles removed; UI polish
 
 - **The roll-call shows the hostname when there is one.** Source is DHCP option 12 on a

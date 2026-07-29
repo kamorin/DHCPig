@@ -45,14 +45,20 @@ def test_run_summary_is_raised_for_every_mode(monkeypatch):
         assert f.evidence["interface"] == "wlan0"
 
 
-def test_run_summary_is_raised_first_so_a_report_opens_with_it(monkeypatch):
-    """A reader should hit 'here is what this did' before any verdict."""
+def test_findings_are_emitted_worst_severity_first(monkeypatch):
+    """The log is the only results surface now and a stream can't be re-ranked after the fact,
+    so ordering happens before emission. RUN_SUMMARY is INFO, so it sinks below anything
+    actionable -- a failed baseline leads, because it invalidates everything under it."""
     eng, events = _engine(monkeypatch)
     eng.control_pre = ControlOutcome(phase="pre", attempted=True, success=False, reason="no OFFER")
     eng._finalize_findings()
-    raised = [e.finding.id for e in events if isinstance(e, FindingRaised)]
-    assert raised[0] == "RUN_SUMMARY"
-    assert "CONTROL_BASELINE_FAILED" in raised  # and the verdict still follows it
+    raised = [e.finding for e in events if isinstance(e, FindingRaised)]
+    ids = [f.id for f in raised]
+    sev = [f.severity for f in raised]
+
+    assert ids[0] == "CONTROL_BASELINE_FAILED"  # high
+    assert "RUN_SUMMARY" in ids
+    assert sev == sorted(sev, key=lambda s: {"high": 0, "medium": 1, "info": 2}[s])
 
 
 def test_run_summary_is_raised_even_when_nothing_happened(monkeypatch):
