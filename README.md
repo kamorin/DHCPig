@@ -212,7 +212,9 @@ sprayed at the segment.
 
 The journal lives at `$XDG_STATE_HOME/dhcpig/leases-<iface>.jsonl` (falling back to
 `~/.local/state/dhcpig/`) — never under `/var/lib` or another system path, since it's
-per-engagement data, not system state. See SECURITY.md for what it contains and how to clear it.
+per-engagement data, not system state. It records, per lease this tool took: MAC, IP, server
+identity and timestamp — an inventory of which addresses were taken on whose network. Delete the
+file when an engagement ends; nothing else reads it.
 
 WEB UI
 ------
@@ -257,7 +259,7 @@ ARP-conflict eviction (see EVICTION below) against whatever it just re-acquired.
 
 That means `release` can force a *currently connected* client both off its lease **and** off its
 address at the link layer, then watch whether it comes back cleanly. This is a materially bigger
-blast radius than the name suggests on its own — see SECURITY.md. `--no-evict` skips just the
+blast radius than the name suggests on its own. `--no-evict` skips just the
 eviction step. The ARP inventory and the release phase have no opt-out in any mode: every later
 phase reads what they produce, so skipping them hollowed out the run rather than shortening it.
 

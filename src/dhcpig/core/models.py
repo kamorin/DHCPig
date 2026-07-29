@@ -115,7 +115,7 @@ class SessionConfig:
     journal: bool = True
     journal_path: Path | None = None
     # release-previous only: how far back a journal entry may be before it's ignored (an
-    # optimisation, not a safety measure -- see EXECUTION-PLAN-release-previous.md §Phase 2).
+    # optimisation, not a safety measure -- see AGENT_HANDOFF.md §5e).
     max_age_days: float = 7.0
     # release-previous only: skip journal entries recorded against a different DHCP server than
     # the one currently reachable -- guards against a journal carried between engagements on
@@ -141,7 +141,7 @@ class SessionConfig:
     # DHCPDECLINE (weaker: many servers quarantine rather than free a declined address, but it's
     # cheap and observable) -- fire a targeted DISCOVER for that exact address ahead of the
     # normal exhaust flood, instead of hoping the untargeted flood happens to land on it.
-    # Exhaust-only: see EXECUTION-PLAN-race-freed.md for why release mode doesn't get this (no
+    # Exhaust-only: see AGENT_HANDOFF.md §5g for why release mode doesn't get this (no
     # concurrent flood for "racing" to mean anything against) and why DHCPRELEASE is not a
     # trigger (unicast to the server -- on a switched segment it never reaches us).
     race_freed_addresses: bool = True
