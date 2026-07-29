@@ -198,7 +198,17 @@ function esc(s) {
 //
 // The one exception is RUN_SUMMARY's `steps`, which is itself the run's summary and is the
 // reason that finding exists; it renders a line per step.
-const EVIDENCE_SKIP = new Set(["mode", "interface", "dry_run", "duration_sec", "elapsed_sec"]);
+// Run context (already in the header), config echoes, and one key the engine itself documents
+// as not being evidence either way. None of it belongs on a summary line.
+const EVIDENCE_SKIP = new Set([
+  "mode", "interface", "dry_run", "duration_sec", "elapsed_sec",
+  "rounds", "server_id", "phase", "still_using_address_arp",
+]);
+
+// Findings whose content already has a dedicated log block. NEIGHBORS_OBSERVED is the same
+// rows as NEIGHBOR SUMMARY, printed immediately below it -- keep it in report["findings"] for
+// the export, but printing it twice in the log is just noise.
+const FINDINGS_NOT_LOGGED = new Set(["NEIGHBORS_OBSERVED"]);
 
 function findingDetail(f) {
   const out = [];
@@ -212,8 +222,8 @@ function findingDetail(f) {
         nums.push(`${k}=${v.length}`);
       }
     } else if (v && typeof v === "object") {
-      for (const [k2, v2] of Object.entries(v)) nums.push(`${k2}=${v2}`);
-    } else if (v !== null && v !== "") {
+      for (const [k2, v2] of Object.entries(v)) if (v2) nums.push(`${k2}=${v2}`);
+    } else if (v !== null && v !== "" && v !== 0 && v !== false) {
       nums.push(`${k}=${v}`);
     }
   }
@@ -406,6 +416,7 @@ function handleEvent(e) {
       // removed, not data. High/medium sit at level 0 so verbosity 0 == "results only";
       // info drops to level 1 so it doesn't crowd them out.
       const f = e.finding;
+      if (FINDINGS_NOT_LOGGED.has(f.id)) break;
       const sev = { high: "HIGH", medium: "MED " }[f.severity] || (f.verdict === "PASS" ? "PASS" : "INFO");
       const cls = f.severity === "high" ? "alert"
         : f.severity === "medium" ? "warnline"
