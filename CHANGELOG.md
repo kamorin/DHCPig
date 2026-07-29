@@ -2,6 +2,14 @@
 
 ## 2.5.0 — 2026-07-29
 
+- **Fixed: `active-scan` never finished.** Its worker is an ARP sweep plus one DHCPINFORM and
+  then it's done, but `ACTIVE_SCAN` wasn't in `RUN_ONCE_MODES`, so neither the CLI polling loop
+  nor the web reaper ever called `stop()` — the run sat in RUNNING emitting status ticks until
+  someone pressed Stop, and no findings or report were ever produced. The set is about "does
+  the worker finishing mean the run is over", not about whether a mode is destructive; deriving
+  it from `DESTRUCTIVE_MODES` is what hid this. `scan` stays out deliberately — a passive
+  listener has no natural end.
+
 - **Removed `EXECUTION-PLAN-*.md` and `SECURITY.md`** from the repo. The plan docs were
   build-time blueprints that had served their purpose; everything load-bearing from them, and
   from SECURITY.md, was folded into AGENT_HANDOFF.md and the README, and the ~20 source and doc

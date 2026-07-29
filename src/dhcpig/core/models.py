@@ -37,8 +37,13 @@ SCOPE_REQUIRED_MODES: set[Mode] = {Mode.ACTIVE_SCAN}
 # without an equivalent and just sat in RUNNING after a release finished (bug found live, 2.3).
 # release-previous is not in DESTRUCTIVE_MODES (it only releases leases the journal proves this
 # tool took), but it is still a run-once-and-finish worker, so it needs the same completion
-# signal.
-RUN_ONCE_MODES: set[Mode] = DESTRUCTIVE_MODES | {Mode.RELEASE_PREVIOUS}
+# signal. active-scan likewise: its worker is an ARP sweep plus one DHCPINFORM and then it's
+# done, so leaving it out meant the run sat in RUNNING forever ticking status until someone
+# pressed Stop (bug found live, 2.5). The set is about "does the worker finishing mean the run
+# is over", NOT about whether the mode is destructive -- don't derive it from DESTRUCTIVE_MODES
+# alone again. `scan` is the one mode genuinely excluded: it's a passive listener with no
+# natural end, so it runs until stopped.
+RUN_ONCE_MODES: set[Mode] = DESTRUCTIVE_MODES | {Mode.RELEASE_PREVIOUS, Mode.ACTIVE_SCAN}
 
 # Exhaust no longer takes --rate: the windowed handshake pipeline (window_initial/window_max)
 # is the pacing mechanism now. rate_limit_pps is set high enough here that the token bucket
