@@ -235,6 +235,27 @@ def test_cli_ends_with_an_outcome_rollup_counting_hosts_per_outcome(capsys, monk
         assert word not in tail
 
 
+def test_cli_finding_line_shows_no_verdict_word_but_the_verdict_survives(capsys):
+    """The log says what happened; the report says whether it passed. A bare [FAIL] beside a
+    title mid-run reads as a judgement on the operator's network, and the run's conclusion is
+    the OUTCOME roll-up instead. `verdict` itself is untouched -- it still colours the line and
+    still reaches report["findings"]."""
+    from dhcpig.core.models import Finding
+
+    f = Finding(
+        id="CLIENTS_EVICTED_FROM_ADDRESSES",
+        title="ARP-conflict eviction forced clients off their addresses",
+        verdict="FAIL",
+        severity="high",
+    )
+    Renderer(verbosity=2, color=False)._finding(f)
+    out = capsys.readouterr().out
+    assert "FAIL" not in out
+    assert "ARP-conflict eviction forced clients off their addresses" in out
+    assert "(CLIENTS_EVICTED_FROM_ADDRESSES)" in out
+    assert f.verdict == "FAIL"  # the report still gets a real verdict
+
+
 def test_cli_summary_is_silent_at_verbosity_zero(capsys, monkeypatch):
     eng, events = _engine(monkeypatch)
     _neighbors(eng, 2)

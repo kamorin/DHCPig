@@ -2,6 +2,11 @@
 
 ## 2.3.4 (unreleased) — roll-call is one line per host; two toggles removed; UI polish
 
+- **The event log no longer prints the verdict word.** Finding lines show the title and id
+  only; `Finding.verdict` is untouched and still colours the line, still drives the Findings
+  tab, and still carries PASS/FAIL into `report["findings"]` and the JSON/HTML exports. A bare
+  `[FAIL]` beside a title mid-run reads as a judgement on the operator's network, where the
+  log's job is to say what happened — the run's conclusion is the OUTCOME roll-up below.
 - **The run now ends on an `OUTCOME` roll-up** — the per-host roll-call followed by
   "N host(s) did X", one line per distinct outcome, and the roll-call moved to *after* the
   findings so it's the last thing on the log rather than something scrolled past on the way to

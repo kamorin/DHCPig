@@ -58,11 +58,19 @@ class Renderer:
         sys.stdout.flush()
 
     def _finding(self, f) -> None:
-        """Findings are the point of the exercise — always show them, even at verbosity 0."""
-        verdict = f.verdict
-        label = f"[{verdict}]"
-        if self.color and verdict in _VERDICT_COLOR:
-            label = f"{_VERDICT_COLOR[verdict]}{label}{_RESET}"
+        """Findings are the point of the exercise — always show them, even at verbosity 0.
+
+        The **verdict word is deliberately not printed here**. `f.verdict` still exists, still
+        colours the line, and still carries PASS/FAIL into the Findings tab and the JSON/HTML
+        report -- that's the auditable output and it must keep its verdicts (§5a). But on the
+        running log a bare `[FAIL]` next to a title reads as a judgement on the operator's
+        network mid-run, when what the log is for is saying what happened. The run's conclusion
+        is the OUTCOME roll-up at the end, in host counts. Don't reintroduce the word here
+        without also re-reading why the roll-up is phrased the way it is.
+        """
+        label = "[==]"
+        if self.color and f.verdict in _VERDICT_COLOR:
+            label = f"{_VERDICT_COLOR[f.verdict]}{label}{_RESET}"
         sys.stdout.write(f"{label} {f.title}  ({f.id})\n")
         if self.verbosity >= 2:
             if f.evidence:
