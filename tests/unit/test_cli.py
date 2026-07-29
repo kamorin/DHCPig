@@ -229,3 +229,21 @@ def test_bad_args_exit_2():
     with pytest.raises(SystemExit) as exc:
         cli.build_parser().parse_args(["exhaust"])  # missing interface
     assert exc.value.code == 2
+
+
+def test_exhaust_accepts_scope_so_copy_as_cli_round_trips():
+    """The web UI offers a Scope box for every mode, so as_cli() emits --scope for exhaust --
+    but the exhaust subparser didn't accept it, making "Copy as CLI" produce a command that
+    exits 2. Scope is real work in exhaust: it bounds the ARP sweep and _send()'s scope guard,
+    and makes the pool estimate deterministic rather than inferred from the first OFFER."""
+    import shlex
+
+    from dhcpig.web.schemas import as_cli, config_from_payload
+
+    cfg = config_from_payload(
+        {"interface": "eth0", "mode": "exhaust", "scope_cidrs": ["192.168.4.0/22"]}
+    )
+    cmd = as_cli(cfg)
+    assert "--scope 192.168.4.0/22" in cmd
+    args = cli.build_parser().parse_args(shlex.split(cmd)[1:])  # must not SystemExit
+    assert cli.build_config(args).scope_cidrs == ["192.168.4.0/22"]

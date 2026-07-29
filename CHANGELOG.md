@@ -2,6 +2,16 @@
 
 ## 2.5.0 — 2026-07-29
 
+- **Fixed: "Copy as CLI" produced an unparseable command for exhaust.** The web UI offers a
+  Scope box for every mode and `as_cli()` emits `--scope` accordingly, but the `exhaust`
+  subparser never accepted it — the copied command exited 2. Added, with `dest="scope_cidrs"`
+  to match the other subcommands. Scope does real work in exhaust: it bounds the ARP sweep and
+  `_send()`'s scope guard, and makes the pool-size estimate deterministic instead of inferred
+  from the first OFFER's subnet.
+- **README rewritten** as a getting-started doc: 344 lines down to ~100. Web UI first (three
+  commands plus the sudo/token/port-forward gotchas), then the CLI, then what each mode
+  actually does in bullets. Design detail now lives in `AGENT_HANDOFF.md`.
+
 - **Exhaust now re-acquires released addresses *after* draining the pool**, not in the prelude.
   RFC 2131 §4.3.1 has a server pick, in order: an address already bound to the client, the
   client's previous address, the option-50 request *if available*, then anything free. Our

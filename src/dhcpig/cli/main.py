@@ -91,6 +91,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="use the real NIC MAC for all frames (Wi-Fi friendly)",
     )
+    ex.add_argument(
+        "--scope",
+        action="append",
+        dest="scope_cidrs",  # build_config() reads scope_cidrs, not scope
+        metavar="CIDR",
+        help="bound the run to these networks (repeatable; defaults to the interface's own "
+        "network). Also makes the pool-size estimate deterministic instead of inferred from "
+        "the first OFFER's subnet",
+    )
     ex.add_argument("--fuzz", action="store_true")
     ex.add_argument("--dry-run", action="store_true")
     ex.add_argument(
