@@ -104,11 +104,15 @@ def test_release_previous_appears_in_run_once_completion_modes():
     assert Mode.RELEASE_PREVIOUS not in cli.DESTRUCTIVE_MODES
 
 
-def test_build_config_release_neighbors_default_on_and_opt_out():
-    args = cli.build_parser().parse_args(["exhaust", "eth1"])
-    assert cli.build_config(args).release_neighbors is True
-    args = cli.build_parser().parse_args(["exhaust", "eth1", "--no-release"])
-    assert cli.build_config(args).release_neighbors is False
+def test_arp_scan_and_release_flags_are_gone():
+    """Both phases are unconditional now -- every later phase reads what they produce, so an
+    opt-out hollowed out the run instead of just making it quicker."""
+    for flag in ("--no-arp-scan", "--no-release"):
+        with pytest.raises(SystemExit):
+            cli.build_parser().parse_args(["exhaust", "eth1", flag])
+    cfg = cli.build_config(cli.build_parser().parse_args(["exhaust", "eth1"]))
+    assert not hasattr(cfg, "arp_sweep")
+    assert not hasattr(cfg, "release_neighbors")
 
 
 def test_build_config_evict_default_on_and_opt_out():

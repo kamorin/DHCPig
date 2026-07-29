@@ -63,7 +63,7 @@ th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--edge
 th { color: var(--muted); font-weight: 600; }
 
 .log { margin: 0 12px 12px; }
-#log { margin: 0; max-height: 220px; overflow: auto; white-space: pre-wrap; font-size: 12px; }
+#log { margin: 0; max-height: 264px; overflow: auto; white-space: pre-wrap; font-size: 12px; }
 #log .out { color: var(--accent); } #log .in { color: #6ab0ff; }
 #log .note { color: var(--muted); } #log .alert { color: var(--bad); }
 #log .dbg { color: #b48ead; }  /* purple debug */

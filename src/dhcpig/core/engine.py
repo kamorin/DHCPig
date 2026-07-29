@@ -682,8 +682,7 @@ class DhcpEngine:
             )
             return steps
 
-        if self.cfg.arp_sweep or mode is Mode.ACTIVE_SCAN:
-            step("Inventoried the network by ARP", f"{self._baseline_neighbor_count} devices found")
+        step("Inventoried the network by ARP", f"{self._baseline_neighbor_count} devices found")
         if mode is Mode.ACTIVE_SCAN:
             step("Asked the DHCP server to identify itself", f"{len(self.servers)} servers found")
             return steps
@@ -718,9 +717,7 @@ class DhcpEngine:
         ctl(self.control_pre_new, "Proved DHCP works for an unknown device")
 
         released = self._dry_run_would_release if self.cfg.dry_run else self.releases
-        if not self.cfg.release_neighbors and mode is Mode.EXHAUST:
-            step("Skipped declaring other devices' leases done", "--no-release")
-        elif released:
+        if released:
             step(
                 f"Declared {released} other devices' leases done{dry}",
                 f"{released} DHCPRELEASE sent, no ownership proof required",
@@ -1779,8 +1776,7 @@ class DhcpEngine:
         `_finish_release()` and `_evict_phase()` all read whichever one applies via
         `_prelude_pre_control()` rather than `self.control_pre` directly.
         """
-        if self.cfg.arp_sweep:
-            self._baseline_arp_scan()
+        self._baseline_arp_scan()
         if self._stop.is_set():
             return
         pre = self._control_transaction("pre", client="self")
@@ -1808,14 +1804,11 @@ class DhcpEngine:
         phase exists to not repeat). Skips itself with a Debug, rather than sending garbage,
         when that identity isn't available.
 
-        Returns the (mac, ip) pairs actually RELEASEd -- empty when disabled, when there's no
-        confirmed server identity yet, when there's nothing to release, or under dry-run.
+        Returns the (mac, ip) pairs actually RELEASEd -- empty when there's no confirmed server
+        identity yet, when there's nothing to release, or under dry-run.
         `_finish_release()` is what turns this into a finding now (2.3); this method no longer
         raises one itself, since "sent" is not the same claim as "worked" (see Phase 3).
         """
-        if not self.cfg.release_neighbors:
-            self._debug("release phase skipped: release_neighbors is disabled")
-            return []
         pre = self._prelude_pre_control()
         if pre is None or not pre.success or not pre.server_id:
             self._debug(

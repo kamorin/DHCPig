@@ -60,8 +60,6 @@ def config_from_payload(payload: dict) -> SessionConfig:
         offline=bool(payload.get("offline", False)),
         scope_cidrs=scope,
         spoof_ethernet_src=bool(payload.get("spoof_eth_src", True)),
-        arp_sweep=bool(payload.get("arp_sweep", True)),
-        release_neighbors=bool(payload.get("release_neighbors", True)),
         evict=bool(payload.get("evict", True)),
         race_freed_addresses=bool(payload.get("race_freed_addresses", True)),
         race_on_rediscover=bool(payload.get("race_on_rediscover", False)),
@@ -85,10 +83,6 @@ def as_cli(cfg: SessionConfig) -> str:
         parts += ["--scope", cidr]
     if cfg.dry_run:
         parts.append("--dry-run")
-    if not cfg.arp_sweep and cfg.mode is Mode.EXHAUST:
-        parts.append("--no-arp-scan")
-    if not cfg.release_neighbors and cfg.mode is Mode.EXHAUST:
-        parts.append("--no-release")
     if not cfg.journal and cfg.mode is Mode.EXHAUST:
         parts.append("--no-journal")
     if not cfg.evict and cfg.mode in (Mode.EXHAUST, Mode.RELEASE_NEIGHBORS):

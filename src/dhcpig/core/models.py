@@ -90,12 +90,15 @@ class SessionConfig:
     # real NIC MAC always runs before and after exhausting — it's what separates "the network
     # blocked us" (PASS) from "the test was broken" (INCONCLUSIVE), and a run without it can't
     # produce a trustworthy verdict. Don't re-add a `control` field without asking.
-    # ARP-sweep the segment before exhausting, to record who was there beforehand
-    arp_sweep: bool = True
-    # Release the leases of ARP-discovered neighbors before exhausting, so the CUJ of "free up
-    # addresses, then take them" is actually exercised rather than assumed. Requires a known
-    # server (from control_pre); skipped with a Debug if none is available.
-    release_neighbors: bool = True
+    # The pre-run ARP sweep is unconditional -- there is no `arp_sweep` field and no
+    # --no-arp-scan flag. Every phase after it reads the inventory it builds (release targets,
+    # re-acquisition, eviction, the NeighborSummary roll-call), so turning it off silently
+    # hollowed out the rest of the run rather than just saving a few seconds.
+    # The release phase is unconditional too -- no `release_neighbors` field, no --no-release.
+    # "Free up addresses, then take them" is the behaviour under test; skipping it left exhaust
+    # competing only for whatever happened to be free already, and left re-acquisition and
+    # eviction (which both feed off the freed list) with nothing to do. Still self-skips with a
+    # Debug when there's no confirmed server identity -- that's a precondition, not an option.
     status_interval: float = 5.0  # heartbeat period for StatusTick; 0 disables
     window_initial: int = 8  # exhaust: starting number of in-flight DISCOVER/REQUEST transactions
     window_max: int = 64  # exhaust: ceiling the adaptive window may grow to
