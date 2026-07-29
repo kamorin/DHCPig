@@ -2,6 +2,12 @@
 
 ## 2.5.0 — 2026-07-29
 
+- **Removed `EXECUTION-PLAN-*.md` and `SECURITY.md`** from the repo. The plan docs were
+  build-time blueprints that had served their purpose; everything load-bearing from them, and
+  from SECURITY.md, was folded into AGENT_HANDOFF.md and the README, and the ~20 source and doc
+  comments that pointed at them now point at the AGENT_HANDOFF section covering the same ground.
+  AGENT_HANDOFF.md is the only design document in the repo now.
+
 First tagged release of the 2.x rewrite. Everything below this line shipped in it: the package
 refactor of the single-file `pig.py` (2.0), the windowed/adaptive exhaust sender and the
 control-transaction verdict model (2.1), the lease journal and `release-previous` recovery
@@ -164,7 +170,7 @@ knows DHCP.
 
 ## 2.3.1 (unreleased) — race to grab addresses the moment they're freed
 
-Design doc: `EXECUTION-PLAN-race-freed.md`. §5f's targeted re-acquisition only reacts to
+§5f's targeted re-acquisition only reacts to
 addresses `exhaust`/`release` freed themselves via their own RELEASE phase; any address freed
 mid-run some other way previously only got picked up if the untargeted exhaust flood happened to
 land on it. This release reacts to those addresses too, plus two ownership-check bugs the work
@@ -211,7 +217,7 @@ surfaced along the way, and a web-UI stall fix.
 
 ## 2.3.0 (unreleased) — targeted re-acquisition, RFC 5227 ARP-conflict eviction, restructured `release`
 
-Design doc: `EXECUTION-PLAN-eviction.md`. Prompted by four goals: force a still-connected client
+Prompted by four goals: force a still-connected client
 off an address it holds (not just a free one), do it via RFC 5227 address-conflict detection
 rather than a blunt gateway-blackhole ARP flood, observe third-party DHCP traffic during a run as
 direct evidence of client-visible outage, and give `release` the same phase discipline `exhaust`
@@ -342,9 +348,9 @@ machine. This release adds a real recovery path.
   it adds no capability beyond what `exhaust` already used. Default `--rate` is 50, not the usual
   7 — it runs during an outage the operator is trying to end, and the frames are unicast to one
   server rather than sprayed at the segment.
-- Design plan: `EXECUTION-PLAN-release-previous.md`. A broader recovery-command proposal
-  (`EXECUTION-PLAN-release-all.md`) considered and narrowed away from leasequery, blind sweeps,
-  and ARP-derived targets in favor of the journal-only approach above — see that doc for why.
+- Leasequery, blind sweeps and ARP-derived targets were all considered and narrowed away from
+  in favour of the journal-only approach above: none of them can *prove* this tool took a given
+  address, which is the property that makes replaying the journal safe.
 
 ## 2.1.0 (unreleased) — release-first exhaust, windowed pacing, halt-on-control, headroom
 

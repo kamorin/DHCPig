@@ -2,7 +2,7 @@
 acquired, so a drained pool can be recovered later even if the process that drained it is long
 gone (killed, rebooted, or run from a different machine entirely).
 
-Design constraints (see EXECUTION-PLAN-release-previous.md §Phase 1):
+Design constraints (see AGENT_HANDOFF.md §5e):
   * Never rewrite or mutate the file — a recovery tool whose own state file can be corrupted by
     a crash mid-write is worse than no recovery tool. Two append-only record kinds ("ack" opens
     a lease, "released" closes it); a reader folds them into current state.

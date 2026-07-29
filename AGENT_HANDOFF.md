@@ -1,9 +1,11 @@
 # DHCPig 2.x — Agent Handoff
 
 > Read this first. It transfers everything you need to keep working on this codebase without
-> re-deriving it. Companion docs: `DHCPig-SoT.md` (product spec, CUJs, roadmap) and
-> `DHCPig-Implementation-Brief.md` (original build order) — both in the user's outputs folder,
-> not the repo.
+> re-deriving it — **this file is now the only design document in the repo.** The
+> `EXECUTION-PLAN-*.md` blueprints and `SECURITY.md` were deleted at the maintainer's request
+> (2.5.0); everything load-bearing from them was folded into the sections below, so don't cite
+> them and don't recreate them. `DHCPig-SoT.md` and `DHCPig-Implementation-Brief.md` live in the
+> user's outputs folder, not the repo.
 
 ## 1. What this is
 A whitehat DHCP network-hardening validation tool — a full rewrite of the legacy single-file
@@ -40,7 +42,7 @@ Both front ends drive the SAME `DhcpEngine` and never touch scapy directly.
 | `core/sniffer.py` | thin `AsyncSniffer` wrapper. BPF widened (2.3) to see client→server traffic too (`port 67 or port 68`, both directions) — needed to observe foreign DISCOVERs and DHCPDECLINEs; see §5f. |
 | `core/fingerprint.py` | `extract_signature()` + `resolve()`: exact option-55 match against `data/packetfence_dhcp_fingerprints.json`, else `from_mac()` OUI-only. `DB_VERSION`. |
 | `core/oui.py` | MAC → hardware vendor. scapy's bundled Wireshark/IEEE `manuf` DB (~50k) only; locally-administered MACs labelled as randomised. No bundled IEEE copy needed — scapy already ships one. |
-| `core/reporting.py` | `SessionRecorder` → JSON/CSV/HTML (`render()` / `export()`). Neighbors deduped by MAC. Tracks `final_status` from `SessionEnded` to surface the pool estimate in reports. |
+| `core/reporting.py` | `SessionRecorder` → JSON/CSV/HTML (`render()` / `export()`). **`finding_summary_lines()` + `EVIDENCE_SKIP` live here** — the one rule for displaying a finding, shared by the CLI renderer and the HTML report and mirrored in `app.js` (§5a). Neighbors deduped by MAC. Tracks `final_status` from `SessionEnded` to surface the pool estimate in reports. |
 | `core/netutils.py` | iface enumeration, `iface_network_cidr()` (scope auto-fill), `default_gateway()` (release-phase/eviction target exclusion via `_release_gateway()`), `link_is_up()` (carrier poll for `link_down` halt detection — `None` fail-open, see §5c), IP math, `random_mac()`. |
 | `core/journal.py` | Lease journal for recovery (2.2, §5e): append-only JSONL, `default_path()` (XDG state dir, never `/var/lib`), `record_ack`/`record_released`, `load_open_leases()` (never raises — crash-tolerant). Powers `Mode.RELEASE_PREVIOUS`. |
 | `core/exceptions.py` | `DhcpigError`, `ConfigError`, `OutOfScope`, `SessionConflict`. |
@@ -160,13 +162,32 @@ together and should be kept together:
   - An observed eviction rung always wins over the inferred `lease_taken` state for the same
     host — eviction only ever targets addresses re-acquisition granted, so every evicted host is
     also a `lease_taken` candidate, and the observed reaction is the better evidence.
-- **Evidence rendering is list-aware** in both front ends (`cli/render.py` `_evidence_lines()`,
-  `web/static/app.js` `evidenceHtml()`): a list of `{did, got}` pairs renders as two aligned
-  columns (CLI padding / an HTML table), any other list renders as indented bullets, scalars stay
-  in the compact one-line dict, and **empty lists stay in the compact dict** (a bare `servers:`
-  header with nothing under it reads like truncated output). `RUN_SUMMARY` forced this, but
-  `servers`/`sample_hosts` benefit too — a new finding whose evidence carries a list renders
-  correctly for free.
+- **The event log is the only results surface (2.3.5).** There is **no findings tab** in the
+  web UI any more, and no client-side finding store — `FindingRaised` renders straight into the
+  log. Don't rebuild the tab without re-reading why it went: findings are all raised in one pass
+  at the end of a run, so a panel that fills instantly at the end was never doing anything a log
+  tail couldn't, and it duplicated content the log already printed.
+- **`reporting.finding_summary_lines()` is the single rule for how a finding is displayed.**
+  `cli/render.py` and `_findings_html()` both call it; `web/static/app.js` mirrors it in JS
+  because it can't import Python. **Change one, change all three** — three surfaces describing
+  one run three different ways is exactly the bug this replaced. The rule: numbers line (nested
+  dicts flattened, zero/empty and `EVIDENCE_SKIP` keys dropped), list evidence one item per
+  line, then the **first sentence** of the recommendation. `EVIDENCE_SKIP` holds run context
+  already in the header, config echoes, and `still_using_address_arp` — which `_finish_release()`
+  itself documents as not being evidence either way.
+- **The JSON export stays the complete record.** Summarising happens at render time; `Finding`
+  keeps `verdict`, `severity`, full `evidence` and the full multi-sentence `recommendation`, and
+  all of it still reaches `report["findings"]`. If someone asks for more detail, the answer is
+  the JSON export, not a longer log line.
+- **Findings are emitted worst-severity-first.** `_finalize_findings()` buffers what it raises
+  and sorts on `severity` before emitting (`_raise()` honours `self._finding_buffer`). A log is
+  a stream and can't be re-ranked after the fact, so ordering has to happen before it's written.
+  Findings raised *during* a run (`NEIGHBOR_LEASES_RELEASED`, the release-previous verdicts) go
+  out immediately via the unbuffered path — on a long run those are live progress.
+- **The verdict word is not printed on the log.** `verdict` still colours the line and still
+  carries PASS/FAIL into the report; a bare `[FAIL]` beside a title mid-run reads as a judgement
+  on the operator's network when the log's job is to say what happened. The run's conclusion is
+  the `OUTCOME` roll-up (§5h).
 
 ## 5b. ARP-conflict eviction — why `_do_arp_conflict()` is shaped the way it is (2.3)
 `Mode.GARP_DOS` (standalone sustained ARP-cache poisoning, no exhaustion phase) was **retired**
@@ -266,7 +287,8 @@ machine. 2.2 adds a recovery path for that:
   unknown record kind is skipped with a warning. `default_path()` resolves under
   `$XDG_STATE_HOME` (or `~/.local/state`, via the effective user's passwd entry, not `$HOME` —
   `sudo` doesn't always reset it) — **never `/var/lib` or another system-owned path**; this is
-  per-engagement data, not system state (see SECURITY.md). `SessionConfig.journal` (default
+  per-engagement data, not system state, and is deleted by the operator at engagement end.
+  `SessionConfig.journal` (default
   `True`) / `--no-journal` opts out. `_handle_ack()` writes an `ack`; `restore()` and
   `_release_bindings()` write a `released`. Writes are best-effort (`OSError` → `ev.Debug`,
   never kills the run); `dry_run` suppresses journal writes the same as it suppresses packets.
@@ -301,14 +323,16 @@ machine. 2.2 adds a recovery path for that:
 - Default `--rate` is **50**, not 7 — see the inline comment in `cli/main.py`; this is the one
   mode where a faster default is the right call (unicast to one server, run during an active
   outage).
-- Design rationale in full: `EXECUTION-PLAN-release-previous.md` (the executed plan) and
-  `EXECUTION-PLAN-release-all.md` (background — broader strategies considered and narrowed away
-  from: leasequery, blind sweeps, ARP-derived targets — don't re-add them without re-reading why).
+- Strategies considered and deliberately narrowed away from, so don't re-propose them without
+  a reason: **leasequery** (needs server cooperation this tool can't assume), **blind sweeps**
+  (unbounded, and the whole point of the journal is to be bounded), and **ARP-derived targets**
+  (an ARP-visible address says nothing about who holds its lease — §5f's `_reprobe_released()`
+  note is the same trap). The journal is the only source that *proves* we took an address.
 
 ## 5f. Targeted re-acquisition + ARP-conflict eviction + shared `release` chain (2.3)
 Ties §5b/§5c together into the actual attack chain both `exhaust` and `release` now run via
 `_common_prelude()`: ARP inventory → control/self [→ control/new, exhaust only] → release →
-**re-acquisition** → **eviction**. Design doc: `EXECUTION-PLAN-eviction.md`.
+**re-acquisition** → **eviction**.
 
 - **Re-acquisition** (`_reacquire_phase(freed)`, `_finish_release()`). Pushes one targeted
   DISCOVER per freed `(mac, ip)` — fresh random MAC, DHCP **option 50** (`requested_addr`) asking
@@ -376,7 +400,7 @@ Ties §5b/§5c together into the actual attack chain both `exhaust` and `release
   and for `release` that means staying inside the worker thread `stop()` is about to `join()`.
 
 ## 5g. Race-freed addresses — grab a freed address ahead of the untargeted flood (2.3.1)
-Design doc: `EXECUTION-PLAN-race-freed.md`. Answers a gap §5f's re-acquisition doesn't cover:
+Answers a gap §5f's re-acquisition doesn't cover:
 re-acquisition only reacts to addresses **we** just freed via our own RELEASE phase; any address
 that becomes free *some other way* mid-run (a NAK'd renewal, a DECLINE, a rediscovering neighbor)
 previously only got picked up if the untargeted exhaust flood happened to land on it. `exhaust`
@@ -463,6 +487,25 @@ only — `release` has no concurrent flood for "racing ahead of" to mean anythin
     foreign traffic (both read-only, not the send-side bug). Ten existing tests were unknowingly
     relying on the old always-act behavior and had to be corrected, not just re-asserted.
 
+## 5h. What a run ends with, on the log (2.3.3–2.3.5)
+In order, after the sender/eviction finish: the findings (worst severity first, §5a), then
+`NeighborSummary` — one row per **every** discovered host (`ip  mac  [hostname]  outcome`,
+worst first) — then an `OUTCOME` roll-up grouping those rows into "N host(s) did X".
+
+- `_emit_neighbor_summary()` runs **after** `_finalize_findings()` in `stop()`, so the roll-call
+  is the last thing on the log: it's the conclusion an operator reads, not something to scroll
+  past on the way to a verdict.
+- The `OUTCOME` block is **counts of hosts and what happened to them, never a verdict.** The
+  findings own pass/fail; a second differently-worded judgement of the same run on the same
+  screen is the drift `_run_summary_steps()` is already documented to avoid. A test asserts the
+  block contains no PASS/FAIL vocabulary.
+- `NEIGHBORS_OBSERVED` is deliberately **not** printed to the log (`FINDINGS_NOT_LOGGED` in
+  `app.js`) — it is the same rows as the block directly beneath it. It stays in
+  `report["findings"]`, which is the only place the roll-call reaches the JSON/HTML export.
+- Hostnames come from DHCP option 12 on a foreign DISCOVER only, so most ARP-only neighbours
+  have none; the column is omitted entirely when nobody does, and is never inferred from a
+  fingerprint.
+
 ## 6. Modes (`Mode` enum)
 `EXHAUST` (default; runs the shared prelude — ARP inventory, control, release, re-acquisition —
 then its windowed sender, then eviction in `stop()` — see §5c/§5f), `SCAN` (passive, read-only),
@@ -480,7 +523,7 @@ Sandbox Python is **3.10**, but the package targets **3.11+**, so **do NOT `pip 
 in the sandbox** — run against the source path instead:
 ```
 cd /sessions/<id>/mnt/DHCPig
-PYTHONPATH=src python3 -m pytest -q          # 351 pass, 1 integration deselected
+PYTHONPATH=src python3 -m pytest -q          # 352 pass, 1 integration deselected
 python3 -m ruff check src tests
 python3 -m ruff format --check src tests
 ```
@@ -577,36 +620,38 @@ python3 -m ruff format --check src tests
   work (§5a) was meant to eliminate. Don't cache/round it into something that loses that context.
 
 ## 9. Current status
-Roadmap V1.0 (CLI), V1.1 (web Exhaust), V2.0 (web all modes + packaging) are all **done**, plus
-these later additions: combined-DB fingerprinting (replacing FingerBank), distinct-MAC default,
-debug logging + verbosity dropdown, `active-scan`, neighbor↔fingerprint correlation by MAC,
-MAC-vendor fallback identification, pre-run ARP inventory, the full 2.1 release (§5c/§5d:
-release-first exhaust, windowed/adaptive sender, halt-on-control, headroom, verdict rename), 2.2
-(§5e: lease journal + `release-previous` recovery), and now **2.3** (§5b/§5f,
-`EXECUTION-PLAN-eviction.md`): `dry_run`/`offline` split into genuinely separate concerns, the
-sniffer BPF widened + a self-filter to see foreign DISCOVER/DECLINE traffic,
-`Mode.GARP_DOS` retired in favor of targeted re-acquisition (option 50) + RFC 5227 §2.4
-ARP-conflict eviction shared by `exhaust` and a restructured `release` (both via
-`_common_prelude()`), mode-aware eviction findings, the web UI's mode labels relabeled (Phase 6),
-and the window-growth ratchet slowed from 0.5 to 0.01 per clean ACK (Phase 7). On top of that,
-**2.3.1** (§5g, `EXECUTION-PLAN-race-freed.md`): race-to-grab-freed-addresses (foreign NAK/
-DECLINE/opt-in rediscover triggers, a bounded reserve above the exhaust window, the
-`RACED_FREED_ADDRESSES` finding), plus the two ownership-check bugs it surfaced and fixed along
-the way (foreign NAKs no longer pollute our window/halt state; `_handle_offer()`/`_handle_ack()`
-no longer act on traffic that isn't ours — the latter had real blast radius, since an unowned ACK
-being journaled meant `restore()`/`release-previous` could send DHCPRELEASE for a genuine third
-party's active lease). The web auto-stop fix (run-once modes now poll for their worker thread
-finishing and auto-`stop()`, mirroring the CLI, instead of stalling ~65s) and info-level DHCP
-option50/chaddr/hostname logging landed alongside it. Then **2.3.2**: the always-raised
-`RUN_SUMMARY` finding (§5a) that opens every report with a plain-language, step-by-step account
-of what the run did, plus list-aware evidence rendering in both front ends to display it.
-**351 unit tests pass; ruff clean.** The
-user validated a real exhaust run on their Kali VM against a live `/22` (pcap reviewed) — that
-run is what exposed the pending-offer saturation bug §5c fixes and the renewal-vs-fresh-allocation
-control-transaction bug §5a fixes. **Neither 2.1, 2.2, 2.3, nor 2.3.1 has been exercised against
-real hardware yet** — that's the next validation step, and 2.3/2.3.1 (re-acquisition, eviction,
-the restructured `release` chain, and now racing) are the least-proven: passing unit tests only,
-zero live-network confirmation.
+**Released as 2.5.0** (`pyproject.toml` + `dhcpig.__version__`; the package had sat at 2.0.0
+through every 2.1–2.3.5 changelog block, none of which was ever tagged). **352 unit tests pass;
+ruff clean.**
+
+What that release contains, oldest first:
+- **V1.0 / V1.1 / V2.0** — CLI, web Exhaust, then all modes + packaging. Plus fingerprinting off
+  the bundled PacketFence DB, distinct-MAC default, debug logging + verbosity, `active-scan`,
+  neighbor↔fingerprint correlation by MAC, MAC-vendor fallback, pre-run ARP inventory.
+- **2.1** (§5c/§5d) — release-first exhaust, windowed/adaptive sender, halt-on-control,
+  headroom, the `DHCP_STARVATION_ATTAINED`/`_NOT_ATTAINED` verdict rename.
+- **2.2** (§5e) — lease journal + `release-previous` recovery.
+- **2.3** (§5b/§5f) — `dry_run`/`offline` split into separate concerns, sniffer BPF widened plus
+  a self-filter to see foreign DISCOVER/DECLINE, `Mode.GARP_DOS` retired in favour of targeted
+  re-acquisition (option 50) + RFC 5227 §2.4 eviction shared by `exhaust` and a restructured
+  `release`, mode-aware eviction findings, window-growth ratchet 0.5 → 0.01 per clean ACK.
+- **2.3.1** (§5g) — race-to-grab-freed addresses, **and the two ownership-check bugs it
+  surfaced**: foreign NAKs polluting our window/halt state, and `_handle_offer()`/`_handle_ack()`
+  acting on traffic that wasn't ours. The second had real blast radius — an unowned ACK being
+  journaled meant `restore()`/`release-previous` could later DHCPRELEASE a genuine third party's
+  active lease. See §8's ownership-check gotcha.
+- **2.3.2–2.3.5** (§5a/§5h) — the reporting rework: always-raised `RUN_SUMMARY`, the per-host
+  `NeighborSummary` roll-call + `OUTCOME` roll-up, findings moved out of a deleted findings tab
+  and into the event log in severity order, and one shared `finding_summary_lines()` so CLI, web
+  log and HTML report describe a run identically.
+
+**Validation status — read this before trusting a result.** One real exhaust run against a live
+`/22` on the maintainer's Kali VM (pcap reviewed) is the *only* hardware validation this codebase
+has. That run is what exposed the pending-offer saturation bug §5c fixes and the
+renewal-vs-fresh-allocation control bug §5a fixes. **2.1, 2.2, 2.3, 2.3.1 and the 2.3.x reporting
+work have never been exercised against real hardware** — re-acquisition, eviction, the
+restructured `release` chain, racing and `release-previous` have passing unit tests and zero
+live-network confirmation. Treat their findings as unproven until that changes.
 
 ## 10. Open follow-ups (not yet done)
 - **IPv6**: `IPVersion.V6` is a seam only; v6 packet builders/flows are NOT implemented. The v4

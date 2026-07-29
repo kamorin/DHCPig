@@ -166,7 +166,7 @@ class DhcpEngine:
         # race-freed (2.3): addresses queued for a priority targeted DISCOVER, deduped so one
         # freed address is never queued twice. Kept entirely separate from _reacquire_targets/
         # _reacquire_outcomes -- _evict_phase() derives its target set from those, and a race
-        # xid must never silently become an eviction target (see EXECUTION-PLAN-race-freed.md's
+        # xid must never silently become an eviction target (see AGENT_HANDOFF.md §5g's
         # "Boundaries" section).
         self._race_queue: deque[str] = deque()
         self._raced_ips: set[str] = set()
@@ -1575,7 +1575,7 @@ class DhcpEngine:
         second, weaker race trigger: the declining client refuses to use the address, though
         many DHCP server implementations quarantine a declined address rather than returning it
         to the free pool, so this is offered on a best-effort basis (see
-        EXECUTION-PLAN-race-freed.md's "Decisions taken"). A DECLINE carries its own address via
+        AGENT_HANDOFF.md §5g's trigger ranking). A DECLINE carries its own address via
         option 50 (RFC 2131 Table 5), unlike a NAK.
         """
         from scapy.all import BOOTP, DHCP
@@ -1622,7 +1622,7 @@ class DhcpEngine:
     def _maybe_race(self, ip: str | None, why: str) -> None:
         """Single entry point for every race trigger (foreign NAK, foreign DECLINE, optionally
         foreign DISCOVER from a known neighbor) -- keeps every exclusion in exactly one place.
-        See EXECUTION-PLAN-race-freed.md.
+        See AGENT_HANDOFF.md §5g.
 
         Exhaust-only: release/scan/active-scan have no concurrent flood for "racing ahead of"
         to mean anything -- release's own sends (RELEASE, re-acquisition) are already deliberate
@@ -2604,7 +2604,7 @@ class DhcpEngine:
     ) -> tuple[list, dict]:
         """Filter journal entries down to what's safe and relevant to release right now.
 
-        See EXECUTION-PLAN-release-previous.md §Phase 2 for why each step exists: interface,
+        See AGENT_HANDOFF.md §5e for why each step exists: interface,
         then current CIDR (never an unbounded sweep), then same-server (guards against a
         journal carried between engagements producing targets on the wrong network -- only
         evaluable when the pre-flight control actually learned a server identity, which it

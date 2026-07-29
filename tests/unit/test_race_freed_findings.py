@@ -1,6 +1,6 @@
 """Race-freed (2.3): counters (4 surfaces) + RACED_FREED_ADDRESSES finding + dry-run gating.
 
-Commit 5 of EXECUTION-PLAN-race-freed.md. See test_race_freed.py (triggers/queue, commit 2) and
+See AGENT_HANDOFF.md §5g. See test_race_freed.py (triggers/queue) and
 test_race_freed_sender.py (sender integration + classifier, commit 3) for the rest of the feature.
 """
 

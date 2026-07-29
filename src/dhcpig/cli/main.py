@@ -112,7 +112,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="no_race_freed",
         action="store_true",
         help="skip racing a targeted DISCOVER for an address a live foreign NAK/DECLINE shows "
-        "just became free (default: on) -- see EXECUTION-PLAN-race-freed.md",
+        "just became free (default: on) -- see AGENT_HANDOFF.md §5g",
     )
     ex.add_argument(
         "--race-on-rediscover",
