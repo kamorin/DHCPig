@@ -9,7 +9,7 @@ the event's docstring.
 from dhcpig.cli.render import Renderer
 from dhcpig.core import engine as engine_mod
 from dhcpig.core.engine import DhcpEngine
-from dhcpig.core.events import EventBus, NeighborSummary
+from dhcpig.core.events import EventBus, FindingRaised, NeighborSummary
 from dhcpig.core.models import Mode, Neighbor, SessionConfig
 
 
@@ -229,3 +229,71 @@ def test_cli_summary_is_silent_at_verbosity_zero(capsys, monkeypatch):
     eng._emit_neighbor_summary()
     Renderer(verbosity=0, color=False).handle(_summary(events))
     assert capsys.readouterr().out == ""
+
+
+# ---------------------------------------------------------------- NEIGHBORS_OBSERVED finding
+def _observed(events):
+    return next(
+        e.finding
+        for e in events
+        if isinstance(e, FindingRaised) and e.finding.id == "NEIGHBORS_OBSERVED"
+    )
+
+
+def test_rollcall_also_reaches_the_findings_for_every_mode(monkeypatch):
+    """NeighborSummary is a live event and never lands in report["findings"], so without this
+    the roll-call vanished from the JSON/HTML exports."""
+    for mode in Mode:
+        eng, events = _engine(monkeypatch, mode=mode)
+        ips = _neighbors(eng, 3)
+        eng._finalize_findings()
+        f = _observed(events)
+        assert f.verdict == "INFO"
+        assert f.evidence["total"] == 3
+        assert len(f.evidence["hosts"]) == 3
+        for ip in ips:
+            assert any(ip in line for line in f.evidence["hosts"])
+
+
+def test_finding_and_event_never_disagree_about_a_host(monkeypatch):
+    """Both read _neighbor_rollcall(); neither classifies anything itself."""
+    eng, events = _engine(monkeypatch)
+    ips = _neighbors(eng, 4)
+    _reacquired(eng, [ips[0]])
+    eng._evict_outcomes = {ips[1]: "apipa"}
+    eng._emit_neighbor_summary()
+    eng._finalize_findings()
+    rows = _summary(events).rows
+    assert _observed(events).evidence["hosts"] == [
+        f"{ip:<15} {mac}  {outcome}" for ip, mac, outcome, _c in rows
+    ]
+
+
+def test_finding_carries_a_category_tally(monkeypatch):
+    eng, events = _engine(monkeypatch)
+    ips = _neighbors(eng, 4)
+    _reacquired(eng, [ips[0]])
+    eng._evict_outcomes = {ips[1]: "apipa", ips[2]: "defended"}
+    eng._finalize_findings()
+    assert _observed(events).evidence["by_category"] == {
+        "offline": 1,
+        "lease_taken": 1,
+        "reacted": 1,
+        "unaffected": 1,
+    }
+
+
+def test_no_finding_when_no_neighbors_were_seen(monkeypatch):
+    eng, events = _engine(monkeypatch)
+    eng._finalize_findings()
+    assert not [
+        e for e in events if isinstance(e, FindingRaised) and e.finding.id == "NEIGHBORS_OBSERVED"
+    ]
+
+
+def test_finding_follows_run_summary_so_the_report_reads_in_order(monkeypatch):
+    eng, events = _engine(monkeypatch)
+    _neighbors(eng, 2)
+    eng._finalize_findings()
+    ids = [e.finding.id for e in events if isinstance(e, FindingRaised)]
+    assert ids[:2] == ["RUN_SUMMARY", "NEIGHBORS_OBSERVED"]

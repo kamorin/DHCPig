@@ -133,6 +133,13 @@ together and should be kept together:
   Its single recommendation assumes a **Wi-Fi-based** attacker (controller DHCP proxy +
   client-MAC/chaddr consistency enforcement) — that's the one control that breaks every step in
   the chain, since all of them depend on sending DHCP on another device's behalf.
+- **The neighbor roll-call has two surfaces, one source.** `_neighbor_rollcall()` does all the
+  classifying and returns `(ip, mac, outcome, category)` rows; **`NeighborSummary`** (live event,
+  event log) and the **`NEIGHBORS_OBSERVED`** INFO finding (durable, reaches
+  `report["findings"]` and so the JSON/HTML exports) both just render it. Never let either
+  compute its own classification — they'd drift, and then a report and the log it came from
+  would disagree about what happened to a host. The finding exists because `NeighborSummary` is
+  an event and events don't survive into the report at all.
 - **`NeighborSummary` (2.3.3) is the event-log counterpart to `RUN_SUMMARY`**: emitted once from
   `stop()` (after `_evict_phase()` so outcomes are settled, before `_finalize_findings()` so the
   log reads "who was affected" then "the verdicts about it"), built by
@@ -471,7 +478,7 @@ Sandbox Python is **3.10**, but the package targets **3.11+**, so **do NOT `pip 
 in the sandbox** — run against the source path instead:
 ```
 cd /sessions/<id>/mnt/DHCPig
-PYTHONPATH=src python3 -m pytest -q          # 344 pass, 1 integration deselected
+PYTHONPATH=src python3 -m pytest -q          # 349 pass, 1 integration deselected
 python3 -m ruff check src tests
 python3 -m ruff format --check src tests
 ```
@@ -591,7 +598,7 @@ finishing and auto-`stop()`, mirroring the CLI, instead of stalling ~65s) and in
 option50/chaddr/hostname logging landed alongside it. Then **2.3.2**: the always-raised
 `RUN_SUMMARY` finding (§5a) that opens every report with a plain-language, step-by-step account
 of what the run did, plus list-aware evidence rendering in both front ends to display it.
-**344 unit tests pass; ruff clean.** The
+**349 unit tests pass; ruff clean.** The
 user validated a real exhaust run on their Kali VM against a live `/22` (pcap reviewed) — that
 run is what exposed the pending-offer saturation bug §5c fixes and the renewal-vs-fresh-allocation
 control-transaction bug §5a fixes. **Neither 2.1, 2.2, 2.3, nor 2.3.1 has been exercised against
