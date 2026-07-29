@@ -6,6 +6,7 @@ conclusions about the network's defenses; that stays with the verdict findings.
 
 import time
 
+from dhcpig.cli.render import Renderer
 from dhcpig.core import engine as engine_mod
 from dhcpig.core.engine import DhcpEngine
 from dhcpig.core.events import EventBus, FindingRaised
@@ -213,11 +214,9 @@ def test_recommendation_gives_one_wifi_control(monkeypatch):
 
 
 # ---------------------------------------------------------------- CLI rendering
-def test_cli_renders_steps_as_two_aligned_columns(capsys, monkeypatch):
-    """A narrative flattened into a single dict repr is unreadable -- the whole reason
-    RUN_SUMMARY needed the renderer to grow list handling."""
-    from dhcpig.cli.render import Renderer
-
+def test_cli_prints_the_shared_summary_lines(capsys, monkeypatch):
+    """CLI, web log and HTML report all render a finding through
+    reporting.finding_summary_lines(), so one run can't be described three different ways."""
     eng, events = _engine(monkeypatch)
     eng._baseline_neighbor_count = 3
     eng.releases = 4
@@ -227,46 +226,50 @@ def test_cli_renders_steps_as_two_aligned_columns(capsys, monkeypatch):
         if isinstance(e, FindingRaised):
             r.handle(e)
     out = capsys.readouterr().out
-    assert "steps:" in out
-    assert "'steps'" not in out  # not flattened into the compact dict
 
-    rendered = [ln for ln in out.splitlines() if "  ->  " in ln]
-    assert len(rendered) == len(_summary(events).evidence["steps"])
-    # the arrows line up, which is what makes the left column scannable
-    assert len({ln.index("  ->  ") for ln in rendered}) == 1
+    from dhcpig.core.reporting import finding_summary_lines
+
+    for line in finding_summary_lines(
+        {"evidence": _summary(events).evidence, "recommendation": _summary(events).recommendation}
+    ):
+        assert f"        {line}" in out
+    assert "evidence: {" not in out  # the old raw-dict dump is gone
 
 
-def test_cli_still_bullets_plain_list_evidence(capsys):
-    """Non-pair lists (servers, sample_hosts, ...) keep the simple bulleted form."""
-    from dhcpig.cli.render import Renderer
-    from dhcpig.core.models import Finding
+def test_summary_lines_drop_noise_and_flatten_nested_evidence():
+    """Zero/empty values, run context and config echoes say nothing on a summary line; nested
+    dicts read as numbers, not as serialized JSON."""
+    from dhcpig.core.reporting import finding_summary_lines
 
-    r = Renderer(verbosity=2, color=False)
-    r._finding(
-        Finding(
-            id="X",
-            title="t",
-            verdict="INFO",
-            severity="info",
-            evidence={"servers": ["10.0.0.1", "10.0.0.2"]},
-        )
+    lines = finding_summary_lines(
+        {
+            "evidence": {
+                "targets": 4,
+                "granted": 0,
+                "by_rung": {"declined": 1, "no_reaction": 0},
+                "mode": "exhaust",
+                "still_using_address_arp": 3,
+            },
+            "recommendation": "First sentence. Second sentence that should not appear.",
+        }
     )
-    out = capsys.readouterr().out
-    assert "          - 10.0.0.1\n" in out
-    assert "  ->  " not in out
+    assert lines[0] == "targets=4 · declined=1"
+    assert lines[-1] == "First sentence."
+    assert not any("Second sentence" in ln for ln in lines)
 
 
-def test_cli_keeps_empty_lists_out_of_their_own_block(capsys):
-    """An empty list rendered as a bare header reads like truncated output."""
-    from dhcpig.cli.render import Renderer
-    from dhcpig.core.models import Finding
+def test_summary_lines_expand_list_evidence_one_item_per_line():
+    from dhcpig.core.reporting import finding_summary_lines
 
-    r = Renderer(verbosity=2, color=False)
-    r._finding(
-        Finding(
-            id="X", title="t", verdict="INFO", severity="info", evidence={"servers": [], "n": 1}
-        )
+    lines = finding_summary_lines(
+        {
+            "evidence": {
+                "steps": [{"did": "Did a thing", "got": "a result"}],
+                "servers": ["10.0.0.1"],
+            }
+        }
     )
-    out = capsys.readouterr().out
-    assert "servers:\n" not in out
-    assert "'servers': []" in out
+    assert "Did a thing  ->  a result" in lines
+    assert "10.0.0.1" in lines
+
+
