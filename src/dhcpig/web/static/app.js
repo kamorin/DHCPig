@@ -426,8 +426,11 @@ function handleEvent(e) {
       // the Findings tab stays out of the way until there's actually a verdict to show,
       // then it's the one thing worth interrupting the operator's current view for
       if (findings.length === 1) activateTab("findings");
-      logLine("finding",
-        `[==] ${e.finding.verdict} — ${e.finding.title} (${e.finding.id})`, 0);
+      // No verdict word on the log: f.verdict still colours the Findings tab and still carries
+      // PASS/FAIL into the report, but a bare FAIL beside a title mid-run reads as a judgement
+      // on the operator's network when the log's job is to say what happened. The run's
+      // conclusion is the OUTCOME roll-up at the end, in host counts.
+      logLine("finding", `[==] ${e.finding.title} (${e.finding.id})`, 0);
       break;
     case "SessionEnded": $("state").textContent = "DONE"; setRunning(false); break;
     case "ErrorEvent": logLine("alert", "[XX] " + e.message, 0); break;
