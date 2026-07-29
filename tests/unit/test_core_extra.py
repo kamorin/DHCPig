@@ -19,13 +19,19 @@ from dhcpig.core.models import (
 
 
 # ---------------------------------------------------------------- models
-def test_run_once_modes_is_destructive_plus_release_previous():
+def test_run_once_modes_is_about_finishing_not_about_destructiveness():
     """Canonical set both control planes (CLI, web) key off to auto-finalize a run-once mode.
-    release-previous is deliberately not DESTRUCTIVE (see models.py) but must still be here."""
-    assert RUN_ONCE_MODES == DESTRUCTIVE_MODES | {Mode.RELEASE_PREVIOUS}
-    assert Mode.RELEASE_PREVIOUS in RUN_ONCE_MODES
-    assert Mode.RELEASE_PREVIOUS not in DESTRUCTIVE_MODES
-    assert Mode.EXHAUST not in RUN_ONCE_MODES  # runs until stop/halt, not a run-once worker
+
+    The membership question is "does the worker finishing mean the run is over", NOT "is this
+    mode destructive" -- deriving it from DESTRUCTIVE_MODES is what left active-scan hanging in
+    RUNNING forever (2.5). Two of the three members are non-destructive.
+    """
+    assert RUN_ONCE_MODES == DESTRUCTIVE_MODES | {Mode.RELEASE_PREVIOUS, Mode.ACTIVE_SCAN}
+    for mode in (Mode.RELEASE_PREVIOUS, Mode.ACTIVE_SCAN):
+        assert mode in RUN_ONCE_MODES
+        assert mode not in DESTRUCTIVE_MODES
+    assert Mode.EXHAUST not in RUN_ONCE_MODES  # ends itself via _finish_in_background()
+    assert Mode.SCAN not in RUN_ONCE_MODES  # passive listener, no natural end
 
 
 # ---------------------------------------------------------------- netutils
@@ -215,3 +221,17 @@ def test_neighbor_fingerprint_backfilled_when_dhcp_seen_after_arp(monkeypatch):
     assert updated.mac == mac
     assert updated.fingerprint is not None
     assert updated.fingerprint.confidence > first.fingerprint.confidence
+
+
+def test_active_scan_is_a_run_once_mode():
+    """Its worker is an ARP sweep plus one DHCPINFORM and then it's done. Leaving it out of
+    RUN_ONCE_MODES meant neither the CLI polling loop nor the web reaper ever called stop(), so
+    the run sat in RUNNING ticking status forever (found live, 2.5). `scan` stays excluded --
+    a passive listener has no natural end."""
+    from dhcpig.core.models import RUN_ONCE_MODES, Mode
+
+    assert Mode.ACTIVE_SCAN in RUN_ONCE_MODES
+    assert Mode.RELEASE_NEIGHBORS in RUN_ONCE_MODES
+    assert Mode.RELEASE_PREVIOUS in RUN_ONCE_MODES
+    assert Mode.SCAN not in RUN_ONCE_MODES
+    assert Mode.EXHAUST not in RUN_ONCE_MODES  # ends on its own via _finish_in_background()

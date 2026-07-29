@@ -48,8 +48,7 @@
       <div id="ratecfg">
         <label>Rate (pps) <input type="number" id="rate" value="7" min="1" /></label>
       </div>
-      <p id="ratehint" class="hint hidden">No rate setting — a windowed pipeline paces it,
-        backing off on NAKs and timeouts.</p>
+      <p id="ratehint" class="hint hidden">Self-pacing; backs off on NAKs.</p>
       <div id="destcfg" class="destcfg">
         <label>Scope CIDRs <input type="text" id="scope"
           placeholder="defaults to the interface network" /></label>
