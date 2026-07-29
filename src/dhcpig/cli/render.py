@@ -85,33 +85,29 @@ class Renderer:
         sys.stdout.flush()
 
     def _neighbor_summary(self, e) -> None:
-        """End-of-run roll-call. Hosts are named, not just counted -- the operator's next move
-        is usually to go look at a specific machine. Shown from verbosity 1 up: at v0 the run is
-        deliberately silent except findings, but at v1 (the 'one char per packet' mode) a
-        who-did-this-affect block is exactly what's wanted at the end."""
+        """End-of-run roll-call: **one line per host, every discovered host listed**, worst
+        first. Hosts are named rather than counted -- the operator's next move is usually to go
+        look at a specific machine -- and the untouched ones are listed too, so "unaffected" is
+        visibly distinct from "not examined".
+
+        Shown from verbosity 1 up: at v0 the run is deliberately silent except findings, but at
+        v1 (the one-char-per-packet mode) a who-did-this-affect block is exactly what's wanted
+        at the end.
+        """
         if self.verbosity <= 0:
             return
         if self.verbosity == 1:
             sys.stdout.write("\n")  # close off the one-char-per-packet stream
-        self._line("==", f"NEIGHBOR SUMMARY  {e.total} host(s) seen before this run")
-
-        def block(label: str, rows: list, tag: str, note: str = "") -> None:
-            if not rows:
-                return
-            self._line(tag, f"  {label}: {len(rows)}{note}")
-            for ip, mac, detail in rows:
-                self._line(tag, f"    {ip:<15} {mac}  ({detail})")
-
-        block("KNOCKED OFFLINE", e.offline, "!!", " -- no working address now")
-        block(
-            "LEASE TAKEN",
-            e.lease_taken,
-            "!!",
-            " -- still using the address, will fail at its next renewal",
-        )
-        block("reacted, still online", e.reacted, "<-")
-        if e.unaffected:
-            self._line("--", f"  unaffected: {e.unaffected}")
+        counts: dict[str, int] = {}
+        for *_rest, category in e.rows:
+            counts[category] = counts.get(category, 0) + 1
+        tally = "  ".join(f"{n} {cat}" for cat, n in counts.items())
+        self._line("==", f"NEIGHBOR SUMMARY  {e.total} host(s) seen before this run  ({tally})")
+        for ip, mac, outcome, category in e.rows:
+            tag = "!!" if category in ("offline", "lease_taken") else "<-"
+            if category == "unaffected":
+                tag = "--"
+            self._line(tag, f"  {ip:<15} {mac}  {outcome}")
 
     def handle(self, e: ev.Event) -> None:
         if isinstance(e, ev.DiscoverSent):
@@ -159,7 +155,9 @@ class Renderer:
         elif isinstance(e, ev.Skipped):
             self._line("!!", f"SKIPPED      {e.ip}   {e.reason}")
         elif isinstance(e, ev.StatusTick):
-            if self.verbosity >= 2:  # normal level: this is the run's pulse
+            # debug tier (-v3): the pulse is useful when diagnosing a stalled run, but at normal
+            # verbosity it repeats every 5s and drowns out the packet lines around it
+            if self.verbosity >= 3:
                 self._line("##", status_summary(e.stats))
         elif isinstance(e, ev.OffersCeased):
             self._line(

@@ -145,13 +145,16 @@ def test_status_summary_omits_idle_counters():
     assert "garps" not in line
 
 
-def test_renderer_prints_status_at_normal_verbosity(capsys):
+def test_renderer_prints_status_only_at_debug_verbosity(capsys):
+    """The 5-second pulse moved to the debug tier: useful for diagnosing a stalled run, but at
+    normal verbosity it repeats forever and drowns out the packet lines around it."""
     stats = {"state": "RUNNING", "elapsed": 5.0, "window": 5.0, "leases": 3, "d_leases": 3}
-    Renderer(verbosity=2, color=False).handle(ev.StatusTick(stats=stats))
+    Renderer(verbosity=3, color=False).handle(ev.StatusTick(stats=stats))
     assert "leases 3" in capsys.readouterr().out
 
 
-def test_renderer_hides_status_at_quiet_verbosity(capsys):
+def test_renderer_hides_status_at_normal_and_quiet_verbosity(capsys):
     stats = {"state": "RUNNING", "elapsed": 5.0, "window": 5.0, "leases": 3, "d_leases": 3}
-    Renderer(verbosity=0, color=False).handle(ev.StatusTick(stats=stats))
-    assert capsys.readouterr().out == ""
+    for v in (0, 1, 2):
+        Renderer(verbosity=v, color=False).handle(ev.StatusTick(stats=stats))
+        assert capsys.readouterr().out == ""

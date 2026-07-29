@@ -23,7 +23,6 @@ const rate = { last: 0, series: [] };
 const servers = new Map();
 const neighbors = new Map();
 const leases = [];
-const SCOPE_MODES = new Set(["release", "active-scan", "release-previous"]);
 const ifaceCidr = {};       // iface name -> network cidr (for scope auto-fill)
 let lastAutoScope = "";     // remember what we auto-filled so we don't clobber user edits
 
@@ -67,9 +66,11 @@ function setRunning(on) {
 
 function onModeChange() {
   const mode = $("mode").value;
-  // scope is optional everywhere except active-scan, but the box is useful for any mode
-  // that targets neighbours, so show it for release/active-scan/release-previous
-  $("destcfg").classList.toggle("hidden", !SCOPE_MODES.has(mode));
+  // Scope applies to every mode -- it bounds the ARP sweep and the _send() scope guard in all
+  // of them, and for exhaust it's also what makes the pool-size estimate deterministic rather
+  // than inferred from the first OFFER's subnet. The panel used to appear only for
+  // release/active-scan/release-previous, which made the form jump around on mode change and
+  // hid a control that was doing real work in exhaust too. Always shown now.
   // exhaust has no --rate of its own; the windowed handshake pipeline paces it instead
   const isExhaust = mode === "exhaust";
   $("ratecfg").classList.toggle("hidden", isExhaust);
@@ -310,19 +311,16 @@ function handleEvent(e) {
       break;
     }
     case "NeighborSummary": {
-      logLine("finding", `[==] NEIGHBOR SUMMARY  ${e.total} host(s) seen before this run`, 0);
-      const block = (label, rows, cls, note) => {
-        if (!rows || !rows.length) return;
-        logLine(cls, `       ${label}: ${rows.length}${note || ""}`, 0);
-        for (const [ip, mac, detail] of rows) {
-          logLine(cls, `         ${ip}  ${mac}  (${detail})`, 0);
-        }
-      };
-      block("KNOCKED OFFLINE", e.offline, "alert", " — no working address now");
-      block("LEASE TAKEN", e.lease_taken, "alert",
-        " — still using the address, will fail at its next renewal");
-      block("reacted, still online", e.reacted, "in");
-      if (e.unaffected) logLine("notice", `       unaffected: ${e.unaffected}`, 0);
+      const counts = {};
+      for (const r of e.rows || []) counts[r[3]] = (counts[r[3]] || 0) + 1;
+      const tally = Object.entries(counts).map(([c, n]) => `${n} ${c}`).join("  ");
+      logLine("finding",
+        `[==] NEIGHBOR SUMMARY  ${e.total} host(s) seen before this run  (${tally})`, 0);
+      for (const [ip, mac, outcome, category] of e.rows || []) {
+        const cls = category === "offline" || category === "lease_taken" ? "alert"
+          : category === "unaffected" ? "notice" : "in";
+        logLine(cls, `       ${ip.padEnd(15)} ${mac}  ${outcome}`, 0);
+      }
       break;
     }
     case "Skipped": logLine("alert", `[!!] SKIPPED ${e.ip}  ${e.reason}`, 1); break;
@@ -352,7 +350,9 @@ function handleEvent(e) {
       }
       if (s.since_last_offer != null) bits.push(`last offer ${Math.round(s.since_last_offer)}s ago`);
       if (s.halt_signal) bits.push(`HALTED[${s.halt_signal}]`);
-      logLine("stat", "[##] " + bits.join("  "), 2);
+      // level 3 (debug): the dashboard already shows these numbers live, so in the log the
+      // 5-second pulse only drowns out the packet lines around it
+      logLine("stat", "[##] " + bits.join("  "), 3);
       break;
     }
     case "ControlDetected":

@@ -26,7 +26,12 @@ from .schemas import as_cli
 from .stream import SseSubscriber
 
 STATIC = Path(__file__).parent / "static"
-_CONTENT_TYPES = {".html": "text/html", ".js": "text/javascript", ".css": "text/css"}
+_CONTENT_TYPES = {
+    ".html": "text/html",
+    ".js": "text/javascript",
+    ".css": "text/css",
+    ".svg": "image/svg+xml",
+}
 
 
 class WebApp:
@@ -134,7 +139,9 @@ class Handler(BaseHTTPRequestHandler):
         route = urlparse(self.path).path
         if route in ("/", "/index.html"):
             return self._serve_static("index.html")
-        if route in ("/app.js", "/styles.css"):
+        # icon.svg is unauthenticated like the other assets: the browser requests it as a
+        # favicon before any token is in play
+        if route in ("/app.js", "/styles.css", "/icon.svg"):
             return self._serve_static(route.lstrip("/"))
         # everything below is protected
         if not self._authed():

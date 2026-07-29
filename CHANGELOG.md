@@ -1,5 +1,29 @@
 # Changelog
 
+## 2.3.4 (unreleased) — roll-call is one line per host; UI polish
+
+- **`NeighborSummary` is now one row per host, and lists every discovered host** — including
+  the untouched ones, so "unaffected" is visibly distinct from "not examined". Each row is
+  `ip  mac  outcome`, sorted worst-first then by address, with a tally in the header.
+- **Pool exhaustion now counts as impact.** A neighbor that DISCOVERed during the run and got
+  no answer was denied service by the drained pool; the first version read only
+  `_evict_outcomes` and reported those hosts as `unaffected`, which is exactly backwards for
+  the mode whose purpose is to deny them service.
+- **The 5-second status pulse moved to the debug tier** (`-v3` / web verbosity 3). The
+  dashboard already shows those numbers live, so in the log it only drowned out the packet
+  lines around it.
+- **Icon.** New hacker-pig SVG (`packaging/dhcpig.svg`, served as `/icon.svg`): shown beside
+  the title in the web UI and used as the favicon and the `.desktop` icon.
+- **Web UI**: the Neighbors/Hosts panel and the Dashboard swapped places, with the tables
+  taking the wider column; the verbosity label moved to the right of its dropdown; and the
+  `release-previous` mode label is now "Post Exhaustion / Reset DHCP Records".
+- **The Scope CIDRs box is shown for every mode**, exhaust included. It previously appeared
+  only for release/active-scan/release-previous, which made the form jump on mode change and
+  hid a control that was doing real work in exhaust too — scope bounds the ARP sweep and the
+  `_send()` scope guard in every mode, and for exhaust it's also what makes the pool-size
+  estimate deterministic instead of inferred from the first OFFER's subnet. Its border is now
+  neutral rather than red, since it's no longer a destructive-mode-only control.
+
 ## 2.3.3 (unreleased) — end-of-run neighbor roll-call on the event log
 
 - **New `NeighborSummary` event**, emitted once from `stop()` after eviction settles and before

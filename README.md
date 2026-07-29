@@ -1,5 +1,7 @@
-DHCPig
-======
+<h1>
+  <img src="packaging/dhcpig.svg" alt="" width="120" height="120" align="left" />
+  DHCPig
+</h1>
 
 Tags: DHCP, IPv4, IPv6, exhaustion, pentest, fingerprinting, security, scapy
 
@@ -244,7 +246,7 @@ MODES
                     EVICTION below). Web UI label: "DHCP Release Active Clients".
 * __release-previous__ — recovers a pool this tool previously drained, by replaying the lease
                     journal (not destructive — see RECOVERY below). Web UI label:
-                    "Reset / Recover DHCP Records".
+                    "Post Exhaustion / Reset DHCP Records".
 
 RELEASE
 -------

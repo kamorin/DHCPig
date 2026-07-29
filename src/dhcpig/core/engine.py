@@ -571,21 +571,40 @@ class DhcpEngine:
         self.findings.append(finding)
         self.bus.emit(ev.FindingRaised(finding=finding))
 
-    # rungs where the host currently has no working address -- see NeighborSummary's docstring
-    _OFFLINE_RUNGS = ("discover_unanswered", "apipa")
+    # How each eviction rung reads in the roll-call: (category, plain-language outcome).
+    # Only apipa/discover_unanswered mean "no working address right now" -- `rediscovered`
+    # restarted but *was served*, so it is emphatically not offline.
+    _RUNG_ROLLCALL = {
+        "apipa": ("offline", "no address -- fell back to 169.254 (apipa)"),
+        "discover_unanswered": ("offline", "asked for an address, got none"),
+        "rediscovered": ("reacted", "restarted, got a new address"),
+        "declined": ("reacted", "gave up the address (declined)"),
+        "defended": ("reacted", "defended its address"),
+    }
+    _ROLLCALL_ORDER = ("offline", "lease_taken", "reacted", "unaffected")
 
     def _emit_neighbor_summary(self) -> None:
-        """Roll-call every ARP-discovered neighbor into impact buckets and put it on the event
-        log. Called once from `stop()`, after eviction has been measured.
+        """Roll-call every ARP-discovered neighbor -- one row each, worst first -- onto the
+        event log. Called once from `stop()`, after eviction has been measured.
 
         Silent when the ARP sweep found nothing (`scan` never sweeps; a run on an empty segment
         has nothing to report) -- an empty roll-call is noise, not information.
 
-        The `lease_taken` bucket is the careful one and must not be merged into either
-        neighbour: those hosts are still using an address whose lease we now hold, so they are
-        neither offline (they work right now) nor unaffected (they fail at T1, silently, with no
-        signal we can observe from here -- the same reason `_reprobe_released()` is colour only,
-        see §5f).
+        Two classification rules carry the weight:
+
+        * **Exhaustion counts as impact, not just eviction.** A neighbor that DISCOVERed during
+          the run and got no answer was denied service by the drained pool, even though we never
+          contested its address by ARP. Reading only `_evict_outcomes` (as the first version of
+          this did) reported those hosts as `unaffected`, which is exactly backwards for the
+          mode whose entire purpose is to deny them service.
+        * **`lease_taken` is neither offline nor unaffected.** Those hosts work right now but
+          the server has handed us their address, so they fail at their next renewal, silently,
+          with nothing observable from here (same epistemics as `_reprobe_released()` being
+          colour only, §5f).
+
+        An observed eviction rung always wins over the inferred states -- it is the better
+        evidence, and eviction only ever targets addresses re-acquisition granted, so every
+        evicted host is also a `lease_taken` candidate.
         """
         neighbors = list(self._neighbors_by_mac.values())
         if not neighbors:
@@ -595,29 +614,35 @@ class DhcpEngine:
             for xid, outcome in self._reacquire_outcomes.items()
             if outcome == "granted" and xid in self._reacquire_targets
         }
-        offline: list[tuple[str, str, str]] = []
-        lease_taken: list[tuple[str, str, str]] = []
-        reacted: list[tuple[str, str, str]] = []
-        unaffected = 0
+        # MACs that asked for an address during this run and never got one -- denial of service
+        # by pool exhaustion rather than by ARP conflict
+        denied_macs = {
+            v["mac"] for v in self._foreign_discovers.values() if not v["answered"] and v["mac"]
+        }
+        rows: list[tuple[str, str, str, str]] = []
         for n in neighbors:
             rung = self._evict_outcomes.get(n.ip)
-            if rung in self._OFFLINE_RUNGS:
-                offline.append((n.ip, n.mac, rung))
-            elif rung in ("defended", "declined", "rediscovered"):
-                reacted.append((n.ip, n.mac, rung))
+            if rung in self._RUNG_ROLLCALL:
+                category, outcome = self._RUNG_ROLLCALL[rung]
+            elif n.mac in denied_macs:
+                category, outcome = "offline", "asked for an address, got none (pool drained)"
             elif n.ip in granted_ips:
-                lease_taken.append((n.ip, n.mac, "lease held by us, host still using it"))
+                category = "lease_taken"
+                outcome = "lease taken by us -- still using it, fails at next renewal"
             else:
-                unaffected += 1
-        self.bus.emit(
-            ev.NeighborSummary(
-                total=len(neighbors),
-                offline=offline,
-                lease_taken=lease_taken,
-                reacted=reacted,
-                unaffected=unaffected,
-            )
-        )
+                category, outcome = "unaffected", "unaffected"
+            rows.append((n.ip, n.mac, outcome, category))
+
+        def sort_key(row: tuple[str, str, str, str]):
+            ip = row[0]
+            try:
+                octets = tuple(int(p) for p in ip.split("."))
+            except ValueError:  # v6 or malformed -- sort lexically after the v4 addresses
+                octets = (256,)
+            return (self._ROLLCALL_ORDER.index(row[3]), octets, ip)
+
+        rows.sort(key=sort_key)
+        self.bus.emit(ev.NeighborSummary(total=len(neighbors), rows=rows))
 
     def _run_summary_steps(self) -> list[dict[str, str]]:
         """One `{"did": ..., "got": ...}` pair per phase, in run order -- a scannable list.

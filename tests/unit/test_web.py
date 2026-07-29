@@ -57,6 +57,15 @@ def test_static_index_served_without_token(server):
     assert b"DHCP" in body
 
 
+def test_icon_served_without_token(server):
+    """The browser asks for the favicon before any token is in play, so it has to sit on the
+    unauthenticated side of the gate like styles.css and app.js do."""
+    _, addr = server
+    status, body = _req(addr, "GET", "/icon.svg")
+    assert status == 200
+    assert body.lstrip().startswith(b"<svg")
+
+
 def test_api_requires_token(server):
     _, addr = server
     assert _req(addr, "GET", "/api/ifaces")[0] == 401
