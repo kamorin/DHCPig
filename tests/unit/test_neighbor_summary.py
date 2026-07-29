@@ -43,7 +43,7 @@ def _summary(events):
 
 def _by_category(events):
     out: dict[str, list[str]] = {}
-    for ip, _mac, _outcome, category in _summary(events).rows:
+    for ip, _mac, _host, _outcome, category in _summary(events).rows:
         out.setdefault(category, []).append(ip)
     return out
 
@@ -65,7 +65,7 @@ def test_every_discovered_neighbor_gets_exactly_one_row(monkeypatch):
     assert s.total == 6
     assert len(s.rows) == 6
     assert [row[0] for row in s.rows] == ips  # all listed, none dropped
-    assert {row[3] for row in s.rows} == {"unaffected"}
+    assert {row[4] for row in s.rows} == {"unaffected"}
 
 
 def test_no_summary_when_no_neighbors_were_discovered(monkeypatch):
@@ -82,10 +82,10 @@ def test_rows_are_sorted_worst_first_then_by_address(monkeypatch):
     _reacquired(eng, [ips[5]])
     eng._evict_outcomes = {ips[11]: "apipa", ips[2]: "defended"}
     eng._emit_neighbor_summary()
-    cats = [row[3] for row in _summary(events).rows]
+    cats = [row[4] for row in _summary(events).rows]
     assert cats[0] == "offline"
     assert cats.index("lease_taken") < cats.index("reacted") < cats.index("unaffected")
-    unaffected_ips = [row[0] for row in _summary(events).rows if row[3] == "unaffected"]
+    unaffected_ips = [row[0] for row in _summary(events).rows if row[4] == "unaffected"]
     assert unaffected_ips == sorted(unaffected_ips, key=lambda s: int(s.rsplit(".", 1)[1]))
 
 
@@ -119,7 +119,7 @@ def test_pool_exhaustion_denial_counts_as_offline_without_any_eviction(monkeypat
     cats = _by_category(events)
     assert cats["offline"] == [ips[1]]
     assert set(cats["unaffected"]) == {ips[0], ips[2]}
-    outcome = next(r[2] for r in _summary(events).rows if r[0] == ips[1])
+    outcome = next(r[3] for r in _summary(events).rows if r[0] == ips[1])
     assert "pool drained" in outcome
 
 
@@ -171,13 +171,54 @@ def test_eviction_outcome_wins_over_the_inferred_states(monkeypatch):
     assert _by_category(events) == {"reacted": ips}
 
 
+def _named(eng, mac, hostname, answered=True):
+    """A foreign DISCOVER from `mac` carrying DHCP option 12 -- the only hostname source."""
+    eng._foreign_discovers[hash(mac) & 0xFFFF] = {
+        "mac": mac,
+        "hostname": hostname,
+        "ts": 0.0,
+        "answered": answered,
+    }
+
+
+def test_hostname_is_picked_up_from_a_foreign_discover(monkeypatch):
+    eng, events = _engine(monkeypatch)
+    ips = _neighbors(eng, 2)
+    _named(eng, "aa:bb:cc:00:00:01", "laptop-07")
+    eng._emit_neighbor_summary()
+    hosts = {row[0]: row[2] for row in _summary(events).rows}
+    assert hosts[ips[1]] == "laptop-07"
+    assert hosts[ips[0]] == ""  # ARP-only neighbour: no option 12 ever seen, so no guess
+
+
+def test_cli_shows_a_hostname_column_only_when_one_is_known(capsys, monkeypatch):
+    """DHCP option 12 is the only source, so most segments have none -- an always-on column
+    would just sit blank."""
+    eng, events = _engine(monkeypatch)
+    _neighbors(eng, 2)
+    eng._emit_neighbor_summary()
+    Renderer(verbosity=2, color=False).handle(_summary(events))
+    bare = capsys.readouterr().out
+    assert "10.0.0.1        aa:bb:cc:00:00:00  unaffected" in bare  # no gap for a name
+
+    eng2, events2 = _engine(monkeypatch)
+    _neighbors(eng2, 2)
+    _named(eng2, "aa:bb:cc:00:00:01", "laptop-07")
+    eng2._emit_neighbor_summary()
+    Renderer(verbosity=2, color=False).handle(_summary(events2))
+    named = capsys.readouterr().out
+    assert "aa:bb:cc:00:00:01  laptop-07  unaffected" in named
+    # the nameless host keeps its columns lined up with the named one
+    assert "aa:bb:cc:00:00:00             unaffected" in named
+
+
 def test_rows_carry_ip_mac_outcome_and_category(monkeypatch):
     """The operator's next move is to go look at a specific machine, so name it."""
     eng, events = _engine(monkeypatch)
     ips = _neighbors(eng, 1)
     eng._evict_outcomes = {ips[0]: "apipa"}
     eng._emit_neighbor_summary()
-    ip, mac, outcome, category = _summary(events).rows[0]
+    ip, mac, _host, outcome, category = _summary(events).rows[0]
     assert (ip, mac, category) == (ips[0], "aa:bb:cc:00:00:00", "offline")
     assert "169.254" in outcome
 
@@ -297,8 +338,10 @@ def test_finding_and_event_never_disagree_about_a_host(monkeypatch):
     eng._emit_neighbor_summary()
     eng._finalize_findings()
     rows = _summary(events).rows
+    namew = max(len(h) for *_r, h, _o, _c in rows)
     assert _observed(events).evidence["hosts"] == [
-        f"{ip:<15} {mac}  {outcome}" for ip, mac, outcome, _c in rows
+        f"{ip:<15} {mac}  " + (f"{h:<{namew}}  " if namew else "") + outcome
+        for ip, mac, h, outcome, _c in rows
     ]
 
 

@@ -584,8 +584,8 @@ class DhcpEngine:
     }
     _ROLLCALL_ORDER = ("offline", "lease_taken", "reacted", "unaffected")
 
-    def _neighbor_rollcall(self) -> list[tuple[str, str, str, str]]:
-        """One `(ip, mac, outcome, category)` row per discovered neighbor, worst first.
+    def _neighbor_rollcall(self) -> list[tuple[str, str, str, str, str]]:
+        """One `(ip, mac, hostname, outcome, category)` row per discovered neighbor, worst first.
 
         Single source for both surfaces -- the `NeighborSummary` event (live, on the log) and the
         `NEIGHBORS_OBSERVED` finding (durable, in the JSON/HTML report). They must never disagree
@@ -620,7 +620,14 @@ class DhcpEngine:
         denied_macs = {
             v["mac"] for v in self._foreign_discovers.values() if not v["answered"] and v["mac"]
         }
-        rows: list[tuple[str, str, str, str]] = []
+        # Hostnames come from DHCP option 12 on a foreign DISCOVER, so we only have one for a
+        # host that happened to ask for an address while we were listening -- an ARP-only
+        # neighbour has none, and that's most of them. Empty string when unknown; never guess.
+        hostname_by_mac: dict[str, str] = {}
+        for v in self._foreign_discovers.values():
+            if v["mac"] and v["hostname"] and v["mac"] not in hostname_by_mac:
+                hostname_by_mac[v["mac"]] = v["hostname"]
+        rows: list[tuple[str, str, str, str, str]] = []
         for n in neighbors:
             rung = self._evict_outcomes.get(n.ip)
             if rung in self._RUNG_ROLLCALL:
@@ -632,15 +639,15 @@ class DhcpEngine:
                 outcome = "lease taken by us -- still using it, fails at next renewal"
             else:
                 category, outcome = "unaffected", "unaffected"
-            rows.append((n.ip, n.mac, outcome, category))
+            rows.append((n.ip, n.mac, hostname_by_mac.get(n.mac, ""), outcome, category))
 
-        def sort_key(row: tuple[str, str, str, str]):
+        def sort_key(row: tuple[str, str, str, str, str]):
             ip = row[0]
             try:
                 octets = tuple(int(p) for p in ip.split("."))
             except ValueError:  # v6 or malformed -- sort lexically after the v4 addresses
                 octets = (256,)
-            return (self._ROLLCALL_ORDER.index(row[3]), octets, ip)
+            return (self._ROLLCALL_ORDER.index(row[4]), octets, ip)
 
         rows.sort(key=sort_key)
         return rows
@@ -826,6 +833,7 @@ class DhcpEngine:
             by_category: dict[str, int] = {}
             for *_rest, category in rollcall:
                 by_category[category] = by_category.get(category, 0) + 1
+            namew = max((len(h) for *_r, h, _o, _c in rollcall), default=0)
             self._raise(
                 Finding(
                     id="NEIGHBORS_OBSERVED",
@@ -842,7 +850,8 @@ class DhcpEngine:
                         # one item per line, and every surface is monospace, so the columns line
                         # up without either front end knowing the shape of a host row
                         "hosts": [
-                            f"{ip:<15} {mac}  {outcome}" for ip, mac, outcome, _c in rollcall
+                            f"{ip:<15} {mac}  " + (f"{host:<{namew}}  " if namew else "") + outcome
+                            for ip, mac, host, outcome, _c in rollcall
                         ],
                     },
                     recommendation=(
