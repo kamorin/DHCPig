@@ -107,8 +107,12 @@ class Renderer:
         if self.verbosity == 1:
             sys.stdout.write("\n")  # close off the one-char-per-packet stream
         self._line("==", f"NEIGHBOR SUMMARY  {e.total} host(s) seen before this run")
-        for ip, mac, outcome, category in e.rows:
-            self._line(_ROLLCALL_TAG[category], f"  {ip:<15} {mac}  {outcome}")
+        # hostname column only when we actually have one for somebody -- DHCP option 12 is the
+        # only source, so an ARP-only segment has none and an always-on column would be blank
+        namew = max((len(h) for *_r, h, _o, _c in e.rows), default=0)
+        for ip, mac, host, outcome, category in e.rows:
+            name = f"{host:<{namew}}  " if namew else ""
+            self._line(_ROLLCALL_TAG[category], f"  {ip:<15} {mac}  {name}{outcome}")
         self._line("==", "OUTCOME")
         for outcome, n, category in outcome_tally(e.rows):
             self._line(_ROLLCALL_TAG[category], f"  {n:>3} host(s)  {outcome}")
@@ -210,7 +214,7 @@ def outcome_tally(rows: list) -> list[tuple[str, int, str]]:
     run is exactly the drift `_run_summary_steps()` is documented to avoid.
     """
     seen: dict[str, tuple[int, str]] = {}
-    for _ip, _mac, outcome, category in rows:  # rows arrive worst-first, so dict order is too
+    for *_r, outcome, category in rows:  # rows arrive worst-first, so dict order is too
         count, _cat = seen.get(outcome, (0, category))
         seen[outcome] = (count + 1, category)
     return [(outcome, n, cat) for outcome, (n, cat) in seen.items()]

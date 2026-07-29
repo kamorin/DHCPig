@@ -87,7 +87,10 @@ class NeighborSummary(Event):
     roll-call that silently omits the hosts nothing happened to isn't a roll-call; the reader
     can't tell "unaffected" from "not looked at".
 
-    `rows` are `(ip, mac, outcome, category)`, sorted by category severity then address.
+    `rows` are `(ip, mac, hostname, outcome, category)`, sorted by category severity then
+    address. `hostname` is DHCP option 12 seen on a foreign DISCOVER and is `""` for any host
+    that didn't ask for an address while we were listening -- which is most of them on a quiet
+    segment. Never guessed from anything else.
     `category` drives how a front end colors the line and is one of:
 
       * `offline` -- the host has no working address right now: it reached the `apipa` or
@@ -104,7 +107,7 @@ class NeighborSummary(Event):
     """
 
     total: int
-    rows: list[tuple[str, str, str, str]] = field(default_factory=list)
+    rows: list[tuple[str, str, str, str, str]] = field(default_factory=list)
 
 
 @dataclass

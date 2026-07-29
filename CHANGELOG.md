@@ -2,6 +2,10 @@
 
 ## 2.3.4 (unreleased) — roll-call is one line per host; two toggles removed; UI polish
 
+- **The roll-call shows the hostname when there is one.** Source is DHCP option 12 on a
+  foreign DISCOVER, so we only have a name for a host that asked for an address while we were
+  listening — an ARP-only neighbour has none, and that's most of them. The column appears only
+  when at least one host has a name, and is never guessed from anything else.
 - **The event log no longer prints the verdict word.** Finding lines show the title and id
   only; `Finding.verdict` is untouched and still colours the line, still drives the Findings
   tab, and still carries PASS/FAIL into `report["findings"]` and the JSON/HTML exports. A bare
