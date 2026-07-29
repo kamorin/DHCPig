@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.5.0 — 2026-07-29
+
+First tagged release of the 2.x rewrite. Everything below this line shipped in it: the package
+refactor of the single-file `pig.py` (2.0), the windowed/adaptive exhaust sender and the
+control-transaction verdict model (2.1), the lease journal and `release-previous` recovery
+(2.2), RFC 5227 ARP-conflict eviction with targeted re-acquisition (2.3), racing freed
+addresses (2.3.1), and the reporting rework that ends a run with a plain-language summary and
+a per-host roll-call on the event log (2.3.2 – 2.3.5).
+
+**Not yet validated against real hardware beyond a single live `/22` exhaust run** — see
+AGENT_HANDOFF.md §9 before relying on the eviction, re-acquisition or recovery paths.
+
 ## 2.3.5 (unreleased) — the event log is the only results surface
 
 - **The Findings tab is gone**, along with its client-side finding/control stores, the

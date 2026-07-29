@@ -1,3 +1,3 @@
 """DHCPig — DHCP exhaustion / network-hardening validation tool (whitehat)."""
 
-__version__ = "2.0.0"
+__version__ = "2.5.0"
