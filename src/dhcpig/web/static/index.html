@@ -28,16 +28,6 @@
     <button id="copycli" title="Copy equivalent dhcpig command">⧉ Copy CLI</button>
     <button id="saveprofile" title="Download profile">💾</button>
     <label class="filebtn" title="Load profile">📂<input type="file" id="loadprofile" accept="application/json" hidden /></label>
-    <label class="dry"><input type="checkbox" id="dryrun" /> Dry-run</label>
-    <label>
-      <select id="verbosity">
-        <option value="0">0 · errors</option>
-        <option value="1">1 · minimal</option>
-        <option value="2" selected>2 · normal</option>
-        <option value="3">3 · debug</option>
-      </select>
-      Verbosity
-    </label>
     <span id="conn" class="pill off">SSE: off</span>
   </header>
 
@@ -56,13 +46,17 @@
           placeholder="defaults to the interface network" /></label>
       </div>
       <label class="chk"><input type="checkbox" id="spoofeth" checked /> spoof eth src (distinct MACs)</label>
-      <label class="chk" title="ARP-sweep the segment before exhausting, to record which hosts
-were present beforehand.">
-        <input type="checkbox" id="arpscan" checked /> ARP scan before run</label>
-      <label class="chk" title="Send DHCPRELEASE for every ARP-discovered neighbor before
-exhausting, so the pool actually has addresses to give up rather than only whatever was
-already free. Needs a known server (from the control transaction) to work.">
-        <input type="checkbox" id="releasefirst" checked /> release neighbours first</label>
+      <label class="chk"><input type="checkbox" id="dryrun" /> Dry-run</label>
+      <label>Verbosity
+        <select id="verbosity">
+          <option value="0">0 · errors</option>
+          <option value="1">1 · minimal</option>
+          <option value="2" selected>2 · normal</option>
+          <option value="3">3 · debug</option>
+        </select>
+      </label>
+      <p class="hint">The pre-run ARP inventory and the neighbor release phase always run —
+        every later phase reads what they produce, so they aren't optional.</p>
     </section>
 
     <section class="panel tables">

@@ -563,8 +563,14 @@ def test_prelude_sweeps_then_controls_then_release_then_senders(monkeypatch):
     assert order == ["arp", "ctl-pre-self", "ctl-pre-new", "release", "senders"]
 
 
-def test_arp_sweep_can_be_disabled(monkeypatch):
-    eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST, arp_sweep=False)
+def test_arp_sweep_is_unconditional(monkeypatch):
+    """The sweep has no opt-out any more: every later phase (release targets, re-acquisition,
+    eviction, the NeighborSummary roll-call) reads the inventory it builds, so skipping it
+    hollowed out the rest of the run rather than just saving a few seconds."""
+    from dhcpig.core.models import SessionConfig
+
+    assert not hasattr(SessionConfig(interface="lo"), "arp_sweep")
+    eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
     order = []
     monkeypatch.setattr(eng, "_baseline_arp_scan", lambda: order.append("arp"))
     monkeypatch.setattr(
@@ -572,9 +578,10 @@ def test_arp_sweep_can_be_disabled(monkeypatch):
         "_control_transaction",
         lambda phase, client="self": ControlOutcome(phase=phase, client=client),
     )
+    monkeypatch.setattr(eng, "_release_phase", lambda: None)
     monkeypatch.setattr(eng, "_start_senders", lambda: order.append("senders"))
     eng._exhaust_prelude()
-    assert order == ["senders"]
+    assert order == ["arp", "senders"]
 
 
 def test_sweep_range_falls_back_to_iface_network_for_exhaust(monkeypatch):
@@ -618,15 +625,22 @@ def test_release_phase_skipped_without_a_known_server(monkeypatch):
     assert any(isinstance(e, ev.Debug) and "skipped" in e.message for e in events)
 
 
-def test_release_phase_disabled_by_config(monkeypatch):
-    eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST, release_neighbors=False)
+def test_release_phase_has_no_config_opt_out(monkeypatch):
+    """Freeing addresses and then taking them is the behaviour under test; with it off, exhaust
+    competed only for whatever was already free and re-acquisition/eviction had nothing to feed
+    on. A missing server identity still self-skips -- that's a precondition, not an option."""
+    from dhcpig.core.models import SessionConfig
+
+    assert not hasattr(SessionConfig(interface="lo"), "release_neighbors")
+    eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
     eng.control_pre = ControlOutcome(
         phase="pre", client="self", attempted=True, success=True, server_id="10.0.0.1"
     )
+    eng._neighbors_by_mac["aa:bb:cc:dd:ee:01"] = Neighbor(mac="aa:bb:cc:dd:ee:01", ip="10.0.0.7")
     called = []
-    monkeypatch.setattr(eng, "_do_release", lambda *a, **k: called.append(a) or 0)
+    monkeypatch.setattr(eng, "_do_release", lambda *a, **k: called.append(a) or 1)
     eng._release_phase()
-    assert called == []
+    assert called  # it ran
 
 
 def test_release_phase_uses_server_from_pre_control(monkeypatch):

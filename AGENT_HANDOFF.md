@@ -194,9 +194,13 @@ from `_exhaust_prelude()` in 2.3 so `release` mode shares it too — see §5f):
    go to `0.0.0.0` and get dropped). Excludes the gateway and the DHCP server from targets,
    feeds the freed list into re-acquisition (§5f) which is what actually confirms whether the
    RELEASE took (`_reprobe_released` is colour only — see its docstring for why an ARP re-probe
-   structurally reads 0 even on full success). `cfg.release_neighbors` (default True) /
-   `--no-release` opt out (exhaust only — no equivalent flag on the `release` subcommand, since
-   disabling it there defeats the mode's purpose). `packets.build_release_v4()` also gained the
+   structurally reads 0 even on full success). **No opt-out**: `cfg.release_neighbors` /
+   `--no-release` were removed in 2.3.4 along with `cfg.arp_sweep` / `--no-arp-scan`. Every later
+   phase reads what those two produce — release targets, re-acquisition, eviction, the
+   `NeighborSummary` roll-call — so turning either off silently hollowed out the rest of the run
+   rather than just making it quicker. The release phase still self-skips with a Debug when no
+   server identity is confirmed; that's a precondition, not an option. Tests assert both
+   `SessionConfig` fields and both CLI flags are gone. `packets.build_release_v4()` also gained the
    `Ether` layer it was missing (Bug 2: it built an L3-only packet despite being sent via L2
    `sendp()` — every RELEASE this tool ever sent before this fix was malformed on the wire, not
    just the exhaust-embedded ones).

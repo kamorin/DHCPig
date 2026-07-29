@@ -94,18 +94,6 @@ def build_parser() -> argparse.ArgumentParser:
     ex.add_argument("--fuzz", action="store_true")
     ex.add_argument("--dry-run", action="store_true")
     ex.add_argument(
-        "--no-arp-scan",
-        dest="no_arp_scan",
-        action="store_true",
-        help="skip the pre-run ARP sweep that inventories who was on the segment beforehand",
-    )
-    ex.add_argument(
-        "--no-release",
-        dest="no_release",
-        action="store_true",
-        help="skip releasing ARP-discovered neighbors' leases before exhausting (default: on)",
-    )
-    ex.add_argument(
         "--no-journal",
         dest="no_journal",
         action="store_true",
@@ -254,8 +242,6 @@ def build_config(args) -> SessionConfig:
         dry_run=getattr(args, "dry_run", False),
         scope_cidrs=scope,
         report_path=Path(args.report) if getattr(args, "report", None) else None,
-        arp_sweep=not getattr(args, "no_arp_scan", False),
-        release_neighbors=not getattr(args, "no_release", False),
         evict=not getattr(args, "no_evict", False),
         race_freed_addresses=not getattr(args, "no_race_freed", False),
         race_on_rediscover=getattr(args, "race_on_rediscover", False),

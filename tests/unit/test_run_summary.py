@@ -57,7 +57,7 @@ def test_run_summary_is_raised_first_so_a_report_opens_with_it(monkeypatch):
 
 def test_run_summary_is_raised_even_when_nothing_happened(monkeypatch):
     """No neighbors, no controls, no sends -- the finding still exists, just with fewer steps."""
-    eng, events = _engine(monkeypatch, arp_sweep=False)
+    eng, events = _engine(monkeypatch)
     eng._finalize_findings()
     assert isinstance(_summary(events).evidence["steps"], list)
 

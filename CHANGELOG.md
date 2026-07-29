@@ -1,6 +1,17 @@
 # Changelog
 
-## 2.3.4 (unreleased) — roll-call is one line per host; UI polish
+## 2.3.4 (unreleased) — roll-call is one line per host; two toggles removed; UI polish
+
+- **The pre-run ARP inventory and the neighbor release phase are no longer optional.** Removed
+  `SessionConfig.arp_sweep` / `--no-arp-scan` / the "ARP scan before run" checkbox, and
+  `SessionConfig.release_neighbors` / `--no-release` / the "release neighbours first" checkbox,
+  plus their `config_from_payload`/`as_cli` plumbing. Every later phase reads what those two
+  produce — release targets, targeted re-acquisition, eviction, and the `NeighborSummary`
+  roll-call — so turning either off silently hollowed out the rest of the run instead of just
+  making it quicker. The release phase still self-skips (with a Debug) when no server identity
+  is confirmed; that's a precondition, not an option.
+- **Web UI**: Dry-run and Verbosity moved out of the top bar into the Config panel, and the
+  event log is 20% taller.
 
 - **`NeighborSummary` is now one row per host, and lists every discovered host** — including
   the untouched ones, so "unaffected" is visibly distinct from "not examined". Each row is

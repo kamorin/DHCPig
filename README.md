@@ -46,8 +46,6 @@ Safety flags:
     --rate N             cap packets/sec — release/active-scan/release-previous only,
                           default 7 (exhaust has no --rate; see EXHAUST PIPELINE below)
     --scope CIDR         restrict targets to these networks (repeatable; optional)
-    --no-release         skip releasing ARP-discovered neighbors before exhausting
-    --no-arp-scan        skip the pre-run ARP inventory
     --no-journal         don't record acquired leases to the recovery journal (see RECOVERY)
     --no-evict           skip RFC 5227 ARP-conflict eviction (exhaust and release; see EVICTION)
     --status-interval N  periodic status line, default every 5s (0 disables)
@@ -77,8 +75,8 @@ EXHAUST PIPELINE
 `exhaust` runs a shared prelude before the sender starts (`_common_prelude()`, also used by
 `release` — see RELEASE below): an ARP sweep (pre-run inventory), a control transaction
 (baseline reachability), a **release phase** (DHCPRELEASE for every ARP-discovered neighbor, so
-the pool has addresses to give up rather than only whatever was already free — `--no-release` to
-skip), and **targeted re-acquisition** (a DISCOVER carrying DHCP option 50 for each freed
+the pool has addresses to give up rather than only whatever was already free), and **targeted
+re-acquisition** (a DISCOVER carrying DHCP option 50 for each freed
 address specifically, so the release phase's effect is actually confirmed rather than assumed —
 see RECOVERY/`NEIGHBOR_LEASES_RELEASED` below). Then the sender starts; after it finishes,
 **eviction** runs (see EVICTION below) before the verdict is produced.
@@ -102,8 +100,8 @@ transactions still run, so the report is complete rather than truncated.
 CONTROL TRANSACTION & FINDINGS
 ------------------------------
 
-`exhaust` first **ARP-sweeps the segment** to record which hosts were present beforehand
-(`--no-arp-scan` to skip), then runs **control transactions** before and after the test: an
+`exhaust` first **ARP-sweeps the segment** to record which hosts were present beforehand, then
+runs **control transactions** before and after the test: an
 ordinary DHCP cycle (DISCOVER/OFFER/REQUEST/ACK/RELEASE) whose lease is released immediately.
 
 Each control runs as **two legs**, because they answer different questions:
@@ -260,8 +258,8 @@ ARP-conflict eviction (see EVICTION below) against whatever it just re-acquired.
 That means `release` can force a *currently connected* client both off its lease **and** off its
 address at the link layer, then watch whether it comes back cleanly. This is a materially bigger
 blast radius than the name suggests on its own — see SECURITY.md. `--no-evict` skips just the
-eviction step; there's no equivalent `--no-release` for the `release` subcommand, since skipping
-the release step is the entire point of `release` mode existing.
+eviction step. The ARP inventory and the release phase have no opt-out in any mode: every later
+phase reads what they produce, so skipping them hollowed out the run rather than shortening it.
 
 `release` never triggers `DHCP_STARVATION_ATTAINED`/`_NOT_ATTAINED` — those are exhaust's
 verdict, derived from a control leg `release` doesn't run. Its own findings are
