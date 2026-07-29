@@ -2,6 +2,13 @@
 
 ## 2.5.0 — 2026-07-29
 
+- **Icon redesigned to actually look like a pig.** The first version led with a full hoodie and
+  a visor across half the face, which at 28px in the header read as a dark blob rather than an
+  animal. The head now fills the canvas, ears and snout carry the silhouette, and the hacker cue
+  is reduced to slim shades plus a thin hood brim that stays clear of the ears. Same file serves
+  as `/icon.svg`, the favicon, `packaging/dhcpig.svg` for the `.desktop` entry, and the README
+  header.
+
 - **Fixed: `active-scan` never finished.** Its worker is an ARP sweep plus one DHCPINFORM and
   then it's done, but `ACTIVE_SCAN` wasn't in `RUN_ONCE_MODES`, so neither the CLI polling loop
   nor the web reaper ever called `stop()` — the run sat in RUNNING emitting status ticks until
