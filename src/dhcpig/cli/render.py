@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 
 from ..core import events as ev
+from ..core.reporting import finding_summary_lines
 
 _COLORS = {
     "->": "\033[36m",  # cyan  outbound
@@ -73,23 +74,12 @@ class Renderer:
             label = f"{_VERDICT_COLOR[f.verdict]}{label}{_RESET}"
         sys.stdout.write(f"{label} {f.title}  ({f.id})\n")
         if self.verbosity >= 2:
-            if f.evidence:
-                # List-valued evidence gets its own indented block; a narrative like
-                # RUN_SUMMARY's `steps` is unreadable flattened into a single dict repr, and
-                # existing list keys (servers, sample_hosts, ...) read better this way too.
-                # an empty list stays in the compact dict -- a bare "servers:" header with
-                # nothing under it reads like truncated output
-                scalars = {k: v for k, v in f.evidence.items() if not (isinstance(v, list) and v)}
-                if scalars:
-                    sys.stdout.write(f"        evidence: {scalars}\n")
-                for key, items in f.evidence.items():
-                    if not isinstance(items, list) or not items:
-                        continue
-                    sys.stdout.write(f"        {key}:\n")
-                    for line in _evidence_lines(items):
-                        sys.stdout.write(f"          {line}\n")
-            if f.recommendation:
-                sys.stdout.write(f"        {f.recommendation}\n")
+            summary = {
+                "evidence": f.evidence,
+                "recommendation": f.recommendation,
+            }
+            for line in finding_summary_lines(summary):
+                sys.stdout.write(f"        {line}\n")
         sys.stdout.flush()
 
     def _neighbor_summary(self, e) -> None:
@@ -218,16 +208,6 @@ def outcome_tally(rows: list) -> list[tuple[str, int, str]]:
         count, _cat = seen.get(outcome, (0, category))
         seen[outcome] = (count + 1, category)
     return [(outcome, n, cat) for outcome, (n, cat) in seen.items()]
-
-
-def _evidence_lines(items: list) -> list[str]:
-    """Render a list-valued evidence key. `{"did": ..., "got": ...}` pairs (RUN_SUMMARY's steps)
-    become two aligned columns -- the left column is scannable on its own, which is the whole
-    point of that finding. Anything else falls back to one bulleted item per line."""
-    if items and all(isinstance(i, dict) and "did" in i and "got" in i for i in items):
-        width = max(len(str(i["did"])) for i in items)
-        return [f"- {str(i['did']):<{width}}  ->  {i['got']}" for i in items]
-    return [f"- {i}" for i in items]
 
 
 def _opt50_hostname(option50: str | None, hostname: str | None) -> str:

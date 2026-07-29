@@ -33,10 +33,14 @@ AGENT_HANDOFF.md §9 before relying on the eviction, re-acquisition or recovery 
   re-ranked after the fact, so the ranking has to happen before it's written; the CLI gets it
   too. Findings raised *during* a run (`NEIGHBOR_LEASES_RELEASED`, the release-previous
   verdicts) still emit immediately — on a long run those are live progress.
-- **Nothing was deleted from the data.** `Finding`, `verdict`, `severity`, `evidence`, the full
-  multi-sentence `recommendation` and `report["findings"]` are untouched, so the JSON/CSV/HTML
-  exports still carry everything. This removed a view, not a deliverable — the log shows the
-  summary, the report holds the detail.
+- **Every human-facing surface renders a finding identically.** `reporting.finding_summary_lines()`
+  is the single source of the rule; the CLI renderer and the HTML report both call it, and
+  `app.js` mirrors it for the web log. The HTML report used to dump `evidence: {…}` as a raw
+  dict and the whole multi-sentence recommendation, so a run read three different ways
+  depending on where you looked at it.
+- **`Finding` itself is untouched** — `verdict`, `severity`, full `evidence` and the complete
+  `recommendation` all still reach `report["findings"]`, and the **JSON export remains the
+  complete record**. The summarising happens at render time, not in the data.
 
 ## 2.3.4 (unreleased) — roll-call is one line per host; two toggles removed; UI polish
 
