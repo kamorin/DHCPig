@@ -28,6 +28,14 @@
     <button id="copycli" title="Copy equivalent dhcpig command">⧉ Copy CLI</button>
     <button id="saveprofile" title="Download profile">💾</button>
     <label class="filebtn" title="Load profile">📂<input type="file" id="loadprofile" accept="application/json" hidden /></label>
+    <label>Verbosity
+      <select id="verbosity">
+        <option value="0">0 · errors</option>
+        <option value="1">1 · minimal</option>
+        <option value="2" selected>2 · normal</option>
+        <option value="3">3 · debug</option>
+      </select>
+    </label>
     <span id="conn" class="pill off">SSE: off</span>
   </header>
 
@@ -47,14 +55,6 @@
       </div>
       <label class="chk"><input type="checkbox" id="spoofeth" checked /> spoof eth src (distinct MACs)</label>
       <label class="chk"><input type="checkbox" id="dryrun" /> Dry-run</label>
-      <label>Verbosity
-        <select id="verbosity">
-          <option value="0">0 · errors</option>
-          <option value="1">1 · minimal</option>
-          <option value="2" selected>2 · normal</option>
-          <option value="3">3 · debug</option>
-        </select>
-      </label>
       <p id="modenote" class="hint modenote"></p>
     </section>
 
