@@ -152,6 +152,9 @@ class DhcpEngine:
         self._baseline_neighbor_count = 0
         # dry-run only: neighbor count the release phase would have released, for DRY_RUN_SUMMARY
         self._dry_run_would_release = 0
+        # exhaust only: (mac, ip) freed by the release phase, held until the sender has
+        # drained the pool so re-acquisition is actually a meaningful test
+        self._freed_pending: list[tuple[str, str]] = []
         # targeted re-acquisition (2.3): xid -> requested IP (option 50) for every DISCOVER
         # _reacquire_phase() pushes, and xid -> outcome ("granted"/"offered_different"/"naked"/
         # "no_response") populated by hooks in _handle_ack()/_handle_nak()/_reap_timeouts(). Kept
@@ -341,6 +344,14 @@ class DhcpEngine:
         # offline is the only thing that skips it (no sniffer to receive the reply); dry-run
         # alone still runs this leg for real, as a probe.
         if self.cfg.mode is Mode.EXHAUST and self._sniffer is not None:
+            # Re-acquisition runs here, not in the prelude: the pool is at its emptiest right
+            # after the sender stops, which is the only state where an option-50 request from an
+            # unknown MAC can be distinguished from the server just preferring a fresh address.
+            # Before the post-controls on purpose -- addresses re-acquired here are spoofed
+            # leases we hold, so the "can a new client still get one?" leg should be measured
+            # with them held, exactly like every other lease this run took.
+            freed, self._freed_pending = self._freed_pending, []
+            self._finish_release(freed, ignore_stop=True)
             self.control_post = self._control_transaction("post", client="self")
             # the leg that actually answers "is the pool drained?" — needs a fresh address
             self.control_post_new = self._control_transaction("post", client="new")
@@ -703,20 +714,20 @@ class DhcpEngine:
                 return
             if outcome.success:
                 where = f" from {outcome.server_id}" if outcome.server_id else ""
-                step(did, f"got {outcome.offered_ip}{where}")
+                step(did, f"{outcome.offered_ip}{where}")
             else:
                 step(did, f"DENIED ({outcome.reason})")
 
         if mode is Mode.SCAN:
             step(
-                "Listened without sending anything",
-                f"{len(self._neighbors_by_mac)} devices, {len(self.servers)} DHCP servers",
+                "Listened only",
+                f"{len(self._neighbors_by_mac)} devices, {len(self.servers)} servers",
             )
             return steps
 
-        step("Inventoried the network by ARP", f"{self._baseline_neighbor_count} devices found")
+        step("ARP inventory", f"{self._baseline_neighbor_count} devices")
         if mode is Mode.ACTIVE_SCAN:
-            step("Asked the DHCP server to identify itself", f"{len(self.servers)} servers found")
+            step("DHCPINFORM to identify servers", f"{len(self.servers)} found")
             return steps
 
         if mode is Mode.RELEASE_PREVIOUS:
@@ -745,20 +756,20 @@ class DhcpEngine:
             return steps
 
         # exhaust / release share the same prelude, so they share these steps
-        ctl(self._prelude_pre_control(), "Proved DHCP works from this machine")
-        ctl(self.control_pre_new, "Proved DHCP works for an unknown device")
+        ctl(self._prelude_pre_control(), "DHCP from this machine")
+        ctl(self.control_pre_new, "DHCP as an unknown device")
 
         released = self._dry_run_would_release if self.cfg.dry_run else self.releases
         if released:
             step(
-                f"Declared {released} other devices' leases done{dry}",
-                f"{released} DHCPRELEASE sent, no ownership proof required",
+                f"Released other devices' leases{dry}",
+                f"{released} DHCPRELEASE sent, no ownership proof",
             )
         if self._reacquire_targets:
             granted = sum(1 for o in self._reacquire_outcomes.values() if o == "granted")
             step(
-                "Asked for those addresses back by name",
-                f"server gave us {granted} of {len(self._reacquire_targets)} (DHCP option 50)",
+                "Asked for them back by name",
+                f"got {granted} of {len(self._reacquire_targets)} (option 50)",
             )
 
         if mode is Mode.EXHAUST:
@@ -771,17 +782,14 @@ class DhcpEngine:
                 else:
                     tail = "stopped by the operator"
                 step(
-                    f"Requested addresses to drain the pool{dry}",
-                    f"{self.acks} held of {self.discovers} asked; {tail}",
+                    f"Drained the pool{dry}",
+                    f"{self.acks} held of {self.discovers}; {tail}",
                 )
             if self.races:
                 won = sum(1 for o in self._race_outcomes.values() if o == "granted")
-                step(
-                    f"Grabbed addresses as others freed them{dry}",
-                    f"took {won} of {self.races}",
-                )
-            ctl(self.control_post, "Retested DHCP from this machine")
-            ctl(self.control_post_new, "Retested an unknown device")
+                step(f"Raced freed addresses{dry}", f"took {won} of {self.races}")
+            ctl(self.control_post, "Retested from this machine")
+            ctl(self.control_post_new, "Retested as an unknown device")
 
         if self._evict_outcomes:
             by_rung: dict[str, int] = {}
@@ -789,11 +797,11 @@ class DhcpEngine:
                 by_rung[rung] = by_rung.get(rung, 0) + 1
             detail = ", ".join(f"{n} {rung}" for rung, n in sorted(by_rung.items()))
             step(
-                f"Forged ARP to contest the addresses we took{dry}",
-                f"{len(self._evict_outcomes)} contested: {detail} (RFC 5227)",
+                f"Contested those addresses by ARP{dry}",
+                f"{len(self._evict_outcomes)} targets: {detail}",
             )
         elif self.cfg.evict and mode in (Mode.EXHAUST, Mode.RELEASE_NEIGHBORS):
-            step("Skipped contesting addresses by ARP", "nothing was taken to contest")
+            step("Contested addresses by ARP", "skipped, nothing was taken")
         return steps
 
     def _finalize_findings(self) -> None:
@@ -843,15 +851,17 @@ class DhcpEngine:
                     "steps": self._run_summary_steps(),
                 },
                 recommendation=(
-                    "Every step above works because DHCP has no way to check that a request "
-                    "really comes from the device it claims to be. Assuming this was run from "
-                    "Wi-Fi, the single highest-value control is to enable DHCP proxy on the "
-                    "WLAN and configure the controller to drop any DHCP message whose "
-                    "client-hardware-address does not match the MAC of the station that sent "
-                    "it. A wireless station's MAC is bound to its association (and, under "
-                    "WPA2/WPA3, to its encryption keys), so the controller is uniquely able to "
-                    "catch this -- and every step above that touched another device's address "
-                    "depended on being able to send DHCP on that device's behalf."
+                    # First sentence only reaches the log (finding_summary_lines); the rest is
+                    # for the report, so it has to stand alone.
+                    "Every step above works because DHCP never checks that a request comes from "
+                    "the device it names. Assuming this was run from Wi-Fi, the single "
+                    "highest-value control is to enable DHCP proxy on the WLAN and have the "
+                    "controller drop any DHCP message whose client-hardware-address does not "
+                    "match the MAC of the station that sent it. A wireless station's MAC is "
+                    "bound to its association (and, under WPA2/WPA3, to its encryption keys), "
+                    "so the controller is uniquely able to catch this -- and every step above "
+                    "that touched another device's address depended on being able to send DHCP "
+                    "on that device's behalf."
                 ),
             )
         )
@@ -1880,7 +1890,11 @@ class DhcpEngine:
         if self._stop.is_set():
             return
         freed = self._release_phase()
-        self._finish_release(freed)
+        if self.cfg.mode is Mode.EXHAUST:
+            # deferred until the pool is drained -- see _finish_release()'s docstring
+            self._freed_pending = freed
+        else:
+            self._finish_release(freed)
 
     def _prelude_pre_control(self) -> ControlOutcome | None:
         """Whichever pre/self control outcome `_common_prelude()` populated for the current
@@ -1932,18 +1946,32 @@ class DhcpEngine:
         self._debug(f"release phase: {sent} RELEASE sent for {len(neighbors)} neighbor(s)")
         return [(n.mac, n.ip) for n in neighbors]
 
-    def _finish_release(self, freed: list[tuple[str, str]]) -> None:
+    def _finish_release(self, freed: list[tuple[str, str]], ignore_stop: bool = False) -> None:
         """Re-acquire the just-released addresses and raise NEIGHBOR_LEASES_RELEASED.
 
-        Shared by exhaust and release (2.3, Phase 5) via `_common_prelude()` -- both modes
-        just went through `_release_phase()` and need the same follow-up. A no-op when nothing
-        was freed (disabled, dry-run, no neighbors, no server identity).
+        **When this runs is load-bearing.** RFC 2131 §4.3.1 has the server pick an address in
+        order: (1) one already bound to this client, (2) this client's previous address, (3) the
+        option-50 request *if that address is available*, (4) anything from the free list. Our
+        DISCOVER comes from a MAC the server has never seen, so rules 1-2 can't apply -- and
+        while the pool still has free addresses, rule 4 beats rule 3 and the server hands out
+        something fresh. Run before the flood (as this used to be, in `_common_prelude()`), a
+        `granted=0` therefore says almost nothing: it's the *expected* answer on any pool with
+        headroom, whether or not the RELEASE was honoured.
+
+        So exhaust defers this until after its sender has drained the pool -- see `stop()`.
+        With the free list empty, rule 3 is the only rule left, and the outcome finally
+        discriminates: a stranger MAC getting the address proves both that the RELEASE took and
+        that the address was hijackable; still failing means the binding was never freed.
+        `release` never drains anything, so it keeps the inline call and keeps the weaker
+        evidence -- the finding says so rather than pretending otherwise.
+
+        A no-op when nothing was freed (dry-run, no neighbors, no server identity).
         """
         if not freed:
             return
         pre = self._prelude_pre_control()
         server_id = pre.server_id if pre else None
-        counts = self._reacquire_phase(freed)
+        counts = self._reacquire_phase(freed, ignore_stop=ignore_stop)
         granted = counts["granted"]
         stopped = self._reprobe_released([ip for _mac, ip in freed])
         self._debug(
@@ -1967,45 +1995,77 @@ class DhcpEngine:
                     "server_id": server_id,
                 },
                 recommendation=(
-                    "The server ignored the unauthenticated RELEASE — none of the freed "
-                    "addresses could be re-acquired (the desired behavior)."
-                    if granted == 0
-                    else "The server acted on unauthenticated RELEASE requests for addresses "
-                    "held by other hosts on the segment, and this run was able to re-acquire "
-                    f"{granted} of them by name (DHCP option 50) — any host can force another "
-                    "off its lease and then take it. This is independent of pool exhaustion and "
-                    "worth reporting on its own; verify DHCP snooping / binding validation on "
-                    "the access switch. 'still_using_address_arp' is not evidence either way — "
-                    "a released victim keeps using its old address until its own lease's T1, "
-                    "with no way to know it was released."
+                    "The server acted on unauthenticated RELEASE requests for addresses held by "
+                    "other hosts on the segment, and this run re-acquired "
+                    f"{granted} of {len(freed)} of them by name (DHCP option 50) from a MAC the "
+                    "server had never seen — any host can force another off its lease and then "
+                    "take it. Independent of pool exhaustion and worth reporting on its own; "
+                    "verify DHCP snooping / binding validation on the access switch."
+                    if granted
+                    # granted == 0 is only meaningful once the pool is empty. With addresses
+                    # free, RFC 2131 §4.3.1 has the server prefer a fresh one over honouring
+                    # option 50 for an unknown MAC, so a zero says nothing about the RELEASE.
+                    else "None of the freed addresses could be re-acquired. The pool still had "
+                    "free addresses at this point, so this does NOT show the server protected "
+                    "the bindings: RFC 2131 has a server prefer an unused address over honouring "
+                    "a specific request from a MAC it has never seen, which is the same result. "
+                    "Re-run as `exhaust`, where this step happens after the pool is drained and "
+                    "the two causes can be told apart."
+                    if self.cfg.mode is not Mode.EXHAUST
+                    else "None of the freed addresses could be re-acquired even with the pool "
+                    "drained, so the server had no unused address to prefer instead — it "
+                    "declined to hand another host's address to an unknown MAC. That is the "
+                    "desired behavior and is real evidence here, unlike the same result before "
+                    "exhaustion."
                 ),
             )
         )
 
-    def _reacquire_phase(self, freed: list[tuple[str, str]]) -> dict[str, int]:
+    def _reacquire_phase(
+        self, freed: list[tuple[str, str]], ignore_stop: bool = False
+    ) -> dict[str, int]:
         """Push one targeted DISCOVER (option 50 = the freed IP) per (mac, ip) in `freed`,
-        each from a fresh random MAC, into the existing windowed `_inflight` pipeline --
+        each from a **fresh random MAC**, into the existing windowed `_inflight` pipeline --
         `_handle_offer()` -> `_handle_ack()` complete them exactly like any other lease, so the
         result lands in `Cleanup` and the lease journal for free. Returns outcome counts.
+
+        The random MAC is the whole point and must not be "fixed" to the victim's: binding the
+        address to an identity that is *not* the victim's is the claim being tested. Re-acquiring
+        as the victim produces a binding byte-identical to the one it already had, so the server
+        cannot tell us apart, the victim renews straight through it, and nothing has been taken
+        -- it would turn an inconclusive negative into a false positive. It would also break
+        eviction, which only works against an address the victim no longer holds (§5f).
+
+        `ignore_stop=True` for the exhaust post-sender call: `stop()` has already set `_stop` by
+        then, so the normal guards would bail instantly. Same reasoning as `_evict_worker()`.
+        The drain loop stays bounded by its deadline either way.
         """
         counts = {"granted": 0, "offered_different": 0, "naked": 0, "no_response": 0}
         if not freed:
             return counts
         from .netutils import random_mac
 
+        def halted() -> bool:
+            return self._stop.is_set() and not ignore_stop
+
+        def pause(seconds: float) -> None:
+            if ignore_stop:
+                time.sleep(seconds)
+            else:
+                self._stop.wait(seconds)
+
         pushed: list[int] = []
         for _mac, ip in freed:
-            if self._stop.is_set():
+            if halted():
                 break
-            while not self._stop.is_set():
+            while not halted():
                 with self._inflight_lock:
                     room = self._window - len(self._inflight)
                 if room > 0:
                     break
                 self._reap_timeouts()
-                if self._stop.wait(0.02):
-                    break
-            if self._stop.is_set():
+                pause(0.02)
+            if halted():
                 break
             client_mac = random_mac()
             xid = _rand_xid()
@@ -2034,13 +2094,13 @@ class DhcpEngine:
         deadline = (
             time.time() + self.cfg.timeouts.control + self.cfg.timeouts.dhcp_request * batches
         )
-        while not self._stop.is_set() and time.time() < deadline:
+        while not halted() and time.time() < deadline:
             self._reap_timeouts()
             with self._inflight_lock:
                 pending = [xid for xid in pushed if xid in self._inflight]
             if not pending:
                 break
-            self._stop.wait(0.05)
+            pause(0.05)
         self._reap_timeouts()  # final sweep: anything still inflight is now overdue
 
         for xid in pushed:

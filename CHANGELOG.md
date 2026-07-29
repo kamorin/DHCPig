@@ -2,6 +2,23 @@
 
 ## 2.5.0 — 2026-07-29
 
+- **Exhaust now re-acquires released addresses *after* draining the pool**, not in the prelude.
+  RFC 2131 §4.3.1 has a server pick, in order: an address already bound to the client, the
+  client's previous address, the option-50 request *if available*, then anything free. Our
+  DISCOVER comes from a MAC the server has never seen, so while the pool has headroom the
+  server prefers a fresh address and `granted=0` is the expected answer whether or not the
+  RELEASE was honoured — the measurement said nothing. Run once the free list is empty, that
+  rule is the only one left and the result finally discriminates. `release` keeps the inline
+  call (it never drains anything) and its finding now says the evidence is weaker.
+- **`NEIGHBOR_LEASES_RELEASED` no longer claims the server defended itself on a zero.** The old
+  text read "The server ignored the unauthenticated RELEASE … (the desired behavior)" for any
+  `granted=0`, which is a false PASS in everything but name when the pool had free addresses.
+  It's now three-way: hijack confirmed, zero-with-pool-drained (real evidence), and
+  zero-with-headroom (explicitly not evidence, with a pointer to re-run as exhaust).
+- **RUN_SUMMARY steps tightened** — "Inventoried the network by ARP → 4 devices found" becomes
+  "ARP inventory → 4 devices"; the right column no longer repeats the left. Protocol names stay
+  on the right, per the rule a test enforces.
+
 - **Icon redesigned to actually look like a pig.** The first version led with a full hoodie and
   a visor across half the face, which at 28px in the header read as a dark blob rather than an
   animal. The head now fills the canvas, ears and snout carry the silhouette, and the hacker cue

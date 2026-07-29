@@ -84,14 +84,14 @@ def test_exhaust_steps_report_actions_and_results_in_run_order(monkeypatch):
     eng._finalize_findings()
     text = _steps_text(events)
 
-    assert "47 devices found" in text  # ARP inventory result
-    assert "got 10.0.0.5 from 10.0.0.1" in text  # control result
+    assert "47 devices" in text  # ARP inventory result
+    assert "10.0.0.5 from 10.0.0.1" in text  # control result
     assert "12 DHCPRELEASE sent" in text  # release result
-    assert "gave us 4 of 12" in text  # re-acquisition result
-    assert "412 held of 690 asked" in text  # sender result
-    assert "1 contested: 1 declined" in text  # eviction result
+    assert "got 4 of 12 (option 50)" in text  # re-acquisition result
+    assert "412 held of 690" in text  # sender result
+    assert "1 targets: 1 declined" in text  # eviction result
     # order matters: the narrative must read chronologically
-    assert text.index("47 devices") < text.index("DHCPRELEASE") < text.index("contested")
+    assert text.index("47 devices") < text.index("DHCPRELEASE") < text.index("targets")
 
 
 def test_every_step_is_a_did_got_pair(monkeypatch):
@@ -131,7 +131,7 @@ def test_plain_english_action_with_the_protocol_name_in_the_result(monkeypatch):
     eng._finalize_findings()
     step = next(s for s in _summary(events).evidence["steps"] if "DHCPRELEASE" in s["got"])
     assert "DHCPRELEASE" not in step["did"]
-    assert "leases done" in step["did"]
+    assert "Released other devices' leases" == step["did"]
 
 
 def test_release_mode_summary_omits_the_flood_and_new_client_legs(monkeypatch):
@@ -143,7 +143,7 @@ def test_release_mode_summary_omits_the_flood_and_new_client_legs(monkeypatch):
     eng.releases = 5
     eng._finalize_findings()
     text = _steps_text(events)
-    assert "drain the pool" not in text
+    assert "Drained the pool" not in text
     assert "unknown device" not in text
     assert "5 DHCPRELEASE sent" in text
 
@@ -153,7 +153,7 @@ def test_scan_mode_summary_says_only_that_it_listened(monkeypatch):
     eng._finalize_findings()
     steps = _summary(events).evidence["steps"]
     assert len(steps) == 1
-    assert "without sending anything" in steps[0]["did"]
+    assert steps[0]["did"] == "Listened only"
 
 
 def test_release_previous_summary_describes_the_journal_replay(monkeypatch):
@@ -177,7 +177,7 @@ def test_halt_signal_is_reported_as_the_senders_result(monkeypatch):
     eng.acks, eng.discovers = 56, 120
     eng._halt_signal = ("nak_burst", "4 NAKs in 5s", 56)
     eng._finalize_findings()
-    step = next(s for s in _summary(events).evidence["steps"] if "drain the pool" in s["did"])
+    step = next(s for s in _summary(events).evidence["steps"] if "Drained the pool" in s["did"])
     assert "stopped early at 56" in step["got"] and "nak_burst" in step["got"]
 
 
