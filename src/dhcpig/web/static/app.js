@@ -31,34 +31,26 @@ const ifaceCidr = {};       // iface name -> network cidr (for scope auto-fill)
 const MODE_NOTES = {
   exhaust: {
     harm: true,
-    text: "Inventories the segment by ARP, checks DHCP works for this machine and for an " +
-      "unknown device, tells the server every neighbour is finished with its address, asks " +
-      "for those addresses back by name, then keeps requesting addresses until the pool runs " +
-      "dry — finally contesting the addresses it took with forged ARP. Neighbours lose their " +
-      "leases and new devices are denied service.",
+    text: "Releases every neighbour's address, takes them back by name, then drains the pool. " +
+      "Neighbours lose their leases; new devices are denied one.",
   },
   release: {
     harm: true,
-    text: "The same chain as exhaustion without the flood: ARP inventory, tell the server " +
-      "every neighbour is finished with its address, ask for those addresses back by name, " +
-      "then contest them with forged ARP. Targets devices that are connected right now; the " +
-      "pool is never drained, so most should be able to get an address again.",
+    text: "Releases every neighbour's address and takes it back by name, then contests it with " +
+      "forged ARP. Hits devices connected right now; the pool is left intact.",
   },
   "release-previous": {
     harm: false,
-    text: "Recovery, not a test. Replays this tool's own record of every address it has taken " +
-      "on this network and hands them all back, then re-checks whether an unknown device can " +
-      "get an address. Sends nothing at all if the pool isn't actually exhausted.",
+    text: "Recovery. Hands back every address this tool took on this network. " +
+      "Sends nothing if the pool isn't exhausted.",
   },
   "active-scan": {
     harm: false,
-    text: "Read-only. ARP-sweeps the scope and sends one DHCPINFORM to find and fingerprint " +
-      "the DHCP servers. Takes no addresses and disturbs no leases.",
+    text: "Read-only. ARP-sweeps the scope and fingerprints the DHCP servers.",
   },
   scan: {
     harm: false,
-    text: "Read-only. Watches DHCP and ARP traffic and fingerprints what it sees, without " +
-      "sending anything at all.",
+    text: "Read-only. Watches DHCP and ARP traffic without sending anything.",
   },
 };
 let lastAutoScope = "";     // remember what we auto-filled so we don't clobber user edits
@@ -347,15 +339,22 @@ function handleEvent(e) {
       break;
     }
     case "NeighborSummary": {
-      const counts = {};
-      for (const r of e.rows || []) counts[r[3]] = (counts[r[3]] || 0) + 1;
-      const tally = Object.entries(counts).map(([c, n]) => `${n} ${c}`).join("  ");
-      logLine("finding",
-        `[==] NEIGHBOR SUMMARY  ${e.total} host(s) seen before this run  (${tally})`, 0);
+      const cls = (c) => c === "offline" || c === "lease_taken" ? "alert"
+        : c === "unaffected" ? "notice" : "in";
+      logLine("finding", `[==] NEIGHBOR SUMMARY  ${e.total} host(s) seen before this run`, 0);
       for (const [ip, mac, outcome, category] of e.rows || []) {
-        const cls = category === "offline" || category === "lease_taken" ? "alert"
-          : category === "unaffected" ? "notice" : "in";
-        logLine(cls, `       ${ip.padEnd(15)} ${mac}  ${outcome}`, 0);
+        logLine(cls(category), `       ${ip.padEnd(15)} ${mac}  ${outcome}`, 0);
+      }
+      // the concluding "N host(s) did X" roll-up -- same data, aggregated. Counts and what
+      // happened, never a verdict: the findings own pass/fail.
+      const tally = new Map();
+      for (const [, , outcome, category] of e.rows || []) {
+        const [n] = tally.get(outcome) || [0, category];
+        tally.set(outcome, [n + 1, category]);
+      }
+      logLine("finding", "[==] OUTCOME", 0);
+      for (const [outcome, [n, category]] of tally) {
+        logLine(cls(category), `       ${String(n).padStart(3)} host(s)  ${outcome}`, 0);
       }
       break;
     }

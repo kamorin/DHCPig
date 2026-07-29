@@ -355,10 +355,11 @@ class DhcpEngine:
             # to observe DECLINE/DISCOVER/ARP signals live during its rounds+settle, and
             # _finalize_findings() needs the outcomes it produces.
             self._evict_phase()
-        # after eviction, so outcomes are settled; before findings, so the log reads
-        # "here is who was affected" and then the verdicts about it
-        self._emit_neighbor_summary()
         self._finalize_findings()
+        # Last thing on the log, after the findings: the roll-call plus its "N host(s) did X"
+        # roll-up is the conclusion an operator reads, so it should be what the run ends on
+        # rather than something scrolled past on the way to the verdicts.
+        self._emit_neighbor_summary()
         if self._sniffer is not None:
             self._sniffer.stop()
         self.state = DONE

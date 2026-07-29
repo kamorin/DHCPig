@@ -98,16 +98,12 @@ class Renderer:
             return
         if self.verbosity == 1:
             sys.stdout.write("\n")  # close off the one-char-per-packet stream
-        counts: dict[str, int] = {}
-        for *_rest, category in e.rows:
-            counts[category] = counts.get(category, 0) + 1
-        tally = "  ".join(f"{n} {cat}" for cat, n in counts.items())
-        self._line("==", f"NEIGHBOR SUMMARY  {e.total} host(s) seen before this run  ({tally})")
+        self._line("==", f"NEIGHBOR SUMMARY  {e.total} host(s) seen before this run")
         for ip, mac, outcome, category in e.rows:
-            tag = "!!" if category in ("offline", "lease_taken") else "<-"
-            if category == "unaffected":
-                tag = "--"
-            self._line(tag, f"  {ip:<15} {mac}  {outcome}")
+            self._line(_ROLLCALL_TAG[category], f"  {ip:<15} {mac}  {outcome}")
+        self._line("==", "OUTCOME")
+        for outcome, n, category in outcome_tally(e.rows):
+            self._line(_ROLLCALL_TAG[category], f"  {n:>3} host(s)  {outcome}")
 
     def handle(self, e: ev.Event) -> None:
         if isinstance(e, ev.DiscoverSent):
@@ -191,6 +187,25 @@ class Renderer:
         elif isinstance(e, ev.Debug):
             if self.verbosity >= 3:  # debug detail only at highest verbosity
                 self._line("DBG", e.message)
+
+
+_ROLLCALL_TAG = {"offline": "!!", "lease_taken": "!!", "reacted": "<-", "unaffected": "--"}
+
+
+def outcome_tally(rows: list) -> list[tuple[str, int, str]]:
+    """Group roll-call rows into `(outcome, host_count, category)`, worst first.
+
+    The concluding "N host(s) did X" block. Same data as the per-host lines above it, aggregated
+    -- on a segment of any size the per-host list is the detail and this is the answer. Phrased
+    as counts of hosts and what happened to them, never as a verdict: the findings own
+    pass/fail, and having the log deliver a second, differently-worded judgement of the same
+    run is exactly the drift `_run_summary_steps()` is documented to avoid.
+    """
+    seen: dict[str, tuple[int, str]] = {}
+    for _ip, _mac, outcome, category in rows:  # rows arrive worst-first, so dict order is too
+        count, _cat = seen.get(outcome, (0, category))
+        seen[outcome] = (count + 1, category)
+    return [(outcome, n, cat) for outcome, (n, cat) in seen.items()]
 
 
 def _evidence_lines(items: list) -> list[str]:

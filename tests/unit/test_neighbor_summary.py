@@ -183,15 +183,16 @@ def test_rows_carry_ip_mac_outcome_and_category(monkeypatch):
 
 
 # ---------------------------------------------------------------- run wiring
-def test_stop_emits_the_summary_before_the_findings(monkeypatch):
-    """The log should read 'here is who was affected', then the verdicts about it."""
+def test_stop_emits_the_summary_last_so_the_run_ends_on_it(monkeypatch):
+    """The roll-call plus its outcome roll-up is the conclusion an operator reads, so it should
+    be the last thing on the log rather than something scrolled past on the way to a verdict."""
     eng, events = _engine(monkeypatch)
     _neighbors(eng, 2)
     eng._started = 1.0
     eng.stop()
     kinds = [type(e).__name__ for e in events]
     assert "NeighborSummary" in kinds
-    assert kinds.index("NeighborSummary") < kinds.index("FindingRaised")
+    assert kinds.index("NeighborSummary") > kinds.index("FindingRaised")
 
 
 # ---------------------------------------------------------------- CLI rendering
@@ -204,23 +205,34 @@ def test_cli_prints_one_line_per_host_for_every_host(capsys, monkeypatch):
     r = Renderer(verbosity=2, color=False)
     r.handle(_summary(events))
     out = capsys.readouterr().out
-    body = [ln for ln in out.splitlines() if "NEIGHBOR SUMMARY" not in ln]
+    lines = out.splitlines()
+    hosts = lines[1 : lines.index("[==] OUTCOME")]
 
     assert "NEIGHBOR SUMMARY  4 host(s) seen" in out
-    assert len(body) == 4  # every host, one line each -- including the untouched ones
+    assert len(hosts) == 4  # every host, one line each -- including the untouched ones
     for i, ip in enumerate(ips):
-        assert any(ip in ln and f"aa:bb:cc:00:00:{i:02x}" in ln for ln in body)
+        assert any(ip in ln and f"aa:bb:cc:00:00:{i:02x}" in ln for ln in hosts)
     assert "fails at next renewal" in out
 
 
-def test_cli_header_carries_the_tally(capsys, monkeypatch):
+def test_cli_ends_with_an_outcome_rollup_counting_hosts_per_outcome(capsys, monkeypatch):
+    """"N host(s) did X" -- the same data as the per-host lines, aggregated, and phrased as
+    counts rather than as a verdict. The findings own pass/fail; a second differently-worded
+    judgement of the same run on the log is exactly the drift to avoid."""
     eng, events = _engine(monkeypatch)
-    ips = _neighbors(eng, 3)
-    eng._evict_outcomes = {ips[0]: "apipa"}
+    ips = _neighbors(eng, 4)
+    eng._evict_outcomes = {ips[0]: "apipa", ips[1]: "defended"}
     eng._emit_neighbor_summary()
     Renderer(verbosity=2, color=False).handle(_summary(events))
     out = capsys.readouterr().out
-    assert "1 offline" in out and "2 unaffected" in out
+    tail = out.split("[==] OUTCOME\n")[1]
+
+    assert "1 host(s)  no address -- fell back to 169.254 (apipa)" in tail
+    assert "1 host(s)  defended its address" in tail
+    assert "2 host(s)  unaffected" in tail
+    assert tail.count("host(s)") == 3  # one line per distinct outcome, not per host
+    for word in ("FAIL", "PASS", "vulnerable"):
+        assert word not in tail
 
 
 def test_cli_summary_is_silent_at_verbosity_zero(capsys, monkeypatch):

@@ -2,6 +2,12 @@
 
 ## 2.3.4 (unreleased) — roll-call is one line per host; two toggles removed; UI polish
 
+- **The run now ends on an `OUTCOME` roll-up** — the per-host roll-call followed by
+  "N host(s) did X", one line per distinct outcome, and the roll-call moved to *after* the
+  findings so it's the last thing on the log rather than something scrolled past on the way to
+  a verdict. Phrased as counts of hosts and what happened to them, never as a verdict: the
+  findings own pass/fail, and a second differently-worded judgement of the same run on the log
+  is exactly the drift the run summary is documented to avoid.
 - **The roll-call now also lands in the findings, as `NEIGHBORS_OBSERVED` (INFO)** — one line
   per host (`ip  mac  outcome`) plus a per-category tally, raised right after `RUN_SUMMARY` in
   every mode including the read-only scans. `NeighborSummary` is a live event and never reaches
@@ -16,13 +22,13 @@
   roll-call — so turning either off silently hollowed out the rest of the run instead of just
   making it quicker. The release phase still self-skips (with a Debug) when no server identity
   is confirmed; that's a precondition, not an option.
-- **Web UI**: Dry-run and Verbosity moved out of the top bar into the Config panel, and the
-  event log is 20% taller.
-- **The Config panel now explains what the selected mode will actually do** — a short
-  plain-language note describing the sequence and who it affects, updated on every mode change
-  and coloured amber for the two destructive modes. Replaces a static line about the ARP
-  inventory and release phase always running, which told the reader about a removed checkbox
-  rather than about the run they were about to start.
+- **Web UI**: Dry-run moved out of the top bar into the Config panel (Verbosity stays in the
+  top bar), and the event log is 20% taller.
+- **The Config panel now explains what the selected mode will actually do** — a one- or
+  two-sentence note describing the run and who it affects, updated on every mode change and
+  coloured amber for the two destructive modes. Replaces a static line about the ARP inventory
+  and release phase always running, which told the reader about a removed checkbox rather than
+  about the run they were about to start.
 
 - **`NeighborSummary` is now one row per host, and lists every discovered host** — including
   the untouched ones, so "unaffected" is visibly distinct from "not examined". Each row is
