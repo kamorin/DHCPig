@@ -46,6 +46,10 @@ main { display: grid; grid-template-columns: 260px 1.2fr 0.8fr; gap: 12px; paddi
    old red "destructive" framing would have been misleading */
 .destcfg { border: 1px solid var(--edge); border-radius: 8px; padding: 8px; margin: 8px 0; }
 .config .hint { color: var(--muted); font-size: 11px; margin: 4px 0 8px; }
+/* what pressing Start will do, for the mode currently selected */
+.modenote { border-top: 1px solid var(--edge); padding-top: 8px; margin-top: 10px !important;
+  line-height: 1.5; }
+.modenote.harm { color: var(--warn); }
 
 .counters { display: flex; flex-wrap: wrap; gap: 12px 16px; margin-bottom: 8px; }
 .counter { text-align: center; }
