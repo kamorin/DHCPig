@@ -130,6 +130,23 @@ together and should be kept together:
   Its single recommendation assumes a **Wi-Fi-based** attacker (controller DHCP proxy +
   client-MAC/chaddr consistency enforcement) — that's the one control that breaks every step in
   the chain, since all of them depend on sending DHCP on another device's behalf.
+- **`NeighborSummary` (2.3.3) is the event-log counterpart to `RUN_SUMMARY`**: emitted once from
+  `stop()` (after `_evict_phase()` so outcomes are settled, before `_finalize_findings()` so the
+  log reads "who was affected" then "the verdicts about it"), built by
+  `_emit_neighbor_summary()`. It buckets every ARP-discovered neighbor and **names** hosts rather
+  than only counting them. Silent when the ARP sweep found nothing. The bucket boundaries are
+  load-bearing and are pinned by tests in both directions:
+  - `offline` — only `discover_unanswered`/`apipa` (`_OFFLINE_RUNGS`). These are the two rungs
+    that mean "no working address right now". `rediscovered` is **not** one of them: it restarted
+    and *was served*.
+  - `lease_taken` — re-acquisition `granted` for that IP with no eviction reaction observed. **Do
+    not merge this into either neighbouring bucket.** The host is working at the moment the
+    summary is emitted (so it isn't offline) but the server has handed us its address, so it
+    fails at its next renewal, silently, with nothing observable from our vantage point (same
+    reason `_reprobe_released()` is colour only, §5f).
+  - An observed eviction rung always wins over the inferred `lease_taken` state for the same
+    host — eviction only ever targets addresses re-acquisition granted, so every evicted host is
+    also a `lease_taken` candidate, and the observed reaction is the better evidence.
 - **Evidence rendering is list-aware** in both front ends (`cli/render.py` `_evidence_lines()`,
   `web/static/app.js` `evidenceHtml()`): a list of `{did, got}` pairs renders as two aligned
   columns (CLI padding / an HTML table), any other list renders as indented bullets, scalars stay
@@ -446,7 +463,7 @@ Sandbox Python is **3.10**, but the package targets **3.11+**, so **do NOT `pip 
 in the sandbox** — run against the source path instead:
 ```
 cd /sessions/<id>/mnt/DHCPig
-PYTHONPATH=src python3 -m pytest -q          # 329 pass, 1 integration deselected
+PYTHONPATH=src python3 -m pytest -q          # 341 pass, 1 integration deselected
 python3 -m ruff check src tests
 python3 -m ruff format --check src tests
 ```
@@ -566,7 +583,7 @@ finishing and auto-`stop()`, mirroring the CLI, instead of stalling ~65s) and in
 option50/chaddr/hostname logging landed alongside it. Then **2.3.2**: the always-raised
 `RUN_SUMMARY` finding (§5a) that opens every report with a plain-language, step-by-step account
 of what the run did, plus list-aware evidence rendering in both front ends to display it.
-**329 unit tests pass; ruff clean.** The
+**341 unit tests pass; ruff clean.** The
 user validated a real exhaust run on their Kali VM against a live `/22` (pcap reviewed) — that
 run is what exposed the pending-offer saturation bug §5c fixes and the renewal-vs-fresh-allocation
 control-transaction bug §5a fixes. **Neither 2.1, 2.2, 2.3, nor 2.3.1 has been exercised against

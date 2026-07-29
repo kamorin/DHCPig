@@ -84,6 +84,35 @@ class Renderer:
                 sys.stdout.write(f"        {f.recommendation}\n")
         sys.stdout.flush()
 
+    def _neighbor_summary(self, e) -> None:
+        """End-of-run roll-call. Hosts are named, not just counted -- the operator's next move
+        is usually to go look at a specific machine. Shown from verbosity 1 up: at v0 the run is
+        deliberately silent except findings, but at v1 (the 'one char per packet' mode) a
+        who-did-this-affect block is exactly what's wanted at the end."""
+        if self.verbosity <= 0:
+            return
+        if self.verbosity == 1:
+            sys.stdout.write("\n")  # close off the one-char-per-packet stream
+        self._line("==", f"NEIGHBOR SUMMARY  {e.total} host(s) seen before this run")
+
+        def block(label: str, rows: list, tag: str, note: str = "") -> None:
+            if not rows:
+                return
+            self._line(tag, f"  {label}: {len(rows)}{note}")
+            for ip, mac, detail in rows:
+                self._line(tag, f"    {ip:<15} {mac}  ({detail})")
+
+        block("KNOCKED OFFLINE", e.offline, "!!", " -- no working address now")
+        block(
+            "LEASE TAKEN",
+            e.lease_taken,
+            "!!",
+            " -- still using the address, will fail at its next renewal",
+        )
+        block("reacted, still online", e.reacted, "<-")
+        if e.unaffected:
+            self._line("--", f"  unaffected: {e.unaffected}")
+
     def handle(self, e: ev.Event) -> None:
         if isinstance(e, ev.DiscoverSent):
             tail = _opt50_hostname(e.option50, e.hostname)
@@ -125,6 +154,8 @@ class Renderer:
         elif isinstance(e, ev.ClientEvicted):
             tag = "!!" if e.outcome in ("declined", "discover_unanswered", "apipa") else "<-"
             self._line(tag, f"evict outcome  {e.ip} / {e.mac}  -> {e.outcome}")
+        elif isinstance(e, ev.NeighborSummary):
+            self._neighbor_summary(e)
         elif isinstance(e, ev.Skipped):
             self._line("!!", f"SKIPPED      {e.ip}   {e.reason}")
         elif isinstance(e, ev.StatusTick):

@@ -355,6 +355,9 @@ class DhcpEngine:
             # to observe DECLINE/DISCOVER/ARP signals live during its rounds+settle, and
             # _finalize_findings() needs the outcomes it produces.
             self._evict_phase()
+        # after eviction, so outcomes are settled; before findings, so the log reads
+        # "here is who was affected" and then the verdicts about it
+        self._emit_neighbor_summary()
         self._finalize_findings()
         if self._sniffer is not None:
             self._sniffer.stop()
@@ -567,6 +570,54 @@ class DhcpEngine:
     def _raise(self, finding: Finding) -> None:
         self.findings.append(finding)
         self.bus.emit(ev.FindingRaised(finding=finding))
+
+    # rungs where the host currently has no working address -- see NeighborSummary's docstring
+    _OFFLINE_RUNGS = ("discover_unanswered", "apipa")
+
+    def _emit_neighbor_summary(self) -> None:
+        """Roll-call every ARP-discovered neighbor into impact buckets and put it on the event
+        log. Called once from `stop()`, after eviction has been measured.
+
+        Silent when the ARP sweep found nothing (`scan` never sweeps; a run on an empty segment
+        has nothing to report) -- an empty roll-call is noise, not information.
+
+        The `lease_taken` bucket is the careful one and must not be merged into either
+        neighbour: those hosts are still using an address whose lease we now hold, so they are
+        neither offline (they work right now) nor unaffected (they fail at T1, silently, with no
+        signal we can observe from here -- the same reason `_reprobe_released()` is colour only,
+        see §5f).
+        """
+        neighbors = list(self._neighbors_by_mac.values())
+        if not neighbors:
+            return
+        granted_ips = {
+            self._reacquire_targets[xid]
+            for xid, outcome in self._reacquire_outcomes.items()
+            if outcome == "granted" and xid in self._reacquire_targets
+        }
+        offline: list[tuple[str, str, str]] = []
+        lease_taken: list[tuple[str, str, str]] = []
+        reacted: list[tuple[str, str, str]] = []
+        unaffected = 0
+        for n in neighbors:
+            rung = self._evict_outcomes.get(n.ip)
+            if rung in self._OFFLINE_RUNGS:
+                offline.append((n.ip, n.mac, rung))
+            elif rung in ("defended", "declined", "rediscovered"):
+                reacted.append((n.ip, n.mac, rung))
+            elif n.ip in granted_ips:
+                lease_taken.append((n.ip, n.mac, "lease held by us, host still using it"))
+            else:
+                unaffected += 1
+        self.bus.emit(
+            ev.NeighborSummary(
+                total=len(neighbors),
+                offline=offline,
+                lease_taken=lease_taken,
+                reacted=reacted,
+                unaffected=unaffected,
+            )
+        )
 
     def _run_summary_steps(self) -> list[dict[str, str]]:
         """One `{"did": ..., "got": ...}` pair per phase, in run order -- a scannable list.

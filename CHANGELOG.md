@@ -1,5 +1,29 @@
 # Changelog
 
+## 2.3.3 (unreleased) — end-of-run neighbor roll-call on the event log
+
+- **New `NeighborSummary` event**, emitted once from `stop()` after eviction settles and before
+  the findings, naming every ARP-discovered neighbor and what this run did to it:
+
+      [==] NEIGHBOR SUMMARY  9 host(s) seen before this run
+      [!!]   KNOCKED OFFLINE: 2 -- no working address now
+      [!!]     172.20.1.1      aa:bb:cc:00:00:00  (apipa)
+      [!!]     172.20.1.2      aa:bb:cc:00:00:01  (discover_unanswered)
+      [!!]   LEASE TAKEN: 1 -- still using the address, will fail at its next renewal
+      [!!]     172.20.1.5      aa:bb:cc:00:00:04  (lease held by us, host still using it)
+      [<-]   reacted, still online: 2
+      [--]   unaffected: 4
+
+  Hosts are named rather than only counted — the operator's next move is usually to go look at
+  a specific machine.
+- **`LEASE TAKEN` is deliberately its own bucket.** Those hosts are working at the moment the
+  summary is written, so reporting them as knocked offline overstates present-tense impact; but
+  the server has given us their address, so they fail at their next renewal (T1) with no signal
+  observable from here. Folding them into either neighbouring bucket misreports the run. Tests
+  pin the boundary in both directions.
+- Buckets provably partition the neighbor list exactly once; an observed eviction reaction beats
+  the inferred `lease_taken` state for the same host, since it's the better evidence.
+
 ## 2.3.2 (unreleased) — every run now explains itself
 
 Every finding until now was conditional, so a report was a pile of verdicts with no reliable

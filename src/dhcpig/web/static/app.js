@@ -309,6 +309,22 @@ function handleEvent(e) {
         `[${bad ? "!!" : "<-"}] evict outcome  ${e.ip} / ${e.mac}  -> ${e.outcome}`, 2);
       break;
     }
+    case "NeighborSummary": {
+      logLine("finding", `[==] NEIGHBOR SUMMARY  ${e.total} host(s) seen before this run`, 0);
+      const block = (label, rows, cls, note) => {
+        if (!rows || !rows.length) return;
+        logLine(cls, `       ${label}: ${rows.length}${note || ""}`, 0);
+        for (const [ip, mac, detail] of rows) {
+          logLine(cls, `         ${ip}  ${mac}  (${detail})`, 0);
+        }
+      };
+      block("KNOCKED OFFLINE", e.offline, "alert", " — no working address now");
+      block("LEASE TAKEN", e.lease_taken, "alert",
+        " — still using the address, will fail at its next renewal");
+      block("reacted, still online", e.reacted, "in");
+      if (e.unaffected) logLine("notice", `       unaffected: ${e.unaffected}`, 0);
+      break;
+    }
     case "Skipped": logLine("alert", `[!!] SKIPPED ${e.ip}  ${e.reason}`, 1); break;
     case "StatusTick": {
       const s = e.stats, w = Math.round(s.window || 0);
