@@ -10,6 +10,13 @@
   then its numbers, then the first sentence of its recommendation. High/medium sit at log level
   0 and info at level 1, so verbosity 0 is a results-only view — the same thing `-v0` means in
   the CLI.
+- **The summary line is kept to signal.** Nested evidence dicts flatten (`declined=1 ·
+  defended=1`) instead of serializing as JSON; zero-valued and empty keys are dropped; and run
+  context (`mode`, `interface`, `dry_run`, `elapsed`), config echoes (`rounds`, `server_id`,
+  `phase`) and `still_using_address_arp` — which the engine itself documents as not being
+  evidence either way — are skipped entirely. `NEIGHBORS_OBSERVED` no longer prints at all: it
+  is the same rows as the `NEIGHBOR SUMMARY` block directly beneath it. All of it still reaches
+  `report["findings"]`.
 - **`_finalize_findings()` buffers and emits in severity order.** A log is a stream and can't be
   re-ranked after the fact, so the ranking has to happen before it's written; the CLI gets it
   too. Findings raised *during* a run (`NEIGHBOR_LEASES_RELEASED`, the release-previous
