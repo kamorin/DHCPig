@@ -18,6 +18,11 @@
   is confirmed; that's a precondition, not an option.
 - **Web UI**: Dry-run and Verbosity moved out of the top bar into the Config panel, and the
   event log is 20% taller.
+- **The Config panel now explains what the selected mode will actually do** — a short
+  plain-language note describing the sequence and who it affects, updated on every mode change
+  and coloured amber for the two destructive modes. Replaces a static line about the ARP
+  inventory and release phase always running, which told the reader about a removed checkbox
+  rather than about the run they were about to start.
 
 - **`NeighborSummary` is now one row per host, and lists every discovered host** — including
   the untouched ones, so "unaffected" is visibly distinct from "not examined". Each row is

@@ -24,6 +24,43 @@ const servers = new Map();
 const neighbors = new Map();
 const leases = [];
 const ifaceCidr = {};       // iface name -> network cidr (for scope auto-fill)
+
+// What pressing Start will actually do, per mode. Written for someone who isn't a DHCP
+// specialist: the sequence in plain words, then one line on who gets hurt. `harm` drives the
+// colour, so a read-only mode never looks like a destructive one.
+const MODE_NOTES = {
+  exhaust: {
+    harm: true,
+    text: "Inventories the segment by ARP, checks DHCP works for this machine and for an " +
+      "unknown device, tells the server every neighbour is finished with its address, asks " +
+      "for those addresses back by name, then keeps requesting addresses until the pool runs " +
+      "dry — finally contesting the addresses it took with forged ARP. Neighbours lose their " +
+      "leases and new devices are denied service.",
+  },
+  release: {
+    harm: true,
+    text: "The same chain as exhaustion without the flood: ARP inventory, tell the server " +
+      "every neighbour is finished with its address, ask for those addresses back by name, " +
+      "then contest them with forged ARP. Targets devices that are connected right now; the " +
+      "pool is never drained, so most should be able to get an address again.",
+  },
+  "release-previous": {
+    harm: false,
+    text: "Recovery, not a test. Replays this tool's own record of every address it has taken " +
+      "on this network and hands them all back, then re-checks whether an unknown device can " +
+      "get an address. Sends nothing at all if the pool isn't actually exhausted.",
+  },
+  "active-scan": {
+    harm: false,
+    text: "Read-only. ARP-sweeps the scope and sends one DHCPINFORM to find and fingerprint " +
+      "the DHCP servers. Takes no addresses and disturbs no leases.",
+  },
+  scan: {
+    harm: false,
+    text: "Read-only. Watches DHCP and ARP traffic and fingerprints what it sees, without " +
+      "sending anything at all.",
+  },
+};
 let lastAutoScope = "";     // remember what we auto-filled so we don't clobber user edits
 
 // ---- config <-> payload ---------------------------------------------------
@@ -67,6 +104,9 @@ function onModeChange() {
   // than inferred from the first OFFER's subnet. The panel used to appear only for
   // release/active-scan/release-previous, which made the form jump around on mode change and
   // hid a control that was doing real work in exhaust too. Always shown now.
+  const note = MODE_NOTES[mode];
+  $("modenote").textContent = note ? note.text : "";
+  $("modenote").classList.toggle("harm", !!(note && note.harm));
   // exhaust has no --rate of its own; the windowed handshake pipeline paces it instead
   const isExhaust = mode === "exhaust";
   $("ratecfg").classList.toggle("hidden", isExhaust);
