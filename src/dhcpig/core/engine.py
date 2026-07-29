@@ -78,6 +78,9 @@ class DhcpEngine:
         self.control_pre_new: ControlOutcome | None = None  # fresh MAC (can a NEW client join?)
         self.control_post_new: ControlOutcome | None = None
         self.findings: list[Finding] = []
+        # set to a list by _finalize_findings() so the end-of-run set can be emitted in
+        # severity order; None means "emit as raised" -- see _raise()
+        self._finding_buffer: list[Finding] | None = None
         self._control_lock = threading.Lock()
         self._control_xid: int | None = None
         self._control_offer = None
@@ -568,9 +571,23 @@ class DhcpEngine:
         return out
 
     # ---------------------------------------------------------------- findings
+    _SEVERITY_ORDER = {"high": 0, "medium": 1, "info": 2}
+
     def _raise(self, finding: Finding) -> None:
+        """Record a finding and emit it -- unless `_finalize_findings()` is buffering.
+
+        Findings raised *during* a run (`NEIGHBOR_LEASES_RELEASED` from the release phase,
+        `POOL_RECOVERED` from release-previous) emit immediately, as they always have: on a long
+        exhaust run those are live progress, and holding them to the end would hide them.
+        """
         self.findings.append(finding)
-        self.bus.emit(ev.FindingRaised(finding=finding))
+        if self._finding_buffer is None:
+            self.bus.emit(ev.FindingRaised(finding=finding))
+        else:
+            self._finding_buffer.append(finding)
+
+    def _finding_severity_key(self, f: Finding) -> int:
+        return self._SEVERITY_ORDER.get(f.severity, 3)
 
     # How each eviction rung reads in the roll-call: (category, plain-language outcome).
     # Only apipa/discover_unanswered mean "no working address right now" -- `rediscovered`
@@ -782,12 +799,28 @@ class DhcpEngine:
     def _finalize_findings(self) -> None:
         """Turn what we observed into auditable verdicts. Called once, at stop().
 
+        Buffers everything it raises and emits it **worst severity first** (see `_raise()`).
+        The web UI has no findings tab any more -- the event log is the only results surface --
+        and a log stream can't be re-ranked after the fact, so the ranking has to happen before
+        it's written. The CLI gets the same ordering for free.
+
         dry-run (2.3) no longer short-circuits this wholesale: the control transaction and ARP
         discovery ran for real, so CONTROL_BASELINE_FAILED / NEW_CLIENT_BLOCKED_AT_BASELINE /
         POOL_HEADROOM_LOW are legitimate findings even under dry-run. Only the exhaustion verdict
         itself (which depends on leases actually held) is meaningless without real sends, so that
         block alone is gated below; DRY_RUN_SUMMARY stands in for it.
         """
+        self._finding_buffer = []
+        try:
+            self._derive_findings()
+        finally:
+            buffered, self._finding_buffer = self._finding_buffer, None
+            for finding in sorted(buffered, key=self._finding_severity_key):
+                self.bus.emit(ev.FindingRaised(finding=finding))
+
+    def _derive_findings(self) -> None:
+        """Every finding derivation, in dependency order. Split out of `_finalize_findings()`
+        purely so that method can wrap the whole set in one buffer/sort/emit."""
         pre, post = self.control_pre, self.control_post
         distinct_macs = len({ln.mac for ln in self.cleanup.all()})
         elapsed = round(time.time() - self._started, 1) if self._started else 0.0

@@ -74,48 +74,20 @@ th { color: var(--muted); font-weight: 600; }
 #log .ctl { color: #4ec9b0; }  /* control transaction */
 #log .stat { color: #6ab0ff; font-weight: 600; }  /* periodic status heartbeat */
 #log .finding { color: var(--fg); font-weight: 700; }
-
-/* findings tab */
-.findings { max-height: 260px; overflow-y: scroll; overflow-x: hidden; padding-right: 4px; }
-.findings .hint { color: var(--muted); font-size: 12px; margin: 4px 0 10px; }
+/* results: the log is the only findings surface now, so severity has to read at a glance */
+#log .warnline { color: var(--warn); font-weight: 700; }
+#log .alert { font-weight: 700; }
 
 /* neighbors tab: header row + 10 data rows (each ~27px at the table's 12px/1.5 line-height,
    4px vertical padding, 1px border) before it scrolls */
 .neighbors { max-height: 298px; overflow-y: scroll; overflow-x: hidden; padding-right: 4px; }
 
-.findings, .neighbors { scrollbar-width: thin; scrollbar-color: var(--edge) var(--bg); }
-.findings::-webkit-scrollbar, .neighbors::-webkit-scrollbar { width: 10px; }
-.findings::-webkit-scrollbar-track, .neighbors::-webkit-scrollbar-track {
+.neighbors { scrollbar-width: thin; scrollbar-color: var(--edge) var(--bg); }
+.neighbors::-webkit-scrollbar { width: 10px; }
+.neighbors::-webkit-scrollbar-track {
   background: var(--bg); border-radius: 6px; }
-.findings::-webkit-scrollbar-thumb, .neighbors::-webkit-scrollbar-thumb {
+.neighbors::-webkit-scrollbar-thumb {
   background: var(--edge); border-radius: 6px; }
-.findings::-webkit-scrollbar-thumb:hover, .neighbors::-webkit-scrollbar-thumb:hover {
+.neighbors::-webkit-scrollbar-thumb:hover {
   background: var(--muted); }
-.finding { border: 1px solid var(--edge); border-left-width: 4px; border-radius: 6px;
-  padding: 8px 10px; margin-bottom: 8px; }
-.finding.FAIL { border-left-color: var(--bad); }
-.finding.PASS { border-left-color: var(--accent); }
-.finding.INCONCLUSIVE { border-left-color: #d9a441; }
-.finding.INFO { border-left-color: var(--muted); }
-.finding .v { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 3px;
-  background: var(--edge); color: var(--fg); }
-.finding.FAIL .v { background: var(--bad); }
-.finding.PASS .v { background: var(--accent); color: #06231c; }
-.finding.INCONCLUSIVE .v { background: #d9a441; color: #2b1e00; }
-.finding code { color: var(--muted); font-size: 10px; }
-.finding .ev { font-size: 11px; color: var(--muted); margin-top: 4px; word-break: break-all; }
-.finding .evlist { word-break: normal; }
-.finding .evlist ul { margin: 2px 0 0; padding-left: 16px; }
-.finding .evlist li { margin: 2px 0; line-height: 1.4; }
-.finding .evsteps { word-break: normal; }
-.finding .evsteps table { margin-top: 2px; border-collapse: collapse; }
-.finding .evsteps td { padding: 1px 0; vertical-align: top; line-height: 1.4; }
-.finding .evsteps td:first-child { padding-right: 12px; color: var(--fg); white-space: nowrap; }
-.finding .rec { font-size: 11px; color: var(--fg); margin-top: 4px; opacity: .85; }
-.ctlbox { border: 1px solid var(--edge); border-radius: 6px; padding: 8px 10px; margin-bottom: 10px;
-  font-size: 12px; }
-.ctlbox ul { margin: 6px 0 0; padding-left: 18px; }
-.ctlbox li.ok { color: var(--accent); }
-.ctlbox li.bad { color: var(--bad); }
-.ctlbox li.skip { color: var(--muted); }
 
