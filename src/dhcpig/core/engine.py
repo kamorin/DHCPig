@@ -583,12 +583,12 @@ class DhcpEngine:
     }
     _ROLLCALL_ORDER = ("offline", "lease_taken", "reacted", "unaffected")
 
-    def _emit_neighbor_summary(self) -> None:
-        """Roll-call every ARP-discovered neighbor -- one row each, worst first -- onto the
-        event log. Called once from `stop()`, after eviction has been measured.
+    def _neighbor_rollcall(self) -> list[tuple[str, str, str, str]]:
+        """One `(ip, mac, outcome, category)` row per discovered neighbor, worst first.
 
-        Silent when the ARP sweep found nothing (`scan` never sweeps; a run on an empty segment
-        has nothing to report) -- an empty roll-call is noise, not information.
+        Single source for both surfaces -- the `NeighborSummary` event (live, on the log) and the
+        `NEIGHBORS_OBSERVED` finding (durable, in the JSON/HTML report). They must never disagree
+        about what happened to a host, so neither computes its own classification.
 
         Two classification rules carry the weight:
 
@@ -608,7 +608,7 @@ class DhcpEngine:
         """
         neighbors = list(self._neighbors_by_mac.values())
         if not neighbors:
-            return
+            return []
         granted_ips = {
             self._reacquire_targets[xid]
             for xid, outcome in self._reacquire_outcomes.items()
@@ -642,7 +642,14 @@ class DhcpEngine:
             return (self._ROLLCALL_ORDER.index(row[3]), octets, ip)
 
         rows.sort(key=sort_key)
-        self.bus.emit(ev.NeighborSummary(total=len(neighbors), rows=rows))
+        return rows
+
+    def _emit_neighbor_summary(self) -> None:
+        """Put the roll-call on the event log. Called once from `stop()`, after eviction has
+        been measured. Silent on an empty segment -- an empty roll-call is noise."""
+        rows = self._neighbor_rollcall()
+        if rows:
+            self.bus.emit(ev.NeighborSummary(total=len(rows), rows=rows))
 
     def _run_summary_steps(self) -> list[dict[str, str]]:
         """One `{"did": ..., "got": ...}` pair per phase, in run order -- a scannable list.
@@ -807,6 +814,47 @@ class DhcpEngine:
                 ),
             )
         )
+
+        # Right after RUN_SUMMARY, so a report reads "what this run did" and then "who it
+        # happened to". Every mode, including the read-only scans -- a passive scan legitimately
+        # reports every host as unaffected, which is the answer, not a missing one. This is the
+        # only place the roll-call reaches the JSON/HTML report; NeighborSummary is a live event
+        # and does not survive into `report["findings"]`.
+        rollcall = self._neighbor_rollcall()
+        if rollcall:
+            by_category: dict[str, int] = {}
+            for *_rest, category in rollcall:
+                by_category[category] = by_category.get(category, 0) + 1
+            self._raise(
+                Finding(
+                    id="NEIGHBORS_OBSERVED",
+                    title=(
+                        f"{len(rollcall)} host(s) were on this segment, "
+                        "and what happened to each"
+                    ),
+                    verdict=INFO,
+                    severity="info",
+                    evidence={
+                        "total": len(rollcall),
+                        "by_category": by_category,
+                        # pre-formatted one line per host: both renderers print list evidence
+                        # one item per line, and every surface is monospace, so the columns line
+                        # up without either front end knowing the shape of a host row
+                        "hosts": [
+                            f"{ip:<15} {mac}  {outcome}" for ip, mac, outcome, _c in rollcall
+                        ],
+                    },
+                    recommendation=(
+                        "Inventory of the segment as this run found it, with each host's "
+                        "outcome. 'offline' means the host had no working address when the run "
+                        "ended. 'lease_taken' means the server gave us its address while the "
+                        "host carried on using it -- those hosts are working now and will fail "
+                        "at their next renewal, with no warning to the user and nothing "
+                        "observable from this vantage point, so treat that count as delayed "
+                        "impact rather than none."
+                    ),
+                )
+            )
 
         # A failed baseline invalidates everything else — say so first and loudly.
         if pre is not None and pre.attempted and not pre.success:

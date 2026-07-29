@@ -2,6 +2,12 @@
 
 ## 2.3.4 (unreleased) — roll-call is one line per host; two toggles removed; UI polish
 
+- **The roll-call now also lands in the findings, as `NEIGHBORS_OBSERVED` (INFO)** — one line
+  per host (`ip  mac  outcome`) plus a per-category tally, raised right after `RUN_SUMMARY` in
+  every mode including the read-only scans. `NeighborSummary` is a live event and never reaches
+  `report["findings"]`, so until now the roll-call vanished from the JSON/HTML exports. Both
+  surfaces read one `_neighbor_rollcall()` helper, so they can't disagree about a host.
+
 - **The pre-run ARP inventory and the neighbor release phase are no longer optional.** Removed
   `SessionConfig.arp_sweep` / `--no-arp-scan` / the "ARP scan before run" checkbox, and
   `SessionConfig.release_neighbors` / `--no-release` / the "release neighbours first" checkbox,
