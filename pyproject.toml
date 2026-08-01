@@ -36,6 +36,11 @@ python_version = "3.11"
 warn_unused_ignores = true
 ignore_missing_imports = true       # scapy ships no stubs
 
+[[tool.mypy.overrides]]
+module = "scapy.*"
+follow_imports = "skip"             # scapy 2.7 ships py.typed but its `import *` re-exports
+                                     # (Ether, IP, DHCP, ...) aren't resolvable by mypy
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = ["integration: needs root/CAP_NET_RAW (deselect with -m 'not integration')"]

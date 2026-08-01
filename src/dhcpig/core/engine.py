@@ -12,6 +12,7 @@ import random
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 # ARP/BOOTP/DHCP/Ether are pure parsing classes, never monkeypatched by any test, so they're
 # safe to import once here. sendp/get_if_hwaddr/srp are different: tests monkeypatch them by
@@ -94,8 +95,8 @@ class DhcpEngine:
         self._finding_buffer: list[Finding] | None = None
         self._control_lock = threading.Lock()
         self._control_xid: int | None = None
-        self._control_offer = None
-        self._control_ack = None
+        self._control_offer: Any = None  # scapy packet; Any -- see mypy scapy override
+        self._control_ack: Any = None
         self._control_nak = False
         self._control_offer_evt = threading.Event()
         self._control_ack_evt = threading.Event()
@@ -2144,7 +2145,7 @@ class DhcpEngine:
         with self._inflight_lock:
             info = self._inflight.get(xid)
             ours = info is not None
-            if ours:
+            if info is not None:
                 info["state"] = "REQUEST_SENT"
                 info["sent_at"] = time.time()  # restart the timeout clock for the ACK leg
         foreign = self._foreign_discovers.get(xid)
