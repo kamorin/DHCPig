@@ -38,7 +38,7 @@ CLI
 | `--scope CIDR` | bound the targets (repeatable); defaults to the interface's own network |
 | `--rate N` | pps, default 7 — not on `exhaust`, which self-paces |
 | `--no-evict` | skip the ARP-conflict phase |
-| `--report FILE` | write a JSON session report to `FILE` when the run ends |
+| `--report FILE` | write a session report to `FILE` when the run ends; format follows `FILE`'s extension (`.json`/`.csv`/`.html`, default JSON) |
 | `--client-mac MAC` | `exhaust` only; use this MAC instead of a random one (repeatable — rotates through the list) |
 | `--request-option SPEC` | `exhaust` only; DHCP options to request, e.g. `12,14-19,23` (default: 0-79) |
 | `--no-spoof-eth-src` | `exhaust` only; use the real NIC MAC as the Ethernet source for every frame (Wi-Fi; APs drop frames whose source MAC isn't the associated station) |

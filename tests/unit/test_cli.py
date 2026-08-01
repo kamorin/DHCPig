@@ -3,7 +3,8 @@ import json
 import pytest
 
 from dhcpig.cli import main as cli
-from dhcpig.core.models import IPVersion, Mode
+from dhcpig.core import engine as engine_mod
+from dhcpig.core.models import IPVersion, Mode, SessionConfig
 
 
 def test_parse_request_options():
@@ -207,6 +208,39 @@ def test_report_command(tmp_path):
         )
     )
     assert cli.main(["report", str(p)]) == cli.EXIT_OK
+
+
+def test_report_path_extension_selects_the_written_format(tmp_path, monkeypatch):
+    """--report FILE used to always write JSON regardless of FILE's extension --
+    recorder.export(cfg.report_path) was called with no fmt argument. _run_session() now infers
+    it from the suffix, matching what SessionRecorder.render()/.export() already support."""
+    monkeypatch.setattr(engine_mod, "sendp", lambda *a, **k: None)
+
+    csv_path = tmp_path / "run.csv"
+    cfg = SessionConfig(
+        interface="lo", mode=Mode.RELEASE_NEIGHBORS, offline=True, report_path=csv_path
+    )
+    assert cli._run_session(cfg) == cli.EXIT_OK
+    assert csv_path.read_text().splitlines()[0] == (
+        "kind,mac,ip,server_id,os,device,vendor,confidence"
+    )
+
+    html_path = tmp_path / "run.html"
+    cfg = SessionConfig(
+        interface="lo", mode=Mode.RELEASE_NEIGHBORS, offline=True, report_path=html_path
+    )
+    assert cli._run_session(cfg) == cli.EXIT_OK
+    assert html_path.read_text().startswith("<!doctype html>")
+
+
+def test_report_path_unrecognized_extension_falls_back_to_json(tmp_path, monkeypatch):
+    monkeypatch.setattr(engine_mod, "sendp", lambda *a, **k: None)
+
+    p = tmp_path / "run.txt"
+    cfg = SessionConfig(interface="lo", mode=Mode.RELEASE_NEIGHBORS, offline=True, report_path=p)
+    assert cli._run_session(cfg) == cli.EXIT_OK
+    data = json.loads(p.read_text())
+    assert data["tool"] == "dhcpig"
 
 
 def test_bad_args_exit_2():
