@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.6.0 — 2026-08-01
+
+- **Breaking: the legacy `pig.py` compatibility layer is gone.** `pig.py` at the repo root, the
+  `pig` console script, and `dhcpig/cli/compat.py` (the getopt-to-new-CLI translator) have all
+  been removed. The shim was introduced to keep `./pig.py <iface>` working "for one release"
+  during the 2.0 rewrite; five releases on, it was translating flags into a CLI that had since
+  dropped or repurposed most of them — `-t/--threads` and `-f/--fuzz` were already silent
+  no-ops, `-g` fell through to plain exhaust, and `-r` did nothing but print `release --help`.
+  Use `dhcpig exhaust <iface>` and `dhcpig release <iface>` directly.
+- Behavior carried over from the original tool is unaffected: simulated clients still use the
+  `DE:AD:` MAC prefix so captures stay recognizable, and DISCOVER/REQUEST still send the
+  macOS-style parameter-request-list order to avoid trivial fingerprint-based rejection.
+
 ## 2.5.0 — 2026-07-29
 
 - **Fixed: "Copy as CLI" produced an unparseable command for exhaust.** The web UI offers a

@@ -2,16 +2,8 @@ import json
 
 import pytest
 
-from dhcpig.cli import compat
 from dhcpig.cli import main as cli
 from dhcpig.core.models import IPVersion, Mode
-
-
-def test_legacy_shim_preserves_single_mac_default():
-    # legacy pig.py (no -S) meant single NIC MAC -> map to --no-spoof-eth-src
-    assert "--no-spoof-eth-src" in compat.translate(["eth0"])
-    # legacy -S meant spoof -> keep the (new) default, no opt-out injected
-    assert "--no-spoof-eth-src" not in compat.translate(["-S", "eth0"])
 
 
 def test_parse_request_options():
@@ -194,14 +186,6 @@ def test_garp_subcommand_removed():
     with pytest.raises(SystemExit):
         cli.build_parser().parse_args(["garp", "eth1"])
     assert not hasattr(Mode, "GARP_DOS")
-
-
-def test_legacy_garp_flag_falls_back_to_plain_exhaust():
-    """-g/--neighbors-attack-garp had no direct replacement once garp mode was retired (2.3);
-    it now falls through like any other unusual legacy flag."""
-    argv = compat.translate(["-g", "eth1"])
-    assert argv[0] == "exhaust"
-    assert "eth1" in argv
 
 
 def test_ifaces_command_runs():

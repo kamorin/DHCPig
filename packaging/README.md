@@ -2,8 +2,8 @@
 
 ## Debian / Kali `.deb`
 
-The `debian/` files build a `.deb` that installs the `dhcpig`, `dhcpig-web`, and (legacy)
-`pig` console scripts plus the desktop launcher under **Applications → 09 Sniffing/Spoofing**.
+The `debian/` files build a `.deb` that installs the `dhcpig` and `dhcpig-web` console scripts
+plus the desktop launcher under **Applications → 09 Sniffing/Spoofing**.
 
 ```bash
 sudo apt install devscripts debhelper dh-python python3-hatchling python3-scapy
