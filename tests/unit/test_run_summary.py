@@ -80,7 +80,7 @@ def test_exhaust_steps_report_actions_and_results_in_run_order(monkeypatch):
     eng._reacquire_targets = {i: f"10.0.1.{i}" for i in range(12)}
     eng._reacquire_outcomes = {i: ("granted" if i < 4 else "naked") for i in range(12)}
     eng.acks, eng.discovers = 412, 690
-    eng._evict_outcomes = {"10.0.1.0": "declined"}
+    eng._evict.outcomes = {"10.0.1.0": "declined"}
     eng._finalize_findings()
     text = _steps_text(events)
 
@@ -117,7 +117,7 @@ def test_did_column_stays_short_enough_to_scan(monkeypatch):
     eng._reacquire_targets = {1: "10.0.1.1"}
     eng.acks, eng.discovers = 412, 690
     eng.races = 5
-    eng._evict_outcomes = {"10.0.1.0": "declined"}
+    eng._evict.outcomes = {"10.0.1.0": "declined"}
     eng._finalize_findings()
     for s in _summary(events).evidence["steps"]:
         assert len(s["did"]) <= 60, s["did"]
@@ -198,7 +198,7 @@ def test_run_summary_draws_no_conclusions_about_defenses(monkeypatch):
     eng, events = _engine(monkeypatch)
     eng.acks, eng.discovers = 412, 690
     eng._halt_signal = ("nak_burst", "4 NAKs in 5s", 412)
-    eng._evict_outcomes = {"10.0.1.0": "no_reaction"}
+    eng._evict.outcomes = {"10.0.1.0": "no_reaction"}
     eng._finalize_findings()
     text = _steps_text(events).lower()
     for word in ("snooping", "dynamic arp inspection", "vulnerable", "not protected", "fail"):

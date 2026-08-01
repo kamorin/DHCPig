@@ -80,7 +80,7 @@ def test_rows_are_sorted_worst_first_then_by_address(monkeypatch):
     eng, events = _engine(monkeypatch)
     ips = _neighbors(eng, 12)  # 10.0.0.1 .. 10.0.0.12, so octet vs lexical order differ
     _reacquired(eng, [ips[5]])
-    eng._evict_outcomes = {ips[11]: "apipa", ips[2]: "defended"}
+    eng._evict.outcomes = {ips[11]: "apipa", ips[2]: "defended"}
     eng._emit_neighbor_summary()
     cats = [row[4] for row in _summary(events).rows]
     assert cats[0] == "offline"
@@ -93,7 +93,7 @@ def test_rows_are_sorted_worst_first_then_by_address(monkeypatch):
 def test_only_rungs_meaning_no_working_address_count_as_offline(monkeypatch):
     eng, events = _engine(monkeypatch)
     ips = _neighbors(eng, 6)
-    eng._evict_outcomes = {
+    eng._evict.outcomes = {
         ips[0]: "apipa",
         ips[1]: "discover_unanswered",
         ips[2]: "rediscovered",  # restarted but WAS served -- online, new address
@@ -166,7 +166,7 @@ def test_eviction_outcome_wins_over_the_inferred_states(monkeypatch):
     ips = _neighbors(eng, 1)
     _reacquired(eng, ips)
     _denied(eng, ["aa:bb:cc:00:00:00"])
-    eng._evict_outcomes = {ips[0]: "defended"}
+    eng._evict.outcomes = {ips[0]: "defended"}
     eng._emit_neighbor_summary()
     assert _by_category(events) == {"reacted": ips}
 
@@ -216,7 +216,7 @@ def test_rows_carry_ip_mac_outcome_and_category(monkeypatch):
     """The operator's next move is to go look at a specific machine, so name it."""
     eng, events = _engine(monkeypatch)
     ips = _neighbors(eng, 1)
-    eng._evict_outcomes = {ips[0]: "apipa"}
+    eng._evict.outcomes = {ips[0]: "apipa"}
     eng._emit_neighbor_summary()
     ip, mac, _host, outcome, category = _summary(events).rows[0]
     assert (ip, mac, category) == (ips[0], "aa:bb:cc:00:00:00", "offline")
@@ -241,7 +241,7 @@ def test_cli_prints_one_line_per_host_for_every_host(capsys, monkeypatch):
     eng, events = _engine(monkeypatch)
     ips = _neighbors(eng, 4)
     _reacquired(eng, ips[:2])
-    eng._evict_outcomes = {ips[0]: "apipa"}
+    eng._evict.outcomes = {ips[0]: "apipa"}
     eng._emit_neighbor_summary()
     r = Renderer(verbosity=2, color=False)
     r.handle(_summary(events))
@@ -262,7 +262,7 @@ def test_cli_ends_with_an_outcome_rollup_counting_hosts_per_outcome(capsys, monk
     judgement of the same run on the log is exactly the drift to avoid."""
     eng, events = _engine(monkeypatch)
     ips = _neighbors(eng, 4)
-    eng._evict_outcomes = {ips[0]: "apipa", ips[1]: "defended"}
+    eng._evict.outcomes = {ips[0]: "apipa", ips[1]: "defended"}
     eng._emit_neighbor_summary()
     Renderer(verbosity=2, color=False).handle(_summary(events))
     out = capsys.readouterr().out
@@ -334,7 +334,7 @@ def test_finding_and_event_never_disagree_about_a_host(monkeypatch):
     eng, events = _engine(monkeypatch)
     ips = _neighbors(eng, 4)
     _reacquired(eng, [ips[0]])
-    eng._evict_outcomes = {ips[1]: "apipa"}
+    eng._evict.outcomes = {ips[1]: "apipa"}
     eng._emit_neighbor_summary()
     eng._finalize_findings()
     rows = _summary(events).rows
@@ -349,7 +349,7 @@ def test_finding_carries_a_category_tally(monkeypatch):
     eng, events = _engine(monkeypatch)
     ips = _neighbors(eng, 4)
     _reacquired(eng, [ips[0]])
-    eng._evict_outcomes = {ips[1]: "apipa", ips[2]: "defended"}
+    eng._evict.outcomes = {ips[1]: "apipa", ips[2]: "defended"}
     eng._finalize_findings()
     assert _observed(events).evidence["by_category"] == {
         "offline": 1,

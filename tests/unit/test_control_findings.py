@@ -931,7 +931,7 @@ def test_evict_phase_excludes_server_learned_via_rel_pre_control(monkeypatch):
     eng.cfg.timeouts.evict_interval = 0.01
     eng.cfg.evict_settle = 0.0
     eng._evict_phase()
-    assert eng._evict_targets == {"172.20.0.7"}
+    assert eng._evict.targets == {"172.20.0.7"}
 
 
 # ---------------------------------------------------------------- mode-aware eviction findings
@@ -940,7 +940,7 @@ def test_finalize_findings_release_rediscovered_alone_is_not_evicted(monkeypatch
     expected, low-harm outcome -- the pool was never drained, so an immediate re-lease is not
     a denial of service. Must not raise CLIENTS_EVICTED_FROM_ADDRESSES."""
     eng, events, _ = _engine(monkeypatch, mode=Mode.RELEASE_NEIGHBORS)
-    eng._evict_outcomes = {"10.0.0.7": "rediscovered"}
+    eng._evict.outcomes = {"10.0.0.7": "rediscovered"}
     eng._finalize_findings()
     ids = _finding_ids(events)
     assert "CLIENTS_EVICTED_FROM_ADDRESSES" not in ids
@@ -957,7 +957,7 @@ def test_finalize_findings_release_discover_unanswered_is_evicted(monkeypatch):
     """Unlike bare 'rediscovered', a release-mode target that couldn't get back online at all
     is a genuine denial-of-service byproduct and must still FAIL."""
     eng, events, _ = _engine(monkeypatch, mode=Mode.RELEASE_NEIGHBORS)
-    eng._evict_outcomes = {"10.0.0.7": "discover_unanswered"}
+    eng._evict.outcomes = {"10.0.0.7": "discover_unanswered"}
     eng._finalize_findings()
     ids = _finding_ids(events)
     assert "CLIENTS_EVICTED_FROM_ADDRESSES" in ids
@@ -967,7 +967,7 @@ def test_finalize_findings_exhaust_rediscovered_alone_is_evicted(monkeypatch):
     """Under exhaust, unlike release, even a successful restart is evidence the address was
     forcibly vacated -- the existing (Phase 4) behavior must be unchanged."""
     eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
-    eng._evict_outcomes = {"10.0.0.7": "rediscovered"}
+    eng._evict.outcomes = {"10.0.0.7": "rediscovered"}
     eng._finalize_findings()
     ids = _finding_ids(events)
     assert "CLIENTS_EVICTED_FROM_ADDRESSES" in ids
