@@ -102,9 +102,7 @@ _CATALOG: dict[str, dict] = {
         "recommendation": "",
     },
     "SERVER_STOPPED_SERVING_TEST_CLIENTS": {
-        "title": (
-            "Server stopped answering the test clients while still serving a new client"
-        ),
+        "title": ("Server stopped answering the test clients while still serving a new client"),
         "verdict": INFO,
         "severity": "medium",
         "recommendation": (
@@ -213,6 +211,66 @@ _CATALOG: dict[str, dict] = {
             "persistence, static reservations)."
         ),
     },
+    "NEIGHBOR_LEASES_RELEASED": {
+        # recommendation is always overridden per call -- see
+        # neighbor_leases_released_recommendation() below.
+        "title": "Sent DHCPRELEASE for ARP-discovered neighbors, then re-acquired them",
+        "verdict": INFO,
+        "severity": "medium",
+        "recommendation": "",
+    },
+    # release-previous (2.2) -- recovery, not an attack. See AGENT_HANDOFF.md §5e.
+    "RELEASE_PREVIOUS_SCOPE_REQUIRED": {
+        "title": ("release-previous refused to run: no scope and no resolvable interface network"),
+        "verdict": INCONCLUSIVE,
+        "severity": "medium",
+        "recommendation": (
+            "Pass --scope explicitly, or run on an interface with a configured "
+            "IPv4 address, so the recovery sweep stays bounded to a known network."
+        ),
+    },
+    "NO_RECOVERY_NEEDED": {
+        "title": "A new client already obtains an address — nothing to recover",
+        "verdict": INFO,
+        "severity": "info",
+        "recommendation": "No RELEASE frames were sent.",
+    },
+    "NO_JOURNAL_DATA": {
+        "title": "No journal entries matched this network — nothing to recover",
+        "verdict": INFO,
+        "severity": "info",
+        "recommendation": (
+            "Either no prior run left an open lease here, or --scope / --max-age "
+            "/ --any-server need adjusting. release-previous only releases leases "
+            "this tool recorded taking — it cannot recover what it never recorded."
+        ),
+    },
+    "POOL_RECOVERED": {
+        "title": "A new client obtained an address after release-previous ran",
+        "verdict": PASS,
+        "severity": "info",
+        "recommendation": "Recovery confirmed. No further action needed.",
+    },
+    "POOL_RECOVERY_PARTIAL": {
+        "title": "Some targeted leases were not released before the run ended",
+        "verdict": INCONCLUSIVE,
+        "severity": "medium",
+        "recommendation": (
+            "Re-run release-previous to retry the remaining entries, or increase --passes."
+        ),
+    },
+    "POOL_RECOVERY_FAILED": {
+        "title": "Every targeted lease was released but a new client is still denied",
+        "verdict": FAIL,
+        "severity": "high",
+        "recommendation": (
+            "The server did not honor these RELEASE frames, or something else is "
+            "denying new clients. Clear the bindings on the server itself — "
+            "'omshell' / lease-file edit + reload on ISC dhcpd, 'netsh dhcp server "
+            "scope <s> delete clientsbyip' or a scope reconcile on Windows Server "
+            "— or wait for the leases to expire."
+        ),
+    },
 }
 
 
@@ -235,9 +293,7 @@ def build(
         verdict=entry["verdict"],
         severity=entry["severity"],
         evidence=evidence,
-        recommendation=(
-            recommendation if recommendation is not None else entry["recommendation"]
-        ),
+        recommendation=(recommendation if recommendation is not None else entry["recommendation"]),
     )
 
 
@@ -275,4 +331,39 @@ def starvation_not_attained_recommendation(
     return (
         "The baseline request from this machine's real MAC failed, so "
         "nothing here can be concluded. See CONTROL_BASELINE_FAILED."
+    )
+
+
+def neighbor_leases_released_recommendation(granted: int, total: int, mode_is_exhaust: bool) -> str:
+    """The NEIGHBOR_LEASES_RELEASED recommendation -- three variants, mirroring
+    `_finish_release()`'s own reasoning about when a `granted=0` result is meaningful (RFC 2131
+    §4.3.1 prefers a fresh free address over honouring option 50 for an unknown MAC, so a zero
+    means nothing until the pool is actually drained)."""
+    if granted:
+        return (
+            "The server acted on unauthenticated RELEASE requests for addresses held by "
+            "other hosts on the segment, and this run re-acquired "
+            f"{granted} of {total} of them by name (DHCP option 50) from a MAC the "
+            "server had never seen — any host can force another off its lease and then "
+            "take it. Independent of pool exhaustion and worth reporting on its own; "
+            "verify DHCP snooping / binding validation on the access switch."
+        )
+    if not mode_is_exhaust:
+        # granted == 0 is only meaningful once the pool is empty. With addresses free, RFC
+        # 2131 §4.3.1 has the server prefer a fresh one over honouring option 50 for an
+        # unknown MAC, so a zero says nothing about the RELEASE.
+        return (
+            "None of the freed addresses could be re-acquired. The pool still had "
+            "free addresses at this point, so this does NOT show the server protected "
+            "the bindings: RFC 2131 has a server prefer an unused address over honouring "
+            "a specific request from a MAC it has never seen, which is the same result. "
+            "Re-run as `exhaust`, where this step happens after the pool is drained and "
+            "the two causes can be told apart."
+        )
+    return (
+        "None of the freed addresses could be re-acquired even with the pool "
+        "drained, so the server had no unused address to prefer instead — it "
+        "declined to hand another host's address to an unknown MAC. That is the "
+        "desired behavior and is real evidence here, unlike the same result before "
+        "exhaustion."
     )
