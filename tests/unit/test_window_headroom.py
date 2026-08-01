@@ -8,7 +8,8 @@ headroom estimate added on top of that work.
 import threading
 import time
 
-from dhcpig.core import engine as engine_mod
+from conftest import build_engine
+
 from dhcpig.core import events as ev
 from dhcpig.core.engine import DhcpEngine
 from dhcpig.core.events import EventBus
@@ -16,12 +17,8 @@ from dhcpig.core.models import Mode, Neighbor, SessionConfig
 
 
 def _engine(monkeypatch, **cfg):
-    monkeypatch.setattr(engine_mod, "sendp", lambda *a, **k: None)
-    bus = EventBus()
-    events = []
-    bus.subscribe(events.append)
     cfg.setdefault("mode", Mode.EXHAUST)
-    eng = DhcpEngine(SessionConfig(interface="lo", **cfg), bus)
+    eng, events, _sent = build_engine(monkeypatch, **cfg)
     return eng, events
 
 

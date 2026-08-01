@@ -5,24 +5,18 @@ See AGENT_HANDOFF.md §5g. This file covers the trigger plumbing (no sender
 integration yet); sender-integration/classifier tests live in test_race_freed_sender.py.
 """
 
+from conftest import build_engine
 from scapy.all import BOOTP, DHCP, IP, UDP, Ether, mac2str
 
-from dhcpig.core import engine as engine_mod
-from dhcpig.core.engine import DhcpEngine
-from dhcpig.core.events import EventBus
-from dhcpig.core.models import ControlOutcome, Mode, Neighbor, SessionConfig
+from dhcpig.core.models import ControlOutcome, Mode, Neighbor
 
 SERVER = "172.20.15.1"
 
 
 def _engine(monkeypatch, **cfg):
-    monkeypatch.setattr(engine_mod, "sendp", lambda *a, **k: None)
-    bus = EventBus()
-    events = []
-    bus.subscribe(events.append)
     cfg.setdefault("mode", Mode.EXHAUST)
     cfg.setdefault("dry_run", True)
-    eng = DhcpEngine(SessionConfig(interface="lo", **cfg), bus)
+    eng, events, _sent = build_engine(monkeypatch, **cfg)
     return eng, events
 
 

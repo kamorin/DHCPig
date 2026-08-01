@@ -10,14 +10,12 @@ release-previous's own orchestration: journal selection, filtering, grouping, an
 import json
 import time
 
+from conftest import build_engine
 from scapy.all import BOOTP, IP, Ether
 
-from dhcpig.core import engine as engine_mod
 from dhcpig.core import events as ev
 from dhcpig.core import journal
-from dhcpig.core.engine import DhcpEngine
-from dhcpig.core.events import EventBus
-from dhcpig.core.models import ControlOutcome, IPVersion, Lease, Mode, SessionConfig, Timeouts
+from dhcpig.core.models import ControlOutcome, IPVersion, Lease, Mode, Timeouts
 
 SERVER = "172.20.15.1"
 SERVER_MAC = "00:0c:29:da:53:f9"
@@ -26,16 +24,10 @@ OTHER_SERVER_MAC = "00:0c:29:11:11:11"
 
 
 def _engine(monkeypatch, **cfg):
-    sent = []
-    monkeypatch.setattr(engine_mod, "sendp", lambda pkt, **kw: sent.append(pkt))
-    bus = EventBus()
-    events = []
-    bus.subscribe(events.append)
     cfg.setdefault("mode", Mode.RELEASE_PREVIOUS)
     cfg.setdefault("timeouts", Timeouts(control=0.05))  # fast timeout when a test lets the
     # real (unfaked) control transaction run and time out on its own
-    eng = DhcpEngine(SessionConfig(interface="lo", **cfg), bus)
-    return eng, events, sent
+    return build_engine(monkeypatch, **cfg)
 
 
 def _seed_journal(path, mac, ip, server_ip=SERVER, server_mac=SERVER_MAC, ts=None, lease_time=600):

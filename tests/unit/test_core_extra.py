@@ -1,12 +1,12 @@
 """Extra no-root coverage: netutils, parsers, events, fingerprint extraction, engine handlers."""
 
+from conftest import build_engine
 from scapy.all import ARP, BOOTP, DHCP, IP, UDP, Ether, mac2str
 
-from dhcpig.core import engine as engine_mod
 from dhcpig.core import events as ev
 from dhcpig.core import netutils, packets
-from dhcpig.core.engine import EXHAUSTED, DhcpEngine
-from dhcpig.core.events import EventBus, to_dict
+from dhcpig.core.engine import EXHAUSTED
+from dhcpig.core.events import to_dict
 from dhcpig.core.fingerprint import extract_signature, resolve
 from dhcpig.core.models import (
     DESTRUCTIVE_MODES,
@@ -14,7 +14,6 @@ from dhcpig.core.models import (
     IPVersion,
     Lease,
     Mode,
-    SessionConfig,
 )
 
 
@@ -143,13 +142,8 @@ def test_extract_signature_from_discover_resolves_macos_order():
 
 # ---------------------------------------------------------------- engine handlers
 def _engine(monkeypatch, **cfg):
-    calls = []
-    monkeypatch.setattr(engine_mod, "sendp", lambda pkt, **kw: calls.append(pkt))
-    bus = EventBus()
-    events = []
-    bus.subscribe(events.append)
-    eng = DhcpEngine(SessionConfig(interface="lo", dry_run=True, **cfg), bus)
-    return eng, events, calls
+    cfg.setdefault("dry_run", True)
+    return build_engine(monkeypatch, **cfg)
 
 
 def test_engine_offer_then_ack_flow(monkeypatch):
