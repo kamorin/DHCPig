@@ -1,4 +1,4 @@
-"""Windowed handshake pipeline pacing and halt-on-control (AGENT_HANDOFF.md §5c).
+"""Windowed handshake pipeline pacing and halt-on-control (docs/DESIGN.md §5c).
 
 Split from test_control_findings.py (SIMPLIFICATION.md 4.2) -- see test_control_transaction.py
 for the split's full file map.

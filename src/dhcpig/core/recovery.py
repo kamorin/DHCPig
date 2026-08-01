@@ -23,7 +23,7 @@ def select_entries(
 ) -> tuple[list[JournalEntry], dict]:
     """Filter journal entries down to what's safe and relevant to release right now.
 
-    See AGENT_HANDOFF.md §5e for why each step exists: interface,
+    See docs/DESIGN.md §5e for why each step exists: interface,
     then current CIDR (never an unbounded sweep), then same-server (guards against a
     journal carried between engagements producing targets on the wrong network -- only
     evaluable when the pre-flight control actually learned a server identity, which it

@@ -101,4 +101,5 @@ Only run this against networks you own or are explicitly authorized to test. `re
 `exhaust` disrupt live clients by design; `--scope` is optional and defaults to the whole
 segment. The authors are not responsible for misuse.
 
-Design notes and internals: `AGENT_HANDOFF.md`. Licence: GPL v2 or later.
+Design notes and internals: `docs/DESIGN.md`. Contributing: `CONTRIBUTING.md`.
+Licence: GPL v2 or later.

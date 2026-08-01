@@ -1,4 +1,4 @@
-"""Pre-run ARP sweep, the release phase, and targeted re-acquisition (AGENT_HANDOFF.md §5c/§5f).
+"""Pre-run ARP sweep, the release phase, and targeted re-acquisition (docs/DESIGN.md §5c/§5f).
 
 Split from test_control_findings.py (SIMPLIFICATION.md 4.2) -- see test_control_transaction.py
 for the split's full file map.
