@@ -3,7 +3,7 @@
   <title>DHCPig</title>
   <!-- Literal hex, not CSS vars: this file is also the favicon and the .desktop icon, where the
        stylesheet's :root palette isn't available. Colours mirror styles.css anyway
-       (--pig #e0679a, --edge #2a3342, --accent #4ec9b0, --bg #12161c).
+       (pig #e0679a, edge #2a3342, accent #4ec9b0, bg #12161c).
 
        Pig first, hacker second. An earlier version led with a full hoodie and a visor across
        half the face, which at 28px in the header read as a dark blob rather than an animal.
