@@ -70,7 +70,7 @@ def translate(argv: list[str]) -> list[str]:
         if o in ("-6", "--ipv6"):
             out.append("--ipv6")
         elif o in ("-f", "--fuzz"):
-            out.append("--fuzz")
+            pass  # legacy no-op: --fuzz was never implemented and has been removed
         elif o in ("-S", "--ethernet-mac"):
             out.append("--spoof-eth-src")
         elif o in ("-t", "--threads"):
