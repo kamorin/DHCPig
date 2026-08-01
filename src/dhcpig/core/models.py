@@ -159,6 +159,12 @@ class SessionConfig:
     # only real pacing left, and reintroducing an unbounded burst here is exactly the
     # pending-offer-table saturation §5c/Phase 2 exists to prevent.
     race_max_inflight: int = 4
+    # active-scan only: how long the sniffer keeps listening for ARP/DHCP replies after the
+    # sweep + INFORM go out, before the worker exits on its own. Without a bound here the worker
+    # blocks on self._stop forever, and since active-scan is in RUN_ONCE_MODES (models.py above),
+    # "no more worker threads alive" never fires either -- the run just sits in RUNNING until
+    # someone hits Ctrl-C/Stop (bug found live, 2.6).
+    active_scan_listen: float = 20.0
     timeouts: Timeouts = field(default_factory=Timeouts)
     verbosity: int = 2
 
