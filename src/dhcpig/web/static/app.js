@@ -190,48 +190,20 @@ function esc(s) {
   return d.innerHTML;
 }
 
-// A finding as two summary lines: its numbers, then the first sentence of its recommendation.
-// This is a summary surface -- the full evidence and the full multi-sentence recommendation
-// still go to report["findings"] and so to the JSON/HTML export, which is where someone
-// writing up the engagement reads them. Dumping all of it here just rebuilt the wall of text
-// the findings tab was deleted for.
-//
-// The one exception is RUN_SUMMARY's `steps`, which is itself the run's summary and is the
-// reason that finding exists; it renders a line per step.
-// Run context (already in the header), config echoes, and one key the engine itself documents
-// as not being evidence either way. None of it belongs on a summary line.
-const EVIDENCE_SKIP = new Set([
-  "mode", "interface", "dry_run", "duration_sec", "elapsed_sec",
-  "rounds", "server_id", "phase", "still_using_address_arp",
-]);
+// A finding's summary lines (its numbers, list evidence one item per line, then the first
+// sentence of its recommendation) come from the server now -- `f.summary`, computed by
+// core/findings.py's finding_summary_lines() and attached to every FindingRaised event by
+// events.to_dict(). This used to be reimplemented here in JS and had already drifted from the
+// Python version (list evidence dumped as `key=len(...)` instead of one line per item) before
+// that happened; rendering the server's own list instead of re-deriving one makes that
+// impossible instead of merely documented against. The full evidence and full multi-sentence
+// recommendation still go to report["findings"] and so to the JSON/HTML export, which is where
+// someone writing up the engagement reads them -- this is a summary surface, not the record.
 
 // Findings whose content already has a dedicated log block. NEIGHBORS_OBSERVED is the same
 // rows as NEIGHBOR SUMMARY, printed immediately below it -- keep it in report["findings"] for
 // the export, but printing it twice in the log is just noise.
 const FINDINGS_NOT_LOGGED = new Set(["NEIGHBORS_OBSERVED"]);
-
-function findingDetail(f) {
-  const out = [];
-  const nums = [];
-  for (const [k, v] of Object.entries(f.evidence || {})) {
-    if (EVIDENCE_SKIP.has(k)) continue;
-    if (Array.isArray(v)) {
-      if (f.id === "RUN_SUMMARY") {
-        for (const i of v) out.push(`${i.did}  ->  ${i.got}`);
-      } else if (v.length) {
-        nums.push(`${k}=${v.length}`);
-      }
-    } else if (v && typeof v === "object") {
-      for (const [k2, v2] of Object.entries(v)) if (v2) nums.push(`${k2}=${v2}`);
-    } else if (v !== null && v !== "" && v !== 0 && v !== false) {
-      nums.push(`${k}=${v}`);
-    }
-  }
-  if (nums.length) out.unshift(nums.join(" · "));
-  const rec = (f.recommendation || "").split(/(?<=\.)\s/)[0];
-  if (rec) out.push(rec);
-  return out;
-}
 
 function renderLeases() {
   const tb = document.querySelector("#t-leases tbody");
@@ -422,7 +394,7 @@ function handleEvent(e) {
         : f.severity === "medium" ? "warnline"
           : f.verdict === "PASS" ? "in" : "notice";
       logLine(cls, `[==] ${sev}  ${f.title}`, f.severity === "info" ? 1 : 0);
-      for (const line of findingDetail(f)) logLine("notice", `        ${line}`, 1);
+      for (const line of f.summary || []) logLine("notice", `        ${line}`, 1);
       break;
     }
     case "SessionEnded": $("state").textContent = "DONE"; setRunning(false); break;

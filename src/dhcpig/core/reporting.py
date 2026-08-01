@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .. import __version__
 from . import events as ev
+from .findings import EVIDENCE_SKIP, finding_summary_lines  # noqa: F401 -- re-exported below
 from .fingerprint import DB_VERSION
 from .models import SessionConfig
 
@@ -208,59 +209,11 @@ def _to_csv(data: dict) -> str:
     return buf.getvalue()
 
 
-# Evidence keys that never earn a place on a summary line: run context that's already in the
-# report header, config values echoed back, and one key `_finish_release()`'s own
-# recommendation text calls out as "not evidence either way".
-EVIDENCE_SKIP = frozenset(
-    {
-        "mode",
-        "interface",
-        "dry_run",
-        "duration_sec",
-        "elapsed_sec",
-        "rounds",
-        "server_id",
-        "phase",
-        "still_using_address_arp",
-    }
-)
-
-
-def finding_summary_lines(f: dict) -> list[str]:
-    """The display form of a finding, shared by every human-facing surface.
-
-    **This is the single source of the rule.** `cli/render.py` and `_findings_html()` both call
-    it, and `web/static/app.js` mirrors it for the event log -- if you change the rule here,
-    change it there too, or the three surfaces start telling different stories about one run.
-    The complete, unsummarised finding is still in the JSON export; that's what it's for.
-
-    Three lines at most: the numbers, any list evidence one item per line, then the first
-    sentence of the recommendation. Nested dicts flatten rather than serialize; zero, empty and
-    `EVIDENCE_SKIP` keys are dropped, because a summary that reports `naked=0 · no_response=0`
-    is spending the reader's attention on nothing.
-    """
-    out: list[str] = []
-    nums: list[str] = []
-    for key, value in (f.get("evidence") or {}).items():
-        if key in EVIDENCE_SKIP:
-            continue
-        if isinstance(value, list):
-            for item in value:
-                if isinstance(item, dict) and "did" in item and "got" in item:
-                    out.append(f"{item['did']}  ->  {item['got']}")
-                else:
-                    out.append(str(item))
-        elif isinstance(value, dict):
-            nums.extend(f"{k}={v}" for k, v in value.items() if v)
-        elif value not in (None, "", 0, False):
-            nums.append(f"{key}={value}")
-    if nums:
-        out.insert(0, " · ".join(nums))
-    recommendation = str(f.get("recommendation") or "")
-    first = recommendation.split(". ")[0].strip()
-    if first:
-        out.append(first if first.endswith(".") else first + ".")
-    return out
+# EVIDENCE_SKIP and finding_summary_lines() live in findings.py now (imported above, and
+# re-exported from here) -- so events.to_dict() can also use finding_summary_lines() to compute
+# `summary` on every FindingRaised event without a reporting<->events import cycle (reporting.py
+# already imports events as ev). cli/render.py and test_run_summary.py still import them from
+# core.reporting; kept working via the re-export rather than updating those call sites too.
 
 
 def _findings_html(data: dict) -> str:
