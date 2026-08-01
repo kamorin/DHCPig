@@ -159,6 +159,19 @@ def test_active_scan_requires_scope():
         eng.start()  # no scope -> refused (not gated by auth, but scope is mandatory)
 
 
+def test_ipv6_is_refused_at_start_not_silently_broken():
+    """No packet builder in core/packets.py is v6-aware -- an exhaust run would flood v4
+    DISCOVERs while the sniffer listens for v6 replies (sniffer.py's BPF filter), see zero
+    offers, and report a clean PASS that's actually "this never sent anything answerable".
+    Refuse up front instead of producing a misleading result."""
+    from dhcpig.core.exceptions import ConfigError
+
+    bus, _ = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo", ip_version=IPVersion.V6), bus)
+    with pytest.raises(ConfigError):
+        eng.start()
+
+
 def test_active_scan_dry_run_sends_nothing(sent):
     import time as _t
 

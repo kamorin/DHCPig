@@ -27,6 +27,7 @@ from .models import (
     ControlOutcome,
     Finding,
     HostFingerprint,
+    IPVersion,
     Lease,
     Mode,
     Neighbor,
@@ -246,6 +247,15 @@ class DhcpEngine:
     def start(self) -> None:
         if self.cfg.mode is Mode.ACTIVE_SCAN and not self.cfg.scope_cidrs:
             raise ConfigError("active-scan requires --scope (the network range to sweep)")
+        if self.cfg.ip_version is IPVersion.V6:
+            # The sniffer's BPF filter (sniffer.py) already understands DHCPv6, but every
+            # packet builder in core/packets.py is v4-only -- an exhaust run would listen for
+            # v6 replies while flooding v4 DISCOVERs, see zero offers, and report a clean PASS
+            # that is actually just "this never sent anything the server could answer".
+            raise ConfigError(
+                "DHCPv6 is not implemented (IPVersion.V6 is a seam only -- see "
+                "AGENT_HANDOFF.md §10); every packet builder in core/packets.py is v4-only"
+            )
         self._started = time.time()
         self.state = RUNNING
         c = self.cfg
