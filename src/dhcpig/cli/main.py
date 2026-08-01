@@ -142,6 +142,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     asc.add_argument("--rate", type=int, default=7)
     asc.add_argument("--dry-run", action="store_true")
+    asc.add_argument(
+        "--active-scan-listen",
+        type=float,
+        default=20.0,
+        metavar="SEC",
+        help="how long to listen for replies after the ARP sweep/INFORM burst (default 20s)",
+    )
 
     for name, helptext in (("release", "DHCPRELEASE in-scope neighbors (DESTRUCTIVE)"),):
         d = sub.add_parser(name, help=helptext)
@@ -249,6 +256,7 @@ def build_config(args) -> SessionConfig:
         race_freed_addresses=not getattr(args, "no_race_freed", False),
         race_on_rediscover=getattr(args, "race_on_rediscover", False),
         status_interval=getattr(args, "status_interval", 5.0),
+        active_scan_listen=getattr(args, "active_scan_listen", 20.0),
         journal=not getattr(args, "no_journal", False),
         journal_path=Path(args.journal) if getattr(args, "journal", None) else None,
         max_age_days=getattr(args, "max_age", 7.0),

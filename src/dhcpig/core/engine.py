@@ -2347,8 +2347,10 @@ class DhcpEngine:
         inform = packets.build_inform_v4(my_mac, my_ip, xid, self.cfg.request_options)
         self._send(inform)
         self._debug(f"active-scan: sent DHCP INFORM ciaddr={my_ip} xid=0x{xid:08x}")
-        # keep the sniffer collecting replies until stopped
-        self._stop.wait()
+        # keep the sniffer collecting replies for a bounded window, then exit on our own --
+        # active-scan is a RUN_ONCE_MODE, so an unbounded wait here left the run sitting in
+        # RUNNING forever with no worker thread ever dying to trip the completion check.
+        self._stop.wait(self.cfg.active_scan_listen)
 
     def _run_release(self) -> None:
         # (2.3, Phase 5) release now shares the exhaust chain -- control transaction,
