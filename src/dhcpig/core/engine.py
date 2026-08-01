@@ -1797,6 +1797,38 @@ class DhcpEngine:
             )
         )
 
+    def _push_discover(self, client_mac: str, requested_addr: str | None = None) -> tuple[int, str]:
+        """Build, send, and register one DISCOVER -- the bookkeeping shared by all three
+        DISCOVER-sending paths (the untargeted exhaust flood, the race-freed branch, and
+        targeted re-acquisition): a fresh xid, `_src_mac()`, `_our_macs`, the packet itself,
+        `_send()`, `_inflight` registration, the `discovers` counter, and `DiscoverSent`.
+        Returns `(xid, src)`.
+
+        Deliberately does **not** touch `_reacquire_targets`/`_race.targets` or emit a debug
+        line -- each caller's own outcome-tracking bookkeeping and diagnostic message differ
+        enough (and the separation between reacquire- and race-owned xids is load-bearing, see
+        core/racing.py's module docstring) that folding them in here would either lose
+        information or blur that boundary. Callers do that part themselves, right after.
+        """
+        xid = _rand_xid()
+        src = self._src_mac(client_mac)
+        self._our_macs.add(src)
+        pkt = packets.build_discover_v4(client_mac, xid, src, requested_addr=requested_addr)
+        self._send(pkt)
+        with self._inflight_lock:
+            self._inflight[xid] = {
+                "mac": client_mac,
+                "sent_at": time.time(),
+                "state": "DISCOVER_SENT",
+            }
+        self.discovers += 1
+        self.bus.emit(
+            ev.DiscoverSent(
+                mac=client_mac, option50=requested_addr, hostname=packets.packet_hostname(pkt)
+            )
+        )
+        return xid, src
+
     def _reacquire_phase(
         self, freed: list[tuple[str, str]], ignore_stop: bool = False
     ) -> dict[str, int]:
@@ -1844,23 +1876,9 @@ class DhcpEngine:
             if halted():
                 break
             client_mac = random_mac()
-            xid = _rand_xid()
-            src = self._src_mac(client_mac)
-            self._our_macs.add(src)
-            pkt = packets.build_discover_v4(client_mac, xid, src, requested_addr=ip)
-            self._send(pkt)
-            with self._inflight_lock:
-                self._inflight[xid] = {
-                    "mac": client_mac,
-                    "sent_at": time.time(),
-                    "state": "DISCOVER_SENT",
-                }
+            xid, _src = self._push_discover(client_mac, requested_addr=ip)
             self._reacquire_targets[xid] = ip
-            self.discovers += 1
             pushed.append(xid)
-            self.bus.emit(
-                ev.DiscoverSent(mac=client_mac, option50=ip, hostname=packets.packet_hostname(pkt))
-            )
             self._debug(f"reacquire: DISCOVER xid=0x{xid:08x} option50={ip} chaddr={client_mac}")
 
         # Drain: wait for every pushed xid to leave _inflight (ACK/NAK/timeout). Bounded by one
@@ -1993,29 +2011,11 @@ class DhcpEngine:
                 race_ip = self._race.queue.popleft()
                 race_reason = self._race.reasons.pop(race_ip, "unknown")
                 race_mac = random_mac()
-                race_xid = _rand_xid()
-                race_src = self._src_mac(race_mac)
-                self._our_macs.add(race_src)
-                race_pkt = packets.build_discover_v4(
-                    race_mac, race_xid, race_src, requested_addr=race_ip
-                )
-                self._send(race_pkt)
-                with self._inflight_lock:
-                    self._inflight[race_xid] = {
-                        "mac": race_mac,
-                        "sent_at": time.time(),
-                        "state": "DISCOVER_SENT",
-                    }
+                race_xid, _race_src = self._push_discover(race_mac, requested_addr=race_ip)
                 self._race.targets[race_xid] = race_ip
                 self._race.triggers[race_xid] = race_reason
                 self._race.inflight += 1
-                self.discovers += 1
                 self.races += 1
-                self.bus.emit(
-                    ev.DiscoverSent(
-                        mac=race_mac, option50=race_ip, hostname=packets.packet_hostname(race_pkt)
-                    )
-                )
                 self._debug(
                     f"race: DISCOVER xid=0x{race_xid:08x} option50={race_ip} chaddr={race_mac} "
                     f"trigger={race_reason} "
@@ -2031,15 +2031,7 @@ class DhcpEngine:
             mac = macs.pop(0) if macs else random_mac()
             if macs is not None:
                 macs.append(mac)  # rotate through the provided list
-            xid = _rand_xid()
-            src = self._src_mac(mac)
-            self._our_macs.add(src)
-            pkt = packets.build_discover_v4(mac, xid, src)
-            self._send(pkt)
-            with self._inflight_lock:
-                self._inflight[xid] = {"mac": mac, "sent_at": time.time(), "state": "DISCOVER_SENT"}
-            self.discovers += 1
-            self.bus.emit(ev.DiscoverSent(mac=mac, hostname=packets.packet_hostname(pkt)))
+            xid, src = self._push_discover(mac)
             self._debug(
                 f"DISCOVER xid=0x{xid:08x} chaddr={mac} eth_src={src} flags=0x8000 "
                 f"window={self._window} inflight={len(self._inflight)}"
