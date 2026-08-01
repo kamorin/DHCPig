@@ -54,8 +54,6 @@ EXHAUST_DEFAULT_RATE_PPS = 500
 
 @dataclass
 class Timeouts:
-    thread_spawn: float = 0.4  # legacy -x (no longer paces the sender; --rate does)
-    dos: float = 8.0  # legacy -y
     dhcp_request: float = 2.0  # legacy -z
     control: float = 5.0  # per-leg wait for the control transaction's OFFER / ACK
     offer_silence: float = 10.0  # offers must stop this long before we suspect exhaustion
@@ -78,7 +76,6 @@ class SessionConfig:
     spoof_ethernet_src: bool = True
     request_options: list[int] = field(default_factory=lambda: list(range(80)))
     rate_limit_pps: int = 7  # the bound on how fast a run can consume a pool
-    v6_rapid_commit: bool = False
     dry_run: bool = False
     # Hard "never touch a socket" switch, distinct from dry_run (2.3). dry_run now runs every
     # non-destructive phase for real -- ARP discovery, the control transaction's own
