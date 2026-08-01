@@ -77,7 +77,6 @@ class SessionConfig:
     # frames with foreign/multiple source MACs) — then only the BOOTP chaddr is randomized.
     spoof_ethernet_src: bool = True
     request_options: list[int] = field(default_factory=lambda: list(range(80)))
-    fuzz: bool = False
     rate_limit_pps: int = 7  # the bound on how fast a run can consume a pool
     v6_rapid_commit: bool = False
     dry_run: bool = False

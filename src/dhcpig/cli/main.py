@@ -100,7 +100,6 @@ def build_parser() -> argparse.ArgumentParser:
         "network). Also makes the pool-size estimate deterministic instead of inferred from "
         "the first OFFER's subnet",
     )
-    ex.add_argument("--fuzz", action="store_true")
     ex.add_argument("--dry-run", action="store_true")
     ex.add_argument(
         "--no-journal",
@@ -242,7 +241,6 @@ def build_config(args) -> SessionConfig:
         client_macs=getattr(args, "client_macs", None),
         spoof_ethernet_src=not getattr(args, "no_spoof_eth_src", False),
         request_options=req_opts,
-        fuzz=getattr(args, "fuzz", False),
         # exhaust has no --rate: the windowed handshake pipeline paces it. Everything else
         # (release/active-scan/release-previous) still takes --rate as its only pacing mechanism.
         rate_limit_pps=(
