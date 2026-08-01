@@ -576,7 +576,7 @@ See `CONTRIBUTING.md` for the commands. Two things worth knowing at the design l
   crashed because an `IPVersion` enum hit `json.dumps`. Regression test exists.
 - **Ethernet source MAC** defaults to the per-client random MAC (`spoof_ethernet_src=True`) so
   each simulated client is distinct at L2 (exercises port-security/snooping). `--no-spoof-eth-src`
-  for Wi-Fi. The legacy `pig.py` shim injects `--no-spoof-eth-src` to preserve old behavior.
+  for Wi-Fi, where the AP will drop frames from a MAC it hasn't associated.
 - **PR #27/#28 fixes** live in `packets.py` (server-id = opt54 else siaddr; client MAC =
   `chaddr[:6]`; REQUEST includes option-61; broadcast flag 0x8000) with regression tests. Don't lose them.
 - **Fingerprint DB is `data/packetfence_dhcp_fingerprints.json`** (PacketFence-only, 535

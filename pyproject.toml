@@ -1,6 +1,6 @@
 [project]
 name = "dhcpig"
-version = "2.5.0"
+version = "2.6.0"
 description = "DHCP exhaustion / network-hardening validation tool (whitehat)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -11,7 +11,6 @@ keywords = ["dhcp", "pentest", "security", "scapy", "exhaustion", "ipv4", "ipv6"
 
 [project.scripts]
 dhcpig = "dhcpig.cli.main:main"
-pig = "dhcpig.cli.compat:main"
 dhcpig-web = "dhcpig.web.server:main"
 
 [project.optional-dependencies]
