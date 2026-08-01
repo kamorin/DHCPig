@@ -49,12 +49,13 @@ def translate(argv: list[str]) -> list[str]:
         opts, args = [], argv
 
     iface = args[0] if args else None
-    # A neighbor-release legacy run maps to the "release" subcommand, which now requires
-    # explicit authorization; steer the user rather than silently arming them. -g/
-    # --neighbors-attack-garp had no direct replacement once GARP_DOS was retired as a
-    # standalone mode (2.3) -- ARP-conflict eviction now runs automatically as part of
-    # exhaust/release, not as something invoked on its own -- so it falls through to plain
-    # exhaust like any other unusual legacy flag.
+    # A neighbor-release legacy run maps to the "release" subcommand -- destructive, and with
+    # no --scope given it now targets the whole segment (there is no authorization gate or
+    # scope requirement to fall back on, 2.5). Steer the user to --help rather than silently
+    # arming an unbounded run under old muscle memory. -g/--neighbors-attack-garp had no direct
+    # replacement once GARP_DOS was retired as a standalone mode (2.3) -- ARP-conflict eviction
+    # now runs automatically as part of exhaust/release, not as something invoked on its own --
+    # so it falls through to plain exhaust like any other unusual legacy flag.
     for o, _ in opts:
         if o in ("-r", "--neighbors-attack-release"):
             return ["release", iface or "", "--help"]

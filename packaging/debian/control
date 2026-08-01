@@ -14,5 +14,9 @@ Description: DHCP exhaustion / network-hardening validation tool (whitehat)
  lease release, and gratuitous-ARP disruption, and passively fingerprints
  hosts. Provides a CLI (dhcpig) and a local web UI (dhcpig-web). The web UI is
  pure Python stdlib (no web framework); scapy is the only significant runtime
- dependency. Destructive actions are opt-in, authorization-gated,
- scope-restricted, rate-limited, and reversible.
+ dependency. Destructive actions are opt-in (a named subcommand) and
+ optionally scope-restricted with --scope; there is no authorization gate,
+ so an unscoped run targets the whole segment. Leases taken are kept, not
+ auto-released, and can be reversed with 'dhcpig restore' or
+ 'dhcpig release-previous'. Only run this against networks you own or are
+ explicitly authorized to test.
