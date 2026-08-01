@@ -7,14 +7,12 @@ The whole point of this module is surviving a killed process, so the crash-simul
 import json
 import time
 
+from conftest import build_engine
 from scapy.all import BOOTP, DHCP, IP, UDP, Ether, mac2str
 
-from dhcpig.core import engine as engine_mod
 from dhcpig.core import events as ev
 from dhcpig.core import journal
-from dhcpig.core.engine import DhcpEngine
-from dhcpig.core.events import EventBus
-from dhcpig.core.models import IPVersion, Lease, Mode, SessionConfig
+from dhcpig.core.models import IPVersion, Lease, Mode
 
 SERVER = "172.20.15.1"
 
@@ -152,13 +150,7 @@ def test_default_path_never_uses_var_lib(monkeypatch, tmp_path):
 
 # ---------------------------------------------------------------- engine wiring
 def _engine(monkeypatch, **cfg):
-    sent = []
-    monkeypatch.setattr(engine_mod, "sendp", lambda pkt, **kw: sent.append(pkt))
-    bus = EventBus()
-    events = []
-    bus.subscribe(events.append)
-    eng = DhcpEngine(SessionConfig(interface="lo", **cfg), bus)
-    return eng, events, sent
+    return build_engine(monkeypatch, **cfg)
 
 
 def _ack_packet(xid, mac, yiaddr="172.20.0.83"):

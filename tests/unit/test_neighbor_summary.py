@@ -6,21 +6,19 @@ their next renewal, so folding them into either neighbouring category misreports
 the event's docstring.
 """
 
+from conftest import build_engine
+
 from dhcpig.cli.render import Renderer
-from dhcpig.core import engine as engine_mod
-from dhcpig.core.engine import DhcpEngine
-from dhcpig.core.events import EventBus, FindingRaised, NeighborSummary
-from dhcpig.core.models import Mode, Neighbor, SessionConfig
+from dhcpig.core.events import FindingRaised, NeighborSummary
+from dhcpig.core.models import Mode, Neighbor
 
 
 def _engine(monkeypatch, **cfg):
-    monkeypatch.setattr(engine_mod, "sendp", lambda *a, **k: None)
-    bus = EventBus()
-    events = []
-    bus.subscribe(events.append)
+    cfg.setdefault("interface", "wlan0")
     cfg.setdefault("mode", Mode.EXHAUST)
     cfg.setdefault("offline", True)
-    return DhcpEngine(SessionConfig(interface="wlan0", **cfg), bus), events
+    eng, events, _sent = build_engine(monkeypatch, **cfg)
+    return eng, events
 
 
 def _neighbors(eng, n):

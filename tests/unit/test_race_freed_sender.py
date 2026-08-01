@@ -6,23 +6,17 @@ coverage (commit 2).
 
 import time
 
+from conftest import build_engine
 from scapy.all import BOOTP, DHCP, IP, UDP, Ether, mac2str
 
-from dhcpig.core import engine as engine_mod
-from dhcpig.core.engine import DhcpEngine
-from dhcpig.core.events import EventBus
-from dhcpig.core.models import Mode, SessionConfig
+from dhcpig.core.models import Mode
 
 SERVER = "172.20.15.1"
 
 
 def _engine(monkeypatch, **cfg):
-    monkeypatch.setattr(engine_mod, "sendp", lambda *a, **k: None)
-    bus = EventBus()
-    events = []
-    bus.subscribe(events.append)
     cfg.setdefault("mode", Mode.EXHAUST)
-    eng = DhcpEngine(SessionConfig(interface="lo", **cfg), bus)
+    eng, events, _sent = build_engine(monkeypatch, **cfg)
     return eng, events
 
 
