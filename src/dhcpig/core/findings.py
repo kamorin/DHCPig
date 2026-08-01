@@ -334,6 +334,67 @@ def starvation_not_attained_recommendation(
     )
 
 
+# Evidence keys that never earn a place on a summary line: run context that's already in the
+# report header, config values echoed back, and one key `_finish_release()`'s own
+# recommendation text calls out as "not evidence either way".
+EVIDENCE_SKIP = frozenset(
+    {
+        "mode",
+        "interface",
+        "dry_run",
+        "duration_sec",
+        "elapsed_sec",
+        "rounds",
+        "server_id",
+        "phase",
+        "still_using_address_arp",
+    }
+)
+
+
+def finding_summary_lines(f: dict) -> list[str]:
+    """The display form of a finding, shared by every human-facing surface.
+
+    **This is the single source of the rule.** `cli/render.py` and `_findings_html()` both call
+    it; `events.to_dict()` computes it once into `summary` on every `FindingRaised` event so
+    `web/static/app.js` renders the same list instead of re-deriving it in JS -- three surfaces
+    used to describe one run three different ways (a divergence that shipped and went unnoticed
+    until this was unified), and that's no longer possible by construction. The complete,
+    unsummarised finding is still in the JSON export; that's what it's for.
+
+    Three lines at most: the numbers, any list evidence one item per line, then the first
+    sentence of the recommendation. Nested dicts flatten rather than serialize; zero, empty and
+    `EVIDENCE_SKIP` keys are dropped, because a summary that reports `naked=0 · no_response=0`
+    is spending the reader's attention on nothing.
+    """
+    out: list[str] = []
+    nums: list[str] = []
+    for key, value in (f.get("evidence") or {}).items():
+        if key in EVIDENCE_SKIP:
+            continue
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict) and "did" in item and "got" in item:
+                    out.append(f"{item['did']}  ->  {item['got']}")
+                elif isinstance(item, dict):
+                    # e.g. FOREIGN_DISCOVERS_UNANSWERED's sample_hosts: key=value pairs, not a
+                    # Python dict repr -- str(item) used to print {'mac': '...', 'hostname': ''}
+                    out.append(" ".join(f"{k}={v}" for k, v in item.items() if v))
+                else:
+                    out.append(str(item))
+        elif isinstance(value, dict):
+            nums.extend(f"{k}={v}" for k, v in value.items() if v)
+        elif value not in (None, "", 0, False):
+            nums.append(f"{key}={value}")
+    if nums:
+        out.insert(0, " · ".join(nums))
+    recommendation = str(f.get("recommendation") or "")
+    first = recommendation.split(". ")[0].strip()
+    if first:
+        out.append(first if first.endswith(".") else first + ".")
+    return out
+
+
 def neighbor_leases_released_recommendation(granted: int, total: int, mode_is_exhaust: bool) -> str:
     """The NEIGHBOR_LEASES_RELEASED recommendation -- three variants, mirroring
     `_finish_release()`'s own reasoning about when a `granted=0` result is meaningful (RFC 2131

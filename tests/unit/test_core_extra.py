@@ -90,6 +90,48 @@ def test_to_dict_has_type_and_payload():
     assert d["lease"]["ip"] == "10.0.0.5"
 
 
+def test_finding_raised_to_dict_carries_a_summary():
+    """web/static/app.js renders this directly instead of re-deriving its own summary in JS --
+    the two independently maintained renderers had already drifted (see
+    core/findings.finding_summary_lines()'s docstring) before this existed."""
+    from dhcpig.core.findings import finding_summary_lines
+    from dhcpig.core.models import FAIL, Finding
+
+    finding = Finding(
+        id="MULTIPLE_DHCP_SERVERS",
+        title="More than one DHCP server answered on this segment",
+        verdict=FAIL,
+        severity="high",
+        evidence={"servers": ["10.0.0.1", "10.0.0.2"]},
+        recommendation="Verify each server is authorized. More context follows.",
+    )
+    d = to_dict(ev.FindingRaised(finding=finding))
+    assert d["finding"]["summary"] == finding_summary_lines(d["finding"])
+    assert d["finding"]["summary"][-1] == "Verify each server is authorized."
+
+
+def test_finding_summary_lines_formats_dict_list_items_as_key_value_not_python_repr():
+    """A regression for FOREIGN_DISCOVERS_UNANSWERED's sample_hosts (list of dicts without
+    did/got keys): this used to fall through to str(item), printing a Python dict repr like
+    "{'mac': '...', 'hostname': ''}" on the CLI and in the HTML report."""
+    from dhcpig.core.findings import finding_summary_lines
+
+    lines = finding_summary_lines(
+        {
+            "evidence": {
+                "sample_hosts": [
+                    {"mac": "de:ad:00:00:00:01", "hostname": ""},
+                    {"mac": "de:ad:00:00:00:02", "hostname": "printer"},
+                ]
+            },
+            "recommendation": "",
+        }
+    )
+    assert "de:ad:00:00:00:01" in "\n".join(lines)
+    assert "{'mac'" not in "\n".join(lines)
+    assert any("hostname=printer" in line for line in lines)
+
+
 # ---------------------------------------------------------------- fingerprint extraction
 def test_extract_signature_from_discover_resolves_macos_order():
     disc = packets.build_discover_v4("de:ad:be:ef:00:01", 1, "de:ad:be:ef:00:01")

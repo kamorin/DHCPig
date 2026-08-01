@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass, field, is_dataclass
 from enum import Enum
 from pathlib import Path
 
+from .findings import finding_summary_lines
 from .models import ControlOutcome, Finding, HostFingerprint, Lease, Neighbor, ServerInfo
 
 
@@ -256,7 +257,17 @@ def jsonable(obj):
 
 
 def to_dict(event: Event) -> dict:
-    """Fully JSON-serializable dict with a `type` discriminator (for the SSE/web layer)."""
+    """Fully JSON-serializable dict with a `type` discriminator (for the SSE/web layer).
+
+    For `FindingRaised`, also computes `finding.summary` via `finding_summary_lines()` -- the
+    same rule `cli/render.py` and the HTML report use -- so `web/static/app.js` renders that
+    list directly instead of re-deriving its own summary in JS. Those two independently
+    maintained renderers had already drifted (list evidence dumped as `key=len(...)` in JS vs.
+    one line per item everywhere else) before this existed; computing it once here is what makes
+    that impossible instead of merely documented against.
+    """
     data = jsonable(asdict(event)) if is_dataclass(event) else {}
     data["type"] = type(event).__name__
+    if isinstance(event, FindingRaised):
+        data["finding"]["summary"] = finding_summary_lines(data["finding"])
     return data
