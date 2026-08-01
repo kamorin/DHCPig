@@ -16,3 +16,31 @@ jobs:
       - run: ruff format --check src tests
       - run: mypy src/dhcpig/core
       - run: pytest -m "not integration" --cov=dhcpig --cov-report=term-missing
+
+  # A packaging regression that dropped data/packetfence_dhcp_fingerprints.json from the wheel
+  # would not fail the job above -- `pip install -e .` is an editable install and never builds a
+  # wheel, so it never exercises [tool.hatch.build.targets.wheel]'s packaging at all. Worse, a
+  # missing data file is silent at runtime too: core/fingerprint.py's _db() catches
+  # FileNotFoundError and falls back to an empty fingerprint set rather than raising, so every
+  # lookup would just quietly return nothing. This job builds a real wheel, installs it
+  # non-editably into a clean venv, and asserts the bundled fingerprint count is nonzero.
+  build-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install build
+      - run: python -m build --wheel
+      - run: python -m venv /tmp/wheel-venv
+      - run: /tmp/wheel-venv/bin/pip install dist/*.whl
+      - name: Confirm the fingerprint data file shipped inside the wheel
+        run: |
+          /tmp/wheel-venv/bin/python -c "
+          import re
+          from dhcpig.core.fingerprint import DB_VERSION
+          n = int(re.search(r'\((\d+) fp\)', DB_VERSION).group(1))
+          print(f'DB_VERSION={DB_VERSION}')
+          assert n > 0, 'packetfence_dhcp_fingerprints.json did not ship inside the wheel'
+          "
