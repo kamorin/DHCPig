@@ -8,6 +8,7 @@ from dataclasses import asdict
 from enum import Enum
 from pathlib import Path
 
+from .. import __version__
 from . import events as ev
 from .fingerprint import DB_VERSION
 from .models import SessionConfig
@@ -81,7 +82,7 @@ class SessionRecorder:
         return ev.jsonable(
             {
                 "tool": "dhcpig",
-                "version": "2.0.0",
+                "version": __version__,
                 "interface": self.cfg.interface,
                 "mode": self.cfg.mode.value,
                 "started_at": self.started,
