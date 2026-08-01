@@ -334,7 +334,10 @@ def _run_session(cfg: SessionConfig) -> int:
         engine.stop()
 
     if cfg.report_path:
-        recorder.export(cfg.report_path)
+        fmt = cfg.report_path.suffix.lstrip(".").lower()
+        if fmt not in ("json", "csv", "html"):
+            fmt = "json"  # unrecognized extension -- fall back rather than raise
+        recorder.export(cfg.report_path, fmt)
         print(f"[--] report written: {cfg.report_path}")
     st = engine.status()
     print(

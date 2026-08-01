@@ -687,15 +687,10 @@ live-network confirmation. Treat their findings as unproven until that changes.
   sub-panel following the `#ratecfg`/`#destcfg` show/hide pattern in `app.js`'s `onModeChange()`
   if the web UI needs full parity with the CLI.
 - **Packaging** `.deb`/`.desktop`/`dhcpig.1` (man page added in the simplification pass) exist
-  under `packaging/` but haven't been built/tested on a real Kali box yet. There is no CI step
-  that builds a wheel and confirms `data/packetfence_dhcp_fingerprints.json` actually ships
-  inside it — a packaging regression that dropped the data file wouldn't be caught until a user
-  hit a fingerprint miss.
-- **`--report FILE` ignores the extension.** `cli/main.py`'s `_run_session()` calls
-  `recorder.export(cfg.report_path)` with no `fmt` argument, so it always writes JSON regardless
-  of what extension the filename has — `--report run.html` silently contains JSON.
-  `SessionRecorder.export()`/`.render()` already support `csv`/`html` (reachable today via the
-  web UI's Report tab), so this is a CLI-only gap: infer `fmt` from the path suffix.
+  under `packaging/` but haven't been built/tested on a real Kali box yet. CI does now build a
+  wheel and confirm `data/packetfence_dhcp_fingerprints.json` ships inside it
+  (`.github/workflows/ci.yml`'s `build-check` job) — that specific packaging regression is
+  covered; a full `.deb` build on real Kali is still not.
 
 ## 11. Conventions
 Ruff (line length 100) + format; type hints throughout `core`; dataclasses over dicts; no

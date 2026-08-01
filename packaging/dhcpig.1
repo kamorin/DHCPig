@@ -95,11 +95,13 @@ raises a configuration error immediately rather than running a broken v6
 listen / v4 send mismatch.
 .TP
 .BI \-\-report " FILE"
-Write a JSON session report to
+Write a session report to
 .I FILE
-when the run ends. (The written format is always JSON regardless of
+when the run ends. Format is chosen from
 .IR FILE 's
-extension; the web UI's Report tab additionally offers CSV and HTML.)
+extension
+.RI ( .json / .csv / .html ;
+anything else falls back to JSON).
 .TP
 .BI \-v ", " \-\-verbosity " N"
 Output detail, 0\(en3 (default 2). 0 prints results only (findings and the
