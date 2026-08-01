@@ -226,9 +226,7 @@ def _findings_html(data: dict) -> str:
     out = []
     for f in findings:
         verdict = str(f.get("verdict", ""))
-        body = "".join(
-            f'<div class="ev">{escape(line)}</div>' for line in finding_summary_lines(f)
-        )
+        body = "".join(f'<div class="ev">{escape(line)}</div>' for line in finding_summary_lines(f))
         out.append(
             f'<div class="finding"><span class="v" style="background:'
             f'{colors.get(verdict, "#555")}">{escape(verdict)}</span> '

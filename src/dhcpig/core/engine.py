@@ -724,8 +724,7 @@ class DhcpEngine:
             )
             step(
                 f"Handed those addresses back{dry}",
-                f"{rec.get('frames_sent', 0)} DHCPRELEASE sent, "
-                f"{rec.get('passes_run', 0)} passes",
+                f"{rec.get('frames_sent', 0)} DHCPRELEASE sent, {rec.get('passes_run', 0)} passes",
             )
             step(
                 "Retested an unknown device",
@@ -859,8 +858,7 @@ class DhcpEngine:
                         ],
                     },
                     title=(
-                        f"{len(rollcall)} host(s) were on this segment, "
-                        "and what happened to each"
+                        f"{len(rollcall)} host(s) were on this segment, and what happened to each"
                     ),
                 )
             )
@@ -2176,9 +2174,7 @@ class DhcpEngine:
         req = packets.build_request_v4(pkt, self._src_mac(lease.mac))
         self._send(req)
         self.bus.emit(
-            ev.RequestSent(
-                lease=lease, option50=offered_ip, hostname=packets.packet_hostname(req)
-            )
+            ev.RequestSent(lease=lease, option50=offered_ip, hostname=packets.packet_hostname(req))
         )
         self._debug(
             f"REQUEST xid=0x{pkt[BOOTP].xid:08x} requested_addr={offered_ip} server_id={server_id}"

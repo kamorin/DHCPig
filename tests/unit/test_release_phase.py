@@ -220,9 +220,7 @@ def test_finish_release_is_a_noop_when_nothing_was_freed(monkeypatch):
 
 def _nothing_granted(monkeypatch, mode):
     eng, events, _ = _engine(monkeypatch, mode=mode)
-    ctl = ControlOutcome(
-        phase="pre", client="self", attempted=True, success=True, server_id=SERVER
-    )
+    ctl = ControlOutcome(phase="pre", client="self", attempted=True, success=True, server_id=SERVER)
     if mode is Mode.EXHAUST:
         eng.control_pre = ctl
     else:
