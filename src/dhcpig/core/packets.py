@@ -208,7 +208,7 @@ def message_type(pkt) -> int | None:
         "release": RELEASE,
         "inform": INFORM,
     }
-    return names.get(mt, mt) if isinstance(mt, str) else int(mt)
+    return names.get(mt) if isinstance(mt, str) else int(mt)
 
 
 def is_discover(pkt) -> bool:
