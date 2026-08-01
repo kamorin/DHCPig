@@ -394,18 +394,9 @@ class DhcpEngine:
             self.bus.emit(ev.LeaseReleased(lease=lease))
 
     def status(self) -> dict:
-        foreign_observed, foreign_unanswered = self._foreign_discover_counts()
         out = {
             "state": self.state,
-            "discovers": self.discovers,
-            "offers": self.offers,
-            "leases": self.acks,
-            "naks": self.naks,
-            "arp_conflicts": self.arp_conflicts,
-            "releases": self.releases,
-            "foreign_discovers": foreign_observed,
-            "foreign_discovers_unanswered": foreign_unanswered,
-            "races": self.races,
+            **self._counters(),
             "servers": len(self.servers),
             "elapsed": round(time.time() - self._started, 1) if self._started else 0.0,
             "control_pre": self.control_pre.success if self.control_pre else None,
