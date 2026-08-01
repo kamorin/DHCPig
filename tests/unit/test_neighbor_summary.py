@@ -255,7 +255,7 @@ def test_cli_prints_one_line_per_host_for_every_host(capsys, monkeypatch):
 
 
 def test_cli_ends_with_an_outcome_rollup_counting_hosts_per_outcome(capsys, monkeypatch):
-    """"N host(s) did X" -- the same data as the per-host lines, aggregated, and phrased as
+    """ "N host(s) did X" -- the same data as the per-host lines, aggregated, and phrased as
     counts rather than as a verdict. The findings own pass/fail; a second differently-worded
     judgement of the same run on the log is exactly the drift to avoid."""
     eng, events = _engine(monkeypatch)

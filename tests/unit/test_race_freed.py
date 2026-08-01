@@ -88,9 +88,7 @@ def test_foreign_request_renewal_form_resolves_via_ciaddr(monkeypatch):
 def test_foreign_decline_queues_a_race(monkeypatch):
     eng, _ = _engine(monkeypatch)
     _give_server_identity(eng)
-    eng._on_dhcp(
-        _client_pkt("decline", 0x6001, "de:ad:00:00:00:60", requested_addr="10.0.0.60")
-    )
+    eng._on_dhcp(_client_pkt("decline", 0x6001, "de:ad:00:00:00:60", requested_addr="10.0.0.60"))
     assert "10.0.0.60" in eng._race.queue
 
 
@@ -100,9 +98,7 @@ def test_decline_from_eviction_target_is_not_a_race_trigger(monkeypatch):
     eng, _ = _engine(monkeypatch)
     _give_server_identity(eng)
     eng._evict.ip_by_mac["de:ad:00:00:00:61"] = "10.0.0.61"
-    eng._on_dhcp(
-        _client_pkt("decline", 0x6002, "de:ad:00:00:00:61", requested_addr="10.0.0.61")
-    )
+    eng._on_dhcp(_client_pkt("decline", 0x6002, "de:ad:00:00:00:61", requested_addr="10.0.0.61"))
     assert "10.0.0.61" in eng._evict.declined_ips
     assert list(eng._race.queue) == []
 
