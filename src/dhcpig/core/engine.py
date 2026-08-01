@@ -6,14 +6,27 @@ whitehat guarantees (scope + rate limit + dry-run). `core` never prints; it emit
 
 from __future__ import annotations
 
+import ipaddress
+import itertools
+import random
 import threading
 import time
 from pathlib import Path
 
-from scapy.all import sendp  # module-level so tests can monkeypatch dhcpig.core.engine.sendp
+# ARP/BOOTP/DHCP/Ether are pure parsing classes, never monkeypatched by any test, so they're
+# safe to import once here. sendp/get_if_hwaddr/srp are different: tests monkeypatch them by
+# source-module path (dhcpig.core.engine.sendp; scapy.all.get_if_hwaddr; scapy.all.srp) --
+# sendp stays module-level because `monkeypatch.setattr(engine_mod, "sendp", ...)` patches
+# *this* module's own attribute, which a bare-name call always resolves fresh at call time
+# regardless of import style. get_if_hwaddr/srp are patched the other way
+# (`monkeypatch.setattr("scapy.all.get_if_hwaddr", ...)`, patching scapy's own attribute), so
+# they stay function-local imports -- `from scapy.all import get_if_hwaddr` re-reads scapy's
+# current attribute on every call; a module-level import would freeze a pre-patch reference and
+# silently defeat the monkeypatch.
+from scapy.all import ARP, BOOTP, DHCP, Ether, sendp
 
 from . import events as ev
-from . import findings, journal, packets, recovery
+from . import findings, journal, netutils, packets, recovery
 from .events import EventBus
 from .eviction import EvictionState, rung_max
 from .exceptions import ConfigError
@@ -284,9 +297,7 @@ class DhcpEngine:
             # link_down: a switch putting the port into err-disable is a defensive control
             # firing, not a glitch to retry through. Polled here rather than a dedicated thread.
             if self.cfg.mode is Mode.EXHAUST and not self.cfg.dry_run and self._halt_signal is None:
-                from .netutils import link_is_up
-
-                if link_is_up(self.cfg.interface) is False:
+                if netutils.link_is_up(self.cfg.interface) is False:
                     self._trigger_halt("link_down", f"carrier lost on {self.cfg.interface}")
             now = time.time()
             cur = self._counters()
@@ -428,21 +439,17 @@ class DhcpEngine:
     def _src_mac(self, client_mac: str) -> str:
         if self.cfg.spoof_ethernet_src:
             return client_mac
-        from scapy.all import get_if_hwaddr
+        from scapy.all import get_if_hwaddr  # monkeypatched by tests via scapy.all -- see top
 
         try:
             return get_if_hwaddr(self.cfg.interface)
         except Exception:
             # dry-run / no real iface: nothing is sent, so a placeholder src is fine
-            from .netutils import random_mac
-
-            return random_mac()
+            return netutils.random_mac()
 
     # ---------------------------------------------------------------- control transaction
     def _consume_control(self, pkt) -> bool:
         """Route a reply belonging to the in-flight control transaction. True if consumed."""
-        from scapy.all import BOOTP
-
         with self._control_lock:
             xid = self._control_xid
         if xid is None or BOOTP not in pkt or pkt[BOOTP].xid != xid:
@@ -468,8 +475,6 @@ class DhcpEngine:
         Deliberately NOT the de:ad:* prefix the exhaust clients use, so a filter keyed on our
         attack traffic doesn't catch the control too.
         """
-        import random
-
         return "02:" + ":".join(f"{random.randint(0, 255):02x}" for _ in range(5))
 
     def _control_transaction(self, phase: str, client: str = "self") -> ControlOutcome:
@@ -487,13 +492,11 @@ class DhcpEngine:
             out.reason = "skipped (offline)"
             self.bus.emit(ev.ControlFinished(outcome=out))
             return out
-        from scapy.all import DHCP
-
         try:
             if client == "new":
                 mac = self._fresh_control_mac()
             else:
-                from scapy.all import get_if_hwaddr
+                from scapy.all import get_if_hwaddr  # monkeypatched -- see top of file
 
                 mac = get_if_hwaddr(self.cfg.interface)
         except Exception as exc:
@@ -1231,11 +1234,9 @@ class DhcpEngine:
         worker's own finishing sequence, Phase 5), by which point `_stop` is already set for
         every *other* purpose, and gating here would mean eviction never sends anything.
         """
-        from .netutils import random_mac
-
         sent = 0
         for n in targets:
-            bogus = random_mac()
+            bogus = netutils.random_mac()
             self._evict.bogus_macs.add(bogus)
             for op, label in ((packets.ARP_REQUEST, "request"), (packets.ARP_REPLY, "reply")):
                 pkt = packets.build_garp(n.ip, bogus, op=op)
@@ -1357,8 +1358,6 @@ class DhcpEngine:
           * apipa -- the victim's real MAC now sourcing ARP from a 169.254.0.0/16 address:
             full eviction, RFC 5227's fallback after repeated conflicts.
         """
-        from scapy.all import ARP, Ether
-
         try:
             if ARP not in pkt or Ether not in pkt:
                 return
@@ -1388,8 +1387,6 @@ class DhcpEngine:
         AGENT_HANDOFF.md §5g's trigger ranking). A DECLINE carries its own address via
         option 50 (RFC 2131 Table 5), unlike a NAK.
         """
-        from scapy.all import BOOTP, DHCP
-
         try:
             if BOOTP not in pkt:
                 return
@@ -1414,8 +1411,6 @@ class DhcpEngine:
         for the same xid was refusing (2.3, race-freed) -- a NAK carries no address of its own
         (RFC 2131), so this is the only way to turn "somebody got NAK'd" into "this specific IP
         is contested". Not itself a race trigger; _handle_nak() consumes this."""
-        from scapy.all import BOOTP, DHCP
-
         try:
             if BOOTP not in pkt or DHCP not in pkt:
                 return
@@ -1486,8 +1481,6 @@ class DhcpEngine:
         us — reservations, exclusions, and additional scopes on the same segment are invisible
         from here.
         """
-        import ipaddress
-
         if self.cfg.scope_cidrs:
             try:
                 total = sum(
@@ -1503,10 +1496,8 @@ class DhcpEngine:
             except ValueError:
                 pass
         if self._first_offer_ip and self._first_offer_subnet:
-            from .netutils import cidr_from_mask
-
             try:
-                prefixlen = cidr_from_mask(self._first_offer_subnet)
+                prefixlen = netutils.cidr_from_mask(self._first_offer_subnet)
                 net = ipaddress.ip_network(f"{self._first_offer_ip}/{prefixlen}", strict=False)
                 return PoolEstimate(
                     size=max(0, net.num_addresses - 2),
@@ -1851,7 +1842,6 @@ class DhcpEngine:
         counts = {"granted": 0, "offered_different": 0, "naked": 0, "no_response": 0}
         if not freed:
             return counts
-        from .netutils import random_mac
 
         def halted() -> bool:
             return self._stop.is_set() and not ignore_stop
@@ -1875,7 +1865,7 @@ class DhcpEngine:
                 pause(0.02)
             if halted():
                 break
-            client_mac = random_mac()
+            client_mac = netutils.random_mac()
             xid, _src = self._push_discover(client_mac, requested_addr=ip)
             self._reacquire_targets[xid] = ip
             pushed.append(xid)
@@ -1903,9 +1893,7 @@ class DhcpEngine:
         return counts
 
     def _release_gateway(self) -> str | None:
-        from .netutils import default_gateway
-
-        return default_gateway(self.cfg.interface)
+        return netutils.default_gateway(self.cfg.interface)
 
     def _reprobe_released(self, ips: list[str]) -> int:
         """Re-ARP the just-released addresses; count how many stopped answering.
@@ -1942,9 +1930,7 @@ class DhcpEngine:
         """
         if self.cfg.scope_cidrs:
             return list(self.cfg.scope_cidrs)
-        from .netutils import iface_network_cidr
-
-        cidr = iface_network_cidr(self.cfg.interface)
+        cidr = netutils.iface_network_cidr(self.cfg.interface)
         return [cidr] if cidr else []
 
     def _start_senders(self) -> None:
@@ -1963,8 +1949,6 @@ class DhcpEngine:
         wasn't. Only an ACK counts as a held address; NAKs, duplicate offers, and timeouts
         shrink the window instead of being pushed through.
         """
-        from .netutils import random_mac
-
         macs = list(self.cfg.client_macs) if self.cfg.client_macs else None
         while not self._stop.is_set():
             if self._halt_signal is not None:
@@ -2010,7 +1994,7 @@ class DhcpEngine:
             ):
                 race_ip = self._race.queue.popleft()
                 race_reason = self._race.reasons.pop(race_ip, "unknown")
-                race_mac = random_mac()
+                race_mac = netutils.random_mac()
                 race_xid, _race_src = self._push_discover(race_mac, requested_addr=race_ip)
                 self._race.targets[race_xid] = race_ip
                 self._race.triggers[race_xid] = race_reason
@@ -2028,7 +2012,7 @@ class DhcpEngine:
                 if self._stop.wait(0.02):
                     return
                 continue
-            mac = macs.pop(0) if macs else random_mac()
+            mac = macs.pop(0) if macs else netutils.random_mac()
             if macs is not None:
                 macs.append(mac)  # rotate through the provided list
             xid, src = self._push_discover(mac)
@@ -2061,11 +2045,8 @@ class DhcpEngine:
                 self._handle_foreign_discover(pkt)
             elif packets.is_request(pkt):  # (2.3, race-freed) NAK-address resolution only
                 self._handle_foreign_request(pkt)
-            else:
-                from scapy.all import ARP
-
-                if ARP in pkt:
-                    self._handle_evict_arp(pkt)
+            elif ARP in pkt:
+                self._handle_evict_arp(pkt)
         except Exception as exc:  # never let a bad packet kill the sniffer thread
             self.bus.emit(ev.ErrorEvent(message=f"parse error: {exc!r}"))
 
@@ -2081,8 +2062,6 @@ class DhcpEngine:
         Only meaningful for client-originated message types (DISCOVER/REQUEST/RELEASE/DECLINE);
         callers must not apply it to OFFER/ACK/NAK, which we never send.
         """
-        from scapy.all import BOOTP, Ether
-
         if Ether in pkt and pkt[Ether].src in self._our_macs:
             return True
         if BOOTP in pkt:
@@ -2103,8 +2082,6 @@ class DhcpEngine:
         Every sighting is still tracked in `_foreign_discovers` by xid so `_handle_offer()` can
         mark it answered, and the counters keep moving either way.
         """
-        from scapy.all import BOOTP
-
         try:
             if BOOTP not in pkt:
                 return
@@ -2143,8 +2120,6 @@ class DhcpEngine:
             self.bus.emit(ev.ErrorEvent(message=f"foreign discover parse error: {exc!r}"))
 
     def _handle_offer(self, pkt) -> None:
-        from scapy.all import BOOTP
-
         self.offers += 1
         self._offers_seen_any = True
         self._last_offer_ts = time.time()
@@ -2247,8 +2222,6 @@ class DhcpEngine:
         else's REQUEST) would land in `Cleanup` and the lease journal as if we held it -- so a
         later `restore()`/`release-previous` could send a RELEASE for an address a real,
         uninvolved client is actively using. Same `xid in self._inflight` ownership check."""
-        from scapy.all import BOOTP, DHCP
-
         xid = pkt[BOOTP].xid
         with self._inflight_lock:
             ours = xid in self._inflight
@@ -2304,8 +2277,6 @@ class DhcpEngine:
         send (the exhaust flood and targeted re-acquisition both register there), so it reliably
         answers "is this NAK ours" without guessing from packet contents.
         """
-        from scapy.all import BOOTP, DHCP
-
         xid = pkt[BOOTP].xid
         server_id = packets.server_identifier(pkt[BOOTP].siaddr, pkt[DHCP].options)
         with self._inflight_lock:
@@ -2330,8 +2301,6 @@ class DhcpEngine:
         self._sniffer.start()
 
     def _on_scan(self, pkt) -> None:
-        from scapy.all import ARP, DHCP, Ether
-
         try:
             if DHCP in pkt:
                 role = "server" if packets.is_offer(pkt) or packets.is_ack(pkt) else "client"
@@ -2362,20 +2331,18 @@ class DhcpEngine:
         self._threads.append(t)
 
     def _active_scan_worker(self) -> None:
-        from .netutils import get_if_ip, random_mac
-
         neighbors, _ = self._discover_neighbors()  # benign ARP who-has across scope
         self._debug(f"active-scan: {len(neighbors)} host(s) responded to ARP")
         # Actively probe/fingerprint the DHCP server(s) with a single INFORM from our address.
-        my_ip = get_if_ip(self.cfg.interface)
+        my_ip = netutils.get_if_ip(self.cfg.interface)
         if not my_ip or self.cfg.dry_run:
             my_ip = my_ip or "0.0.0.0"
         try:
-            from scapy.all import get_if_hwaddr
+            from scapy.all import get_if_hwaddr  # monkeypatched -- see top of file
 
             my_mac = get_if_hwaddr(self.cfg.interface)
         except Exception:
-            my_mac = random_mac()
+            my_mac = netutils.random_mac()
         xid = _rand_xid()
         inform = packets.build_inform_v4(my_mac, my_ip, xid, self.cfg.request_options)
         self._send(inform)
@@ -2557,15 +2524,10 @@ class DhcpEngine:
         `cidrs` defaults to cfg.scope_cidrs. Destructive callers MUST leave it unset so their
         targets stay pinned to the authorised scope.
         """
-        import ipaddress
-        import itertools
-
-        from scapy.all import ARP, Ether, srp
-
-        from .netutils import get_if_ip
+        from scapy.all import srp  # monkeypatched -- see top of file
 
         found: dict[str, Neighbor] = {}
-        src_ip = get_if_ip(self.cfg.interface) or "0.0.0.0"
+        src_ip = netutils.get_if_ip(self.cfg.interface) or "0.0.0.0"
         targets: list[str] = []
         for cidr in (cidrs if cidrs is not None else self.cfg.scope_cidrs) or []:
             net = ipaddress.ip_network(cidr, strict=False)
@@ -2591,15 +2553,11 @@ class DhcpEngine:
 
 
 def _rand_xid() -> int:
-    import random
-
     return random.randint(1, 900000000)
 
 
 def _opts_summary(pkt) -> str:
     """Compact 'name=value' dump of DHCP options for debug logging (skips pad/end)."""
-    from scapy.all import DHCP
-
     if DHCP not in pkt:
         return ""
     parts: list[str] = []
