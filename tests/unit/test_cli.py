@@ -100,7 +100,7 @@ def test_exhaust_journal_default_on_and_opt_out():
 def test_release_previous_appears_in_run_once_completion_modes():
     """release-previous is not DESTRUCTIVE, but it still needs the CLI's polling loop to
     recognize a finished worker thread as 'this run is done' -- same as release."""
-    assert Mode.RELEASE_PREVIOUS in cli._RUN_ONCE_MODES
+    assert Mode.RELEASE_PREVIOUS in cli.RUN_ONCE_MODES
     assert Mode.RELEASE_PREVIOUS not in cli.DESTRUCTIVE_MODES
 
 
