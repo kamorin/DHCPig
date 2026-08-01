@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from .models import IPVersion
+
+if TYPE_CHECKING:
+    from scapy.sendrecv import AsyncSniffer
 
 _BPF = {
     # Widened (2.3) from server->client only ("src port 67 and dst port 68") to both
@@ -21,7 +25,7 @@ class DhcpSniffer:
         self.iface = iface
         self.ip_version = ip_version
         self.on_packet = on_packet
-        self._sniffer = None
+        self._sniffer: AsyncSniffer | None = None
 
     def start(self) -> None:
         from scapy.all import AsyncSniffer  # imported lazily; opening a socket needs root

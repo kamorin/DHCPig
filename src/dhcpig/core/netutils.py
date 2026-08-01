@@ -50,7 +50,7 @@ def list_interfaces() -> list[str]:
 def get_if_ip(iface: str) -> str | None:
     """IPv4 address of an interface, or None. Uses scapy if available, else best effort."""
     try:
-        from scapy.all import get_if_addr  # type: ignore
+        from scapy.all import get_if_addr
 
         addr = get_if_addr(iface)
         return addr if addr and addr != "0.0.0.0" else None
