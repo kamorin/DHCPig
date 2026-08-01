@@ -14,7 +14,7 @@ from pathlib import Path
 from scapy.all import sendp  # module-level so tests can monkeypatch dhcpig.core.engine.sendp
 
 from . import events as ev
-from . import journal, packets
+from . import findings, journal, packets
 from .events import EventBus
 from .exceptions import ConfigError
 from .fingerprint import extract_signature, resolve
@@ -838,7 +838,10 @@ class DhcpEngine:
 
     def _derive_findings(self) -> None:
         """Every finding derivation, in dependency order. Split out of `_finalize_findings()`
-        purely so that method can wrap the whole set in one buffer/sort/emit."""
+        purely so that method can wrap the whole set in one buffer/sort/emit.
+
+        The finding text (title/verdict/severity/recommendation) lives in `core/findings.py`;
+        this method only decides *whether* and *with what evidence* each one fires."""
         pre, post = self.control_pre, self.control_post
         distinct_macs = len({ln.mac for ln in self.cleanup.all()})
         elapsed = round(time.time() - self._started, 1) if self._started else 0.0
@@ -848,31 +851,15 @@ class DhcpEngine:
         # this tool did to your network" before any verdict. Descriptive only; see
         # _run_summary_steps() for why it deliberately draws no conclusions of its own.
         self._raise(
-            Finding(
-                id="RUN_SUMMARY",
-                title="What this run did, step by step",
-                verdict=INFO,
-                severity="info",
-                evidence={
+            findings.build(
+                "RUN_SUMMARY",
+                {
                     "mode": self.cfg.mode.value,
                     "interface": self.cfg.interface,
                     "duration_sec": elapsed,
                     "dry_run": self.cfg.dry_run,
                     "steps": self._run_summary_steps(),
                 },
-                recommendation=(
-                    # First sentence only reaches the log (finding_summary_lines); the rest is
-                    # for the report, so it has to stand alone.
-                    "Every step above works because DHCP never checks that a request comes from "
-                    "the device it names. Assuming this was run from Wi-Fi, the single "
-                    "highest-value control is to enable DHCP proxy on the WLAN and have the "
-                    "controller drop any DHCP message whose client-hardware-address does not "
-                    "match the MAC of the station that sent it. A wireless station's MAC is "
-                    "bound to its association (and, under WPA2/WPA3, to its encryption keys), "
-                    "so the controller is uniquely able to catch this -- and every step above "
-                    "that touched another device's address depended on being able to send DHCP "
-                    "on that device's behalf."
-                ),
             )
         )
 
@@ -888,15 +875,9 @@ class DhcpEngine:
                 by_category[category] = by_category.get(category, 0) + 1
             namew = max((len(h) for *_r, h, _o, _c in rollcall), default=0)
             self._raise(
-                Finding(
-                    id="NEIGHBORS_OBSERVED",
-                    title=(
-                        f"{len(rollcall)} host(s) were on this segment, "
-                        "and what happened to each"
-                    ),
-                    verdict=INFO,
-                    severity="info",
-                    evidence={
+                findings.build(
+                    "NEIGHBORS_OBSERVED",
+                    {
                         "total": len(rollcall),
                         "by_category": by_category,
                         # pre-formatted one line per host: both renderers print list evidence
@@ -907,14 +888,9 @@ class DhcpEngine:
                             for ip, mac, host, outcome, _c in rollcall
                         ],
                     },
-                    recommendation=(
-                        "Inventory of the segment as this run found it, with each host's "
-                        "outcome. 'offline' means the host had no working address when the run "
-                        "ended. 'lease_taken' means the server gave us its address while the "
-                        "host carried on using it -- those hosts are working now and will fail "
-                        "at their next renewal, with no warning to the user and nothing "
-                        "observable from this vantage point, so treat that count as delayed "
-                        "impact rather than none."
+                    title=(
+                        f"{len(rollcall)} host(s) were on this segment, "
+                        "and what happened to each"
                     ),
                 )
             )
@@ -922,21 +898,13 @@ class DhcpEngine:
         # A failed baseline invalidates everything else — say so first and loudly.
         if pre is not None and pre.attempted and not pre.success:
             self._raise(
-                Finding(
-                    id="CONTROL_BASELINE_FAILED",
-                    title="Baseline DHCP request from the real NIC MAC failed",
-                    verdict=INCONCLUSIVE,
-                    severity="high",
-                    evidence={
+                findings.build(
+                    "CONTROL_BASELINE_FAILED",
+                    {
                         "phase": "pre",
                         "reason": pre.reason,
                         "interface": self.cfg.interface,
                     },
-                    recommendation=(
-                        "Results are not conclusive. Confirm the interface is on the intended "
-                        "VLAN with a reachable DHCP server before drawing any conclusion about "
-                        "the network's defenses."
-                    ),
                 )
             )
 
@@ -950,20 +918,12 @@ class DhcpEngine:
             and not self.control_pre_new.success
         ):
             self._raise(
-                Finding(
-                    id="NEW_CLIENT_BLOCKED_AT_BASELINE",
-                    title="An unknown MAC could not obtain an address even before testing",
-                    verdict=PASS,
-                    severity="info",
-                    evidence={
+                findings.build(
+                    "NEW_CLIENT_BLOCKED_AT_BASELINE",
+                    {
                         "known_mac_ok": True,
                         "new_client_reason": self.control_pre_new.reason,
                     },
-                    recommendation=(
-                        "This machine's own MAC was served but an unseen MAC was not — "
-                        "consistent with DHCP snooping or port security. Exhaustion cannot be "
-                        "measured against this segment, which is itself the desired outcome."
-                    ),
                 )
             )
         if self.cfg.mode is Mode.EXHAUST and self._baseline_neighbor_count:
@@ -972,23 +932,14 @@ class DhcpEngine:
                 utilization = self._baseline_neighbor_count / est.size
                 if utilization >= 0.8:
                     self._raise(
-                        Finding(
-                            id="POOL_HEADROOM_LOW",
-                            title="The pool was already near full before this test began",
-                            verdict=INFO,
-                            severity="medium",
-                            evidence={
+                        findings.build(
+                            "POOL_HEADROOM_LOW",
+                            {
                                 "in_use_observed": self._baseline_neighbor_count,
                                 "pool_size": est.size,
                                 "source": est.source,
                                 "utilization_pct": round(utilization * 100, 1),
                             },
-                            recommendation=(
-                                "A passive, pre-test finding independent of whether exhausting "
-                                "the pool succeeded: with the scope already this full, only a "
-                                "few more leases deny service to the next legitimate client. "
-                                "Consider widening the scope or adding a second one."
-                            ),
                         )
                     )
 
@@ -1012,13 +963,9 @@ class DhcpEngine:
 
                 if attained:
                     self._raise(
-                        Finding(
-                            id="DHCP_STARVATION_ATTAINED",
-                            title="A new client was denied an address while spoofed leases "
-                            "were held",
-                            verdict=FAIL,
-                            severity="high",
-                            evidence={
+                        findings.build(
+                            "DHCP_STARVATION_ATTAINED",
+                            {
                                 "leases_held": self.acks,
                                 "distinct_client_macs": distinct_macs,
                                 "new_client_reason": post_new.reason,
@@ -1027,55 +974,32 @@ class DhcpEngine:
                                 "elapsed_sec": elapsed,
                                 "servers": list(self.servers),
                             },
-                            recommendation=(
-                                "The pool was driven to the point of denying service to a "
-                                "brand-new client. Rate-limit DHCP per port and enable DHCP "
-                                "snooping / port security, then re-run to confirm."
-                            ),
                         )
                     )
                 else:
                     evidence: dict = {"reason": reason, "leases_held": self.acks}
+                    signal = detail = leases_at_halt = headroom = None
                     if reason == "control_fired" and self._halt_signal is not None:
                         signal, detail, leases_at_halt = self._halt_signal
                         evidence.update(
                             {"signal": signal, "detail": detail, "leases_at_halt": leases_at_halt}
-                        )
-                        recommendation = (
-                            f"Sending stopped on {signal} ({detail}) after {leases_at_halt} "
-                            "lease(s) held — that control is what's providing protection here; "
-                            "confirm it in switch/DHCP-server logs."
                         )
                     elif reason == "pool_headroom_remaining":
                         est, headroom = self._pool_headroom()
                         evidence.update(
                             {"headroom": headroom, "pool_size": est.size, "pool_source": est.source}
                         )
-                        hr = headroom if headroom is not None else "an unknown amount of"
-                        recommendation = (
-                            f"A new client could still obtain an address, with ~{hr} address(es) "
-                            "of headroom estimated remaining — the pool was not driven to "
-                            "exhaustion within this run."
-                        )
-                    elif reason == "blocked_at_baseline":
-                        recommendation = (
-                            "An unknown MAC could not obtain an address even before the test "
-                            "began — consistent with DHCP snooping or port security. See "
-                            "NEW_CLIENT_BLOCKED_AT_BASELINE for the direct evidence."
-                        )
-                    else:  # inconclusive_baseline
-                        recommendation = (
-                            "The baseline request from this machine's real MAC failed, so "
-                            "nothing here can be concluded. See CONTROL_BASELINE_FAILED."
-                        )
                     self._raise(
-                        Finding(
-                            id="DHCP_STARVATION_NOT_ATTAINED",
-                            title="A new client could still obtain an address after the run",
-                            verdict=PASS,
-                            severity="info",
-                            evidence=evidence,
-                            recommendation=recommendation,
+                        findings.build(
+                            "DHCP_STARVATION_NOT_ATTAINED",
+                            evidence,
+                            recommendation=findings.starvation_not_attained_recommendation(
+                                reason,
+                                signal=signal,
+                                detail=detail,
+                                leases_at_halt=leases_at_halt,
+                                headroom=headroom,
+                            ),
                         )
                     )
 
@@ -1083,36 +1007,23 @@ class DhcpEngine:
                 # refusing our traffic specifically, not running out of addresses
                 if post_new.success and self.state == EXHAUSTED:
                     self._raise(
-                        Finding(
-                            id="SERVER_STOPPED_SERVING_TEST_CLIENTS",
-                            title="Server stopped answering the test clients while still "
-                            "serving a new client",
-                            verdict=INFO,
-                            severity="medium",
-                            evidence={
+                        findings.build(
+                            "SERVER_STOPPED_SERVING_TEST_CLIENTS",
+                            {
                                 "leases_before_offers_ceased": self.acks,
                                 "discovers": self.discovers,
                                 "naks": self.naks,
                                 "new_client_ip": post_new.offered_ip,
                             },
-                            recommendation=(
-                                "Consistent with DHCP rate-limiting, offer-table saturation "
-                                "or anti-starvation protection rather than pool exhaustion. "
-                                "A NAK burst just before offers ceased points at the server "
-                                "re-offering already-pending addresses."
-                            ),
                         )
                     )
 
         if self.cfg.mode is Mode.EXHAUST and self.cfg.dry_run:
             est, headroom = self._pool_headroom()
             self._raise(
-                Finding(
-                    id="DRY_RUN_SUMMARY",
-                    title="Dry run: reconnaissance only, nothing sent that would take a lease",
-                    verdict=INFO,
-                    severity="info",
-                    evidence={
+                findings.build(
+                    "DRY_RUN_SUMMARY",
+                    {
                         "hosts_seen": len(self._neighbors_by_mac),
                         "server_id": (pre.server_id if pre and pre.success else None),
                         "pool_size": est.size,
@@ -1122,42 +1033,15 @@ class DhcpEngine:
                         "would_evict": len(self._evict_targets),
                         "would_race": self.races,
                     },
-                    recommendation=(
-                        "The control transaction and ARP discovery ran for real, but the "
-                        "windowed sender, RELEASE, re-acquisition, and eviction were all "
-                        "suppressed. Re-run with dry-run disabled to actually measure exhaustion."
-                    ),
                 )
             )
 
         if self.naks > 0:
-            self._raise(
-                Finding(
-                    id="DHCP_NAK_OBSERVED",
-                    title="Server actively refused requests (DHCPNAK)",
-                    verdict=INFO,
-                    severity="medium",
-                    evidence={"naks": self.naks},
-                    recommendation=(
-                        "NAKs often indicate snooping binding-table enforcement or an address "
-                        "conflict. Correlate with switch logs."
-                    ),
-                )
-            )
+            self._raise(findings.build("DHCP_NAK_OBSERVED", {"naks": self.naks}))
 
         if len(self.servers) > 1:
             self._raise(
-                Finding(
-                    id="MULTIPLE_DHCP_SERVERS",
-                    title="More than one DHCP server answered on this segment",
-                    verdict=FAIL,
-                    severity="high",
-                    evidence={"servers": list(self.servers)},
-                    recommendation=(
-                        "Verify each server is authorized. An unexpected responder is a rogue "
-                        "DHCP server; DHCP snooping with trusted uplink ports prevents this."
-                    ),
-                )
+                findings.build("MULTIPLE_DHCP_SERVERS", {"servers": list(self.servers)})
             )
 
         # Foreign DISCOVER observation (2.3, goal 4): direct client-visible-outage evidence,
@@ -1173,41 +1057,25 @@ class DhcpEngine:
             ]
             if unanswered:
                 self._raise(
-                    Finding(
-                        id="FOREIGN_DISCOVERS_UNANSWERED",
-                        title="Other hosts' DHCPDISCOVERs went unanswered during this run",
-                        verdict=FAIL,
-                        severity="high",
-                        evidence={
+                    findings.build(
+                        "FOREIGN_DISCOVERS_UNANSWERED",
+                        {
                             "observed": observed,
                             "unanswered": unanswered,
                             "distinct_macs": len(macs),
                             "sample_hosts": sample_hosts,
                         },
-                        recommendation=(
-                            "Other people's machines asked for an address during this run and "
-                            "got nothing — the most direct evidence of client-visible outage "
-                            "this tool can produce. Correlate the MACs above against known "
-                            "devices on the segment."
-                        ),
                     )
                 )
             else:
                 self._raise(
-                    Finding(
-                        id="FOREIGN_DISCOVERS_ANSWERED",
-                        title="Other hosts' DHCPDISCOVERs were all answered during this run",
-                        verdict=INFO,
-                        severity="info",
-                        evidence={
+                    findings.build(
+                        "FOREIGN_DISCOVERS_ANSWERED",
+                        {
                             "observed": observed,
                             "distinct_macs": len(macs),
                             "sample_hosts": sample_hosts,
                         },
-                        recommendation=(
-                            "Third-party DHCP kept working alongside this run — no client-"
-                            "visible outage observed via foreign DISCOVER traffic."
-                        ),
                     )
                 )
 
@@ -1238,12 +1106,9 @@ class DhcpEngine:
                 by_rung[rung] = by_rung.get(rung, 0) + 1
             if evicted:
                 self._raise(
-                    Finding(
-                        id="CLIENTS_EVICTED_FROM_ADDRESSES",
-                        title="ARP-conflict eviction forced clients off their addresses",
-                        verdict=FAIL,
-                        severity="high",
-                        evidence={
+                    findings.build(
+                        "CLIENTS_EVICTED_FROM_ADDRESSES",
+                        {
                             "targets": len(self._evict_outcomes),
                             "evicted": len(evicted),
                             "by_rung": by_rung,
@@ -1251,57 +1116,29 @@ class DhcpEngine:
                             "rounds": self.cfg.evict_rounds,
                             "mode": self.cfg.mode.value,
                         },
-                        recommendation=(
-                            "Any host on this segment can force any other host off its address "
-                            "using only broadcast ARP (RFC 5227's own address-conflict-detection "
-                            "mechanism, turned against the client). Enable Dynamic ARP "
-                            "Inspection / port security to drop forged ARP at the switch port; "
-                            "without it, this is independent of and cheaper than pool "
-                            "exhaustion."
-                        ),
                     )
                 )
             elif reacted:
                 self._raise(
-                    Finding(
-                        id="CLIENTS_DEFENDED_ADDRESSES",
-                        title="Targets reacted to the ARP conflict but were not denied service",
-                        verdict=INCONCLUSIVE,
-                        severity="medium",
-                        evidence={
+                    findings.build(
+                        "CLIENTS_DEFENDED_ADDRESSES",
+                        {
                             "targets": len(self._evict_outcomes),
                             "reacted": len(reacted),
                             "by_rung": by_rung,
                             "rounds": self.cfg.evict_rounds,
                             "mode": self.cfg.mode.value,
                         },
-                        recommendation=(
-                            "Our forged ARP reached the targets — Dynamic ARP Inspection is not "
-                            "filtering this port. Some held their ground (defended); others "
-                            "restarted at INIT and immediately reacquired a lease, which is the "
-                            "expected, low-harm outcome under release mode since the pool was "
-                            "never drained. Not a pass: some clients defend and still lose the "
-                            "gateway entry, which this vantage point cannot see, and 'defended' "
-                            "targets in particular show DAI is not filtering this port."
-                        ),
                     )
                 )
             else:
                 self._raise(
-                    Finding(
-                        id="ARP_CONFLICTS_UNANSWERED",
-                        title="ARP-conflict frames drew no reaction from any target",
-                        verdict=INCONCLUSIVE,
-                        severity="medium",
-                        evidence={
+                    findings.build(
+                        "ARP_CONFLICTS_UNANSWERED",
+                        {
                             "targets": len(self._evict_outcomes),
                             "rounds": self.cfg.evict_rounds,
                         },
-                        recommendation=(
-                            "Either the frames were filtered (Dynamic ARP Inspection / port "
-                            "security) or every target simply accepted them silently — both "
-                            "look identical from here. Check DAI drop counters on the switch."
-                        ),
                     )
                 )
 
@@ -1323,27 +1160,15 @@ class DhcpEngine:
             for trigger in self._race_triggers.values():
                 by_trigger[trigger] = by_trigger.get(trigger, 0) + 1
             self._raise(
-                Finding(
-                    id="RACED_FREED_ADDRESSES",
-                    title="Raced to re-acquire addresses as soon as they were observed freed",
-                    verdict=INFO,
-                    severity="info",
-                    evidence={
+                findings.build(
+                    "RACED_FREED_ADDRESSES",
+                    {
                         "attempted": self.races,
                         "won": won,
                         "lost": lost,
                         "by_outcome": by_outcome,
                         "by_trigger": by_trigger,
                     },
-                    recommendation=(
-                        "A foreign NAK, DECLINE, or (if --race-on-rediscover) a rediscovering "
-                        "known neighbor was treated as a signal that an address just came free, "
-                        "and this tool immediately raced to grab it ahead of the address's "
-                        "original owner. A high win rate here demonstrates that a departing "
-                        "or bounced client cannot reliably reclaim its own address on this "
-                        "segment without additional protection (DHCP snooping binding "
-                        "persistence, static reservations)."
-                    ),
                 )
             )
 
