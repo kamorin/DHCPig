@@ -1,6 +1,6 @@
 """Race-freed (2.3): _exhaust_sender() queue-draining and _classify_targeted() outcome parity.
 
-See AGENT_HANDOFF.md §5g. See test_race_freed.py for trigger/queue-building
+See docs/DESIGN.md §5g. See test_race_freed.py for trigger/queue-building
 coverage (commit 2).
 """
 

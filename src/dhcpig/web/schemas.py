@@ -87,7 +87,7 @@ def as_cli(cfg: SessionConfig) -> str:
         parts.append("--no-journal")
     if not cfg.evict and cfg.mode in (Mode.EXHAUST, Mode.RELEASE_NEIGHBORS):
         parts.append("--no-evict")
-    if cfg.mode is Mode.EXHAUST:  # race-freed is exhaust-only (AGENT_HANDOFF.md §5g)
+    if cfg.mode is Mode.EXHAUST:  # race-freed is exhaust-only (docs/DESIGN.md §5g)
         if not cfg.race_freed_addresses:
             parts.append("--no-race-freed")
         if cfg.race_on_rediscover:

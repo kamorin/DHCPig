@@ -1,11 +1,10 @@
-# DHCPig 2.x — Agent Handoff
+# DHCPig 2.x — Design Notes
 
-> Read this first. It transfers everything you need to keep working on this codebase without
-> re-deriving it — **this file is now the only design document in the repo.** The
-> `EXECUTION-PLAN-*.md` blueprints and `SECURITY.md` were deleted at the maintainer's request
-> (2.5.0); everything load-bearing from them was folded into the sections below, so don't cite
-> them and don't recreate them. `DHCPig-SoT.md` and `DHCPig-Implementation-Brief.md` live in the
-> user's outputs folder, not the repo.
+This is the design document: what the tool does, why the code is shaped the way it is, and which
+decisions are settled rather than open. It's the reference for anyone extending or reviewing this
+codebase — human or agent. For the practical "how do I add a finding / run the tests / where does
+this file go" workflow, see `CONTRIBUTING.md`; agent-session/sandbox specifics live in
+`CLAUDE.md`, not here.
 
 ## 1. What this is
 A whitehat DHCP network-hardening validation tool — a full rewrite of the legacy single-file
@@ -15,13 +14,15 @@ passively/actively fingerprints hosts — to prove a network defends against tho
 port security, Dynamic ARP Inspection, etc.). **Never add capability that enables host
 compromise or lateral movement; it stays an L2/L3 DHCP/ARP stress + audit tool.**
 
-## 2. Where the code lives / how paths work
-- **Canonical working copy:** `/Users/kamorin/Documents/code/DHCPig` (the user's Mac; a
-  connected Cowork folder). Edit here with Read/Write/Edit.
-- **In the sandbox `mcp__workspace__bash`** the same folder is `/sessions/<id>/mnt/DHCPig`.
-  Use that path for bash only. (There is a stale earlier copy under `.../outputs/DHCPig` — ignore it.)
-- The user runs it on a **Kali VM** where the Mac folder is mounted at `/mnt/hgfs/code/DHCPig`
-  (VMware shared folder) — so your edits appear on the VM immediately; they just restart the process.
+## 2. Where the code lives
+See `CLAUDE.md` for local working-copy paths and any sandbox/VM specifics — that's session
+workflow, not design. From the repo root: `src/dhcpig/` is the package (§3 covers its layout),
+`tests/` mirrors it, `docs/` holds this file, `packaging/` the `.deb`/`.desktop`/man-page
+sources.
+
+Section numbers in this document are cited by section markers (`§5a`, `§5f`, etc.) throughout
+the source tree's comments and docstrings — don't renumber sections without also updating every
+one of those citations across `src/` and `tests/`.
 
 ## 3. Architecture (the one mental model that matters)
 Three layers, strictly separated:
@@ -36,14 +37,18 @@ Both front ends drive the SAME `DhcpEngine` and never touch scapy directly.
 |------|------|
 | `core/models.py` | dataclasses/enums: `SessionConfig`, `Lease`, `ServerInfo`, `Neighbor`, `HostFingerprint`, `PoolEstimate`, `Mode`, `IPVersion`, `Timeouts`. `DESTRUCTIVE_MODES`, `SCOPE_REQUIRED_MODES`, `EXHAUST_DEFAULT_RATE_PPS`. `ControlOutcome` carries `server_mac`; `Lease` carries `server_mac`. |
 | `core/packets.py` | **pure** scapy builders/parsers (no I/O). `build_discover_v4` (takes `requested_addr` for option 50 — see §5f), `build_request_v4`, `build_release_v4` (now emits an `Ether` layer — see §5c), `build_inform_v4`, `build_garp` (op=1/2 — reused by eviction, see §5b), `server_identifier`, `client_mac_from_offer`, `parse_offer`, `is_offer`/`is_ack`/`is_nak`/`is_discover`/`is_decline`, `dhcp_option`. `build_arp_poison` was removed (2.3) — don't re-add it, see §5b. |
-| `core/engine.py` | `DhcpEngine(cfg, bus)`: `start/stop/status/restore`. One state machine, `threading.Event` stop, worker threads + sniffer. **Every outbound frame goes through `_send()`** (the single chokepoint; `probe=True` bypasses dry-run suppression only, never `offline` — see §8). Control transaction, release phase, re-acquisition, eviction, windowed sender, halt detection, pool estimate, and findings derivation all live here (§5a–§5f). Debug via `_debug()`. |
-| `core/events.py` | `EventBus` (thread-safe), event dataclasses (including `ControlDetected`, `ForeignDiscover`, `ClientEvicted`), `to_dict()` + `jsonable()` (recursively converts enums/bytes/Path so JSON never breaks). |
+| `core/engine.py` | `DhcpEngine(cfg, bus)`: `start/stop/status/restore`. One state machine, `threading.Event` stop, worker threads + sniffer. **Every outbound frame goes through `_send()`** (the single chokepoint; `probe=True` bypasses dry-run suppression only, never `offline` — see §8). Control transaction, release phase, re-acquisition, the windowed sender, halt detection, and pool estimate all live here (§5a–§5f); finding *text* lives in `core/findings.py`, eviction state in `core/eviction.py`, race state in `core/racing.py`, release-previous's entry filter in `core/recovery.py` — engine.py keeps the branching logic and calls into all four. Debug via `_debug()`. 2965 lines before the cleanup pass (see §11); ~2570 after. |
+| `core/findings.py` | The finding catalogue: every id's title/verdict/severity/recommendation in one declarative dict, plus `build(id, evidence, **overrides)`, `finding_summary_lines()` + `EVIDENCE_SKIP` (the one rule for displaying a finding, shared by the CLI renderer, the HTML report, and `events.to_dict()`'s `summary` field, which `app.js` now renders directly instead of re-deriving — see §5a), and the two-variant recommendation helpers (`starvation_not_attained_recommendation()`, `neighbor_leases_released_recommendation()`). Engine methods decide *whether* a finding fires and with what evidence; this file owns the *text*. |
+| `core/eviction.py` | `EvictionState` (the nine per-run eviction attributes, `self._evict` on the engine) and the pure outcome-rung ordering (`RUNGS`, `rung_max()`). The eviction *methods* (`_do_arp_conflict`, `_evict_phase`, `_evict_worker`, `_measure_eviction`, `_handle_evict_arp`) stay on `DhcpEngine` — they're threaded through `_send()`/the bus/`cfg`/other engine dicts closely enough that wrapping them in a class holding a back-reference to the engine would add indirection without reducing coupling. |
+| `core/recovery.py` | `select_entries(cfg, entries, scope, pre_control)` — the one piece of `release-previous`'s logic that's genuinely decoupled from the engine (a pure filter over `cfg` + the loaded journal). `_run_release_previous`/`_release_selected`/`_release_previous_worker` stay engine methods, same coupling reasoning as eviction. |
+| `core/racing.py` | `RaceState` (the seven per-run race-freed attributes, `self._race` on the engine — see §5g). `races` (the plain attempted-count) stays a normal engine attribute alongside its sibling counters. |
+| `core/events.py` | `EventBus` (thread-safe), event dataclasses (including `ControlDetected`, `ForeignDiscover`, `ClientEvicted`), `to_dict()` + `jsonable()` (recursively converts enums/bytes/Path so JSON never breaks). `to_dict()` also attaches `finding.summary` (via `core/findings.finding_summary_lines()`) to every `FindingRaised` payload — see §5a. |
 | `core/safety.py` | `ScopeGuard`, `RateLimiter` (token bucket — still wired through `_send()` for every mode; see §5c for why exhaust no longer takes `--rate`), `Cleanup` (tracks leases for restore). No `authorize()` — the gate was removed, see §5. |
 | `core/sniffer.py` | thin `AsyncSniffer` wrapper. BPF widened (2.3) to see client→server traffic too (`port 67 or port 68`, both directions) — needed to observe foreign DISCOVERs and DHCPDECLINEs; see §5f. |
 | `core/fingerprint.py` | `extract_signature()` + `resolve()`: exact option-55 match against `data/packetfence_dhcp_fingerprints.json`, else `from_mac()` OUI-only. `DB_VERSION`. |
 | `core/oui.py` | MAC → hardware vendor. scapy's bundled Wireshark/IEEE `manuf` DB (~50k) only; locally-administered MACs labelled as randomised. No bundled IEEE copy needed — scapy already ships one. |
-| `core/reporting.py` | `SessionRecorder` → JSON/CSV/HTML (`render()` / `export()`). **`finding_summary_lines()` + `EVIDENCE_SKIP` live here** — the one rule for displaying a finding, shared by the CLI renderer and the HTML report and mirrored in `app.js` (§5a). Neighbors deduped by MAC. Tracks `final_status` from `SessionEnded` to surface the pool estimate in reports. |
-| `core/netutils.py` | iface enumeration, `iface_network_cidr()` (scope auto-fill), `default_gateway()` (release-phase/eviction target exclusion via `_release_gateway()`), `link_is_up()` (carrier poll for `link_down` halt detection — `None` fail-open, see §5c), IP math, `random_mac()`. |
+| `core/reporting.py` | `SessionRecorder` → JSON/CSV/HTML (`render()` / `export()`). Neighbors deduped by MAC. Tracks `final_status` from `SessionEnded` to surface the pool estimate in reports. `finding_summary_lines()`/`EVIDENCE_SKIP` now live in `core/findings.py`; re-exported here for `cli/render.py` and existing tests. |
+| `core/netutils.py` | iface enumeration, `iface_network_cidr()` (scope auto-fill), `default_gateway()` (release-phase/eviction target exclusion via `_release_gateway()`), `link_is_up()` (carrier poll for `link_down` halt detection — `None` fail-open, see §5c), IP math, `random_mac()`. `random_mac()`/`iface_network_cidr()` are monkeypatched by source path in tests (`dhcpig.core.netutils.*`) — `engine.py` calls them as `netutils.random_mac()` etc, never `from .netutils import random_mac`, or the patch silently stops working. Same reasoning applies to `scapy.all.get_if_hwaddr`/`scapy.all.srp`, which stay function-local imports in `engine.py` for the same reason. |
 | `core/journal.py` | Lease journal for recovery (2.2, §5e): append-only JSONL, `default_path()` (XDG state dir, never `/var/lib`), `record_ack`/`record_released`, `load_open_leases()` (never raises — crash-tolerant). Powers `Mode.RELEASE_PREVIOUS`. |
 | `core/exceptions.py` | `DhcpigError`, `ConfigError`, `OutOfScope`, `SessionConflict`. |
 | `data/packetfence_dhcp_fingerprints.json` | Static PacketFence-only fingerprints (535), queryable standalone via `data/fingerprint-merge.py`. `data/DATA_ATTRIBUTION.md`. |
@@ -64,7 +69,7 @@ web `SseSubscriber` puts `to_dict(event)` on a queue, the `/events` handler writ
 the browser's `EventSource` updates the DOM. **Handlers must be cheap/non-blocking.**
 
 ## 5. Safety model
-- **The authorization gate was removed at the maintainer's request** (2026-07). There is no
+- **The authorization gate was deliberately removed** (2026-07). There is no
   `--i-am-authorized`, no `authorize()`, no `Unauthorized`, no confirmation modal or prompt, and
   `--scope` is optional for `release` — with none given it falls back to the interface's own
   network via `_sweep_cidrs()`. **`dhcpig release eth0` will target the whole segment, and now
@@ -83,7 +88,7 @@ the browser's `EventSource` updates the DOM. **Handlers must be cheap/non-blocki
   anymore** (`restore_on_exit`/`--restore-on-exit` were removed, 2.2) — leases are always kept
   after a run so the exhausted state can be verified; the operator cleans up explicitly via
   `dhcpig restore <iface>` or `POST /api/session/restore` (same-process/session only — the UI's
-  Restore button was removed at the maintainer's request) or, once that process is gone,
+  Restore button was deliberately removed) or, once that process is gone,
   `dhcpig release-previous <iface>` replaying the lease journal. Don't silently reintroduce
   an auto-restore flag — retention followed by an explicit recovery step is deliberate.
 
@@ -152,7 +157,7 @@ together and should be kept together:
   load-bearing and are pinned by tests in both directions:
   - `offline` — `discover_unanswered`/`apipa`, **or** (any mode, but this is exhaust's whole
     point) a neighbor whose DISCOVER during the run went unanswered because the pool was
-    drained. Reading only `_evict_outcomes` reported those as `unaffected`, exactly backwards.
+    drained. Reading only `_evict.outcomes` reported those as `unaffected`, exactly backwards.
     `rediscovered` is **not** offline: it restarted and *was served*.
   - `lease_taken` — re-acquisition `granted` for that IP with no eviction reaction observed. **Do
     not merge this into either neighbouring bucket.** The host is working at the moment the
@@ -167,10 +172,15 @@ together and should be kept together:
   log. Don't rebuild the tab without re-reading why it went: findings are all raised in one pass
   at the end of a run, so a panel that fills instantly at the end was never doing anything a log
   tail couldn't, and it duplicated content the log already printed.
-- **`reporting.finding_summary_lines()` is the single rule for how a finding is displayed.**
-  `cli/render.py` and `_findings_html()` both call it; `web/static/app.js` mirrors it in JS
-  because it can't import Python. **Change one, change all three** — three surfaces describing
-  one run three different ways is exactly the bug this replaced. The rule: numbers line (nested
+- **`findings.finding_summary_lines()` (moved from `reporting.py`) is the single rule for how a
+  finding is displayed.** `cli/render.py` and `_findings_html()` both call it directly; `events.
+  to_dict()` calls it once per `FindingRaised` and attaches the result as `finding.summary`, and
+  `web/static/app.js` renders that field instead of re-deriving its own copy in JS. This used to
+  be a hand-mirrored JS implementation ("because it can't import Python") — it silently drifted
+  from the Python rule (list evidence collapsed to `key=length` in JS instead of one line per
+  item) before the mirroring was replaced with actually sharing the computed value. **If you
+  change the rule, there is now exactly one place to change it** — the failure mode this fixed
+  was three surfaces describing one run three different ways. The rule: numbers line (nested
   dicts flattened, zero/empty and `EVIDENCE_SKIP` keys dropped), list evidence one item per
   line, then the **first sentence** of the recommendation. `EVIDENCE_SKIP` holds run context
   already in the header, config echoes, and `still_using_address_arp` — which `_finish_release()`
@@ -205,7 +215,7 @@ denial-of-service into traffic-interception-adjacent territory (it targeted the 
 mapping, not the victim's own address) and added nothing eviction needs: RFC 5227 §2.4 address
 conflict detection is what does the work now (§5f), not a severed default route.
 
-The forged MAC is always bogus, recorded in `_evict_bogus_macs` so the ARP observer
+The forged MAC is always bogus, recorded in `_evict.bogus_macs` so the ARP observer
 (`_handle_evict_arp()`) can tell forged frames apart from the real owner's. **Never point it at
 our own MAC** — blackhole is address-conflict detection (in scope); redirecting traffic through
 us would be interception (out of scope, see §1).
@@ -366,8 +376,8 @@ Ties §5b/§5c together into the actual attack chain both `exhaust` and `release
   the address) < `rediscovered` (fresh DISCOVER from the victim after the conflict — restarted at
   INIT) < `discover_unanswered` (that DISCOVER got no OFFER — real denial of service) < `apipa`
   (victim's MAC now sourcing ARP from `169.254.0.0/16` — full eviction, DHCP totally failed).
-  `_evict_rung_max()` always keeps the highest rung reached; `_handle_evict_arp()` covers
-  `defended`/`apipa` (ignoring our own forged MACs via `_evict_bogus_macs`), `_handle_client_
+  `eviction.rung_max()` always keeps the highest rung reached; `_handle_evict_arp()` covers
+  `defended`/`apipa` (ignoring our own forged MACs via `_evict.bogus_macs`), `_handle_client_
   decline()` covers `declined`, phase 2's foreign-DISCOVER tracking covers
   `rediscovered`/`discover_unanswered`.
   **Findings are mode-aware** — this is the one place `exhaust` and `release` genuinely diverge:
@@ -423,7 +433,7 @@ only — `release` has no concurrent flood for "racing ahead of" to mean anythin
      `cfg.race_on_rediscover` (default **False**), inside `_handle_foreign_discover()`'s
      `first_sighting` branch.
 - **One entry point, `_maybe_race(ip, why)`**, so every exclusion lives in exactly one place:
-  unresolved ip, already queued this run (`_raced_ips`), already targeted by *our own*
+  unresolved ip, already queued this run (`_race.raced_ips`), already targeted by *our own*
   re-acquisition (`ip in self._reacquire_targets.values()` — without this, every one of the
   release phase's own victims re-DISCOVERing/DECLINEing right after being released+evicted would
   queue a duplicate race for an address we already hold), and the gateway/DHCP server (via
@@ -432,13 +442,13 @@ only — `release` has no concurrent flood for "racing ahead of" to mean anythin
   xid never registered in `_inflight`, so that filter structurally cannot recognise our own
   release-phase frames.
 - **Race state is entirely separate from `_reacquire_targets`/`_reacquire_outcomes`** —
-  `_race_queue`/`_raced_ips`/`_race_reasons`/`_race_targets`/`_race_outcomes`/`_race_triggers`/
-  `_race_inflight`. This is load-bearing: `_evict_phase()` derives its target set (`granted_ips`)
+  `_race.queue`/`_race.raced_ips`/`_race.reasons`/`_race.targets`/`_race.outcomes`/`_race.triggers`/
+  `_race.inflight`. This is load-bearing: `_evict_phase()` derives its target set (`granted_ips`)
   from `_reacquire_targets`/`_reacquire_outcomes` alone — writing a race xid into either would
   silently widen eviction's blast radius past what §5f documents ("targets **only** addresses
   this run actually re-acquired"). A regression test asserts this never happens.
 - **`_exhaust_sender()` drains the race queue ahead of the untargeted path**, one per loop
-  iteration, gated on `self._race_inflight < cfg.race_max_inflight` (default 4) —
+  iteration, gated on `self._race.inflight < cfg.race_max_inflight` (default 4) —
   **deliberately not gated on window/inflight room** (`self._window - len(self._inflight)`): a
   race is a single, bounded, time-sensitive send, not a sustained load pattern, so it takes a
   reserve of slots *above* the window rather than waiting a turn. This is a bounded overtake, not
@@ -451,8 +461,8 @@ only — `release` has no concurrent flood for "racing ahead of" to mean anythin
   re-acquisition and racing — `granted`/`offered_different` (from `_handle_ack()`), `naked`
   (from `_handle_nak()`'s owned branch), `no_response` (from `_reap_timeouts()`, `overwrite=
   False` so a later NAK/ACK for a xid that already timed out doesn't get silently discarded).
-  Whichever of `_reacquire_targets`/`_race_targets` owns the xid is where the outcome lands;
-  decrements `_race_inflight` exactly once, only for a race-owned xid.
+  Whichever of `_reacquire_targets`/`_race.targets` owns the xid is where the outcome lands;
+  decrements `_race.inflight` exactly once, only for a race-owned xid.
 - **Counters land in all four required surfaces** (`engine._counters()`/`.status()`,
   `cli/render.py`'s `status_summary()`, `web/static/app.js`'s `StatusTick` handler) — see §6's
   `garps`→`arp_conflicts` rename precedent for why this list is enumerated explicitly rather
@@ -518,26 +528,15 @@ went. The web dropdown (`web/static/index.html`) doesn't offer `SCAN` as an opti
 (Phase 6) but the CLI subcommand and `config_from_payload()` still accept it — don't remove
 either.
 
-## 7. How to run tests / lint (IMPORTANT sandbox quirks)
-Sandbox Python is **3.10**, but the package targets **3.11+**, so **do NOT `pip install -e .`
-in the sandbox** — run against the source path instead:
-```
-cd /sessions/<id>/mnt/DHCPig
-PYTHONPATH=src python3 -m pytest -q          # 352 pass, 1 integration deselected
-python3 -m ruff check src tests
-python3 -m ruff format --check src tests
-```
-- Everything is unit-tested **without root** by monkeypatching `dhcpig.core.engine.sendp`.
+## 7. How to run tests / lint
+See `CONTRIBUTING.md` for the commands. Two things worth knowing at the design level:
+- Everything is unit-tested **without root** by monkeypatching `dhcpig.core.engine.sendp` (and,
+  for the handful of scapy/netutils functions tests patch by source-module path rather than via
+  the sendp seam, calling them through the module object at call time rather than importing the
+  bare name — see `core/netutils.py`'s row in §3's file table for why that distinction matters).
 - The one integration test (`tests/integration/test_exhaust_live.py`, `@pytest.mark.integration`)
   needs root + Linux (veth pair + fake DHCP server); it's deselected by default (`addopts` in
-  `pyproject.toml`). Run on the VM with `make integration`.
-- After runs, delete caches on the VMware share (they can't always be removed by the coverage
-  plugin): `rm -rf .pytest_cache .ruff_cache .coverage*; find . -name __pycache__ -exec rm -rf {} +`.
-  Prefer `pytest -q` (no `--cov`) on the share to avoid a coverage cleanup `PermissionError`
-  (test results are still correct even if that error prints).
-- On the user's VM (real 3.11+): `python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"`,
-  then run with `sudo .venv/bin/dhcpig ...` (raw sockets need root; `sudo` ignores the venv on
-  PATH so use the full `.venv/bin/...` path).
+  `pyproject.toml`). Run it with `make integration` on a real Linux box.
 
 ## 8. Gotchas / decisions already made (don't re-litigate)
 - **`dry_run` and `offline` are genuinely different concerns now (2.3) — this replaces the old
@@ -621,10 +620,22 @@ python3 -m ruff format --check src tests
 
 ## 9. Current status
 **Released as 2.5.0** (`pyproject.toml` + `dhcpig.__version__`; the package had sat at 2.0.0
-through every 2.1–2.3.5 changelog block, none of which was ever tagged). **352 unit tests pass;
-ruff clean.**
+through every 2.1–2.3.5 changelog block, none of which was ever tagged). **361 unit tests pass;
+ruff clean.** (352 at the 2.5.0 release; the difference is new coverage added during the
+simplification pass below, not a version bump — nothing in this pass changed behaviour.)
 
-What that release contains, oldest first:
+**Simplification pass (post-2.5.0, not yet tagged)** — a cleanup round, no behaviour changes;
+every step verified byte-identical against the pre-pass test suite. `docs/SIMPLIFICATION.md` (if
+still present) has the full item-by-item record. Highlights: `engine.py` 2965 → ~2570 lines via
+extracting `core/findings.py` (the finding catalogue — every id's text in one place instead of
+interleaved through a 510-line method), `core/eviction.py` (`EvictionState`), `core/racing.py`
+(`RaceState`), and `core/recovery.py` (`release-previous`'s pure entry-filter); a real bug fix
+(`--ipv6` now refuses at `start()` instead of silently flooding v4 while listening for v6); the
+CLI/web finding-summary drift fixed by computing `summary` once server-side (§5a); dead config
+fields removed (`--fuzz`, `v6_rapid_commit`, `Timeouts.thread_spawn`/`dos`); and the former
+`AGENT_HANDOFF.md` split three ways into this file, `CONTRIBUTING.md`, and `CLAUDE.md`.
+
+What the 2.5.0 release itself contains, oldest first:
 - **V1.0 / V1.1 / V2.0** — CLI, web Exhaust, then all modes + packaging. Plus fingerprinting off
   the bundled PacketFence DB, distinct-MAC default, debug logging + verbosity, `active-scan`,
   neighbor↔fingerprint correlation by MAC, MAC-vendor fallback, pre-run ARP inventory.
@@ -646,7 +657,7 @@ What that release contains, oldest first:
   log and HTML report describe a run identically.
 
 **Validation status — read this before trusting a result.** One real exhaust run against a live
-`/22` on the maintainer's Kali VM (pcap reviewed) is the *only* hardware validation this codebase
+`/22` on a Kali VM (pcap reviewed) is the *only* hardware validation this codebase
 has. That run is what exposed the pending-offer saturation bug §5c fixes and the
 renewal-vs-fresh-allocation control bug §5a fixes. **2.1, 2.2, 2.3, 2.3.1 and the 2.3.x reporting
 work have never been exercised against real hardware** — re-acquisition, eviction, the
@@ -675,8 +686,16 @@ live-network confirmation. Treat their findings as unproven until that changes.
   round-trip already supports them — see `web/schemas.py` — just no HTML inputs). Add a config
   sub-panel following the `#ratecfg`/`#destcfg` show/hide pattern in `app.js`'s `onModeChange()`
   if the web UI needs full parity with the CLI.
-- **Packaging** `.deb`/`.desktop` exist under `packaging/` but haven't been built/tested on a
-  real Kali box yet.
+- **Packaging** `.deb`/`.desktop`/`dhcpig.1` (man page added in the simplification pass) exist
+  under `packaging/` but haven't been built/tested on a real Kali box yet. There is no CI step
+  that builds a wheel and confirms `data/packetfence_dhcp_fingerprints.json` actually ships
+  inside it — a packaging regression that dropped the data file wouldn't be caught until a user
+  hit a fingerprint miss.
+- **`--report FILE` ignores the extension.** `cli/main.py`'s `_run_session()` calls
+  `recorder.export(cfg.report_path)` with no `fmt` argument, so it always writes JSON regardless
+  of what extension the filename has — `--report run.html` silently contains JSON.
+  `SessionRecorder.export()`/`.render()` already support `csv`/`html` (reachable today via the
+  web UI's Report tab), so this is a CLI-only gap: infer `fmt` from the path suffix.
 
 ## 11. Conventions
 Ruff (line length 100) + format; type hints throughout `core`; dataclasses over dicts; no

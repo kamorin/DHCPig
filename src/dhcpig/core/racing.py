@@ -1,4 +1,4 @@
-"""Race-to-grab-freed-addresses (2.3.1, AGENT_HANDOFF.md §5g): per-run state for
+"""Race-to-grab-freed-addresses (2.3.1, docs/DESIGN.md §5g): per-run state for
 `DhcpEngine._maybe_race()`/`_exhaust_sender()`/`_classify_targeted()`.
 
 Deliberately a separate namespace from `_reacquire_targets`/`_reacquire_outcomes` -- this is

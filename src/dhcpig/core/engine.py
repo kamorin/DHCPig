@@ -243,7 +243,7 @@ class DhcpEngine:
             # that is actually just "this never sent anything the server could answer".
             raise ConfigError(
                 "DHCPv6 is not implemented (IPVersion.V6 is a seam only -- see "
-                "AGENT_HANDOFF.md §10); every packet builder in core/packets.py is v4-only"
+                "docs/DESIGN.md §10); every packet builder in core/packets.py is v4-only"
             )
         self._started = time.time()
         self.state = RUNNING
@@ -1384,7 +1384,7 @@ class DhcpEngine:
         second, weaker race trigger: the declining client refuses to use the address, though
         many DHCP server implementations quarantine a declined address rather than returning it
         to the free pool, so this is offered on a best-effort basis (see
-        AGENT_HANDOFF.md §5g's trigger ranking). A DECLINE carries its own address via
+        docs/DESIGN.md §5g's trigger ranking). A DECLINE carries its own address via
         option 50 (RFC 2131 Table 5), unlike a NAK.
         """
         try:
@@ -1427,7 +1427,7 @@ class DhcpEngine:
     def _maybe_race(self, ip: str | None, why: str) -> None:
         """Single entry point for every race trigger (foreign NAK, foreign DECLINE, optionally
         foreign DISCOVER from a known neighbor) -- keeps every exclusion in exactly one place.
-        See AGENT_HANDOFF.md §5g.
+        See docs/DESIGN.md §5g.
 
         Exhaust-only: release/scan/active-scan have no concurrent flood for "racing ahead of"
         to mean anything -- release's own sends (RELEASE, re-acquisition) are already deliberate
@@ -2267,7 +2267,7 @@ class DhcpEngine:
 
         BUG FIX (2.3, found while designing race-freed): NAK is never self-originated (same
         reasoning as OFFER/ACK/DECLINE -- `_on_dhcp()` checks these before the self-filter, per
-        AGENT_HANDOFF §8), so every NAK on the segment reaches this handler, including ones
+        docs/DESIGN.md §8), so every NAK on the segment reaches this handler, including ones
         addressed to *other* clients. This used to count every NAK as ours regardless --
         `self.naks += 1`, `_shrink_window("nak")`, `_note_nak_for_burst_detection()` all ran
         unconditionally -- so a foreign client's NAK could shrink our send window and count

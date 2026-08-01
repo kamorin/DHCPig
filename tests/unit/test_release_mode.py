@@ -1,4 +1,4 @@
-"""The release mode's shared prelude chain (AGENT_HANDOFF.md §5f Phase 5) and mode-aware
+"""The release mode's shared prelude chain (docs/DESIGN.md §5f Phase 5) and mode-aware
 eviction findings -- exhaust and release diverge on which eviction outcome rungs count as FAIL.
 
 Split from test_control_findings.py (SIMPLIFICATION.md 4.2) -- see test_control_transaction.py

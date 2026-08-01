@@ -219,7 +219,7 @@ _CATALOG: dict[str, dict] = {
         "severity": "medium",
         "recommendation": "",
     },
-    # release-previous (2.2) -- recovery, not an attack. See AGENT_HANDOFF.md §5e.
+    # release-previous (2.2) -- recovery, not an attack. See docs/DESIGN.md §5e.
     "RELEASE_PREVIOUS_SCOPE_REQUIRED": {
         "title": ("release-previous refused to run: no scope and no resolvable interface network"),
         "verdict": INCONCLUSIVE,

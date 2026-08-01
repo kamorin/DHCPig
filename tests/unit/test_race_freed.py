@@ -1,7 +1,7 @@
 """Race-freed (2.3): queue-building and exclusion logic for _maybe_race() and its triggers
 (foreign NAK via foreign-REQUEST correlation, foreign DECLINE, opt-in foreign rediscover).
 
-See AGENT_HANDOFF.md §5g. This file covers the trigger plumbing (no sender
+See docs/DESIGN.md §5g. This file covers the trigger plumbing (no sender
 integration yet); sender-integration/classifier tests live in test_race_freed_sender.py.
 """
 
