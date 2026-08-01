@@ -16,6 +16,7 @@ from scapy.all import sendp  # module-level so tests can monkeypatch dhcpig.core
 from . import events as ev
 from . import findings, journal, packets
 from .events import EventBus
+from .eviction import EvictionState, rung_max
 from .exceptions import ConfigError
 from .fingerprint import extract_signature, resolve
 from .fingerprint import from_mac as fingerprint_from_mac
@@ -107,20 +108,8 @@ class DhcpEngine:
         # MAC we've sent from, so foreign-DISCOVER observation (Phase 2) can tell "ours" from
         # "someone else's" without false positives.
         self._our_macs: set[str] = set()
-        # eviction (2.3): who we are ARP-conflicting, the forged MACs we used, and the observed
-        # signals per target IP. mac_by_ip/ip_by_mac exist because live signals arrive keyed by
-        # whichever side the packet exposes (ARP by IP, DHCP by MAC). _evict_outcomes holds the
-        # current best rung reached per target; _evict_start_ts bounds "rediscovered" DISCOVERs
-        # to ones seen during/after this eviction, not some unrelated earlier sighting.
-        self._evict_targets: set[str] = set()  # target IPs
-        self._evict_bogus_macs: set[str] = set()
-        self._evict_defenders: set[str] = set()  # target IPs that answered our ARP conflict
-        self._evict_declined_ips: set[str] = set()
-        self._evict_apipa_ips: set[str] = set()
-        self._evict_mac_by_ip: dict[str, str] = {}
-        self._evict_ip_by_mac: dict[str, str] = {}
-        self._evict_outcomes: dict[str, str] = {}
-        self._evict_start_ts = 0.0
+        # eviction (2.3): see core/eviction.py's EvictionState docstring for what each field is.
+        self._evict = EvictionState()
         # windowed handshake pipeline (exhaust): bounded in-flight DISCOVER/REQUEST transactions
         # rather than an open-loop packet flood. xid -> {mac, sent_at, state}.
         self._window = cfg.window_initial
@@ -449,12 +438,12 @@ class DhcpEngine:
             out["in_use_observed"] = len(self._neighbors_by_mac)
         if self.cfg.mode is Mode.RELEASE_PREVIOUS:
             out["recovery"] = self.recovery_result or None
-        if self._evict_outcomes:
+        if self._evict.outcomes:
             # eviction (2.3): the sniffer/status-ticker are already down by the time _evict_phase
             # runs (it's inline in stop(), after the worker threads are joined), so this only
             # ever reaches the client via the final SessionEnded report, not a live StatusTick.
-            out["evict_targets"] = len(self._evict_outcomes)
-            out["evict_outcomes"] = dict(self._evict_outcomes)
+            out["evict_targets"] = len(self._evict.outcomes)
+            out["evict_outcomes"] = dict(self._evict.outcomes)
         return out
 
     # ---------------------------------------------------------------- helpers
@@ -633,7 +622,7 @@ class DhcpEngine:
 
         * **Exhaustion counts as impact, not just eviction.** A neighbor that DISCOVERed during
           the run and got no answer was denied service by the drained pool, even though we never
-          contested its address by ARP. Reading only `_evict_outcomes` (as the first version of
+          contested its address by ARP. Reading only `_evict.outcomes` (as the first version of
           this did) reported those hosts as `unaffected`, which is exactly backwards for the
           mode whose entire purpose is to deny them service.
         * **`lease_taken` is neither offline nor unaffected.** Those hosts work right now but
@@ -667,7 +656,7 @@ class DhcpEngine:
                 hostname_by_mac[v["mac"]] = v["hostname"]
         rows: list[tuple[str, str, str, str, str]] = []
         for n in neighbors:
-            rung = self._evict_outcomes.get(n.ip)
+            rung = self._evict.outcomes.get(n.ip)
             if rung in self._RUNG_ROLLCALL:
                 category, outcome = self._RUNG_ROLLCALL[rung]
             elif n.mac in denied_macs:
@@ -801,14 +790,14 @@ class DhcpEngine:
             ctl(self.control_post, "Retested from this machine")
             ctl(self.control_post_new, "Retested as an unknown device")
 
-        if self._evict_outcomes:
+        if self._evict.outcomes:
             by_rung: dict[str, int] = {}
-            for rung in self._evict_outcomes.values():
+            for rung in self._evict.outcomes.values():
                 by_rung[rung] = by_rung.get(rung, 0) + 1
             detail = ", ".join(f"{n} {rung}" for rung, n in sorted(by_rung.items()))
             step(
                 f"Contested those addresses by ARP{dry}",
-                f"{len(self._evict_outcomes)} targets: {detail}",
+                f"{len(self._evict.outcomes)} targets: {detail}",
             )
         elif self.cfg.evict and mode in (Mode.EXHAUST, Mode.RELEASE_NEIGHBORS):
             step("Contested addresses by ARP", "skipped, nothing was taken")
@@ -1030,7 +1019,7 @@ class DhcpEngine:
                         "pool_source": est.source,
                         "headroom": headroom,
                         "would_release": self._dry_run_would_release,
-                        "would_evict": len(self._evict_targets),
+                        "would_evict": len(self._evict.targets),
                         "would_race": self.races,
                     },
                 )
@@ -1040,9 +1029,7 @@ class DhcpEngine:
             self._raise(findings.build("DHCP_NAK_OBSERVED", {"naks": self.naks}))
 
         if len(self.servers) > 1:
-            self._raise(
-                findings.build("MULTIPLE_DHCP_SERVERS", {"servers": list(self.servers)})
-            )
+            self._raise(findings.build("MULTIPLE_DHCP_SERVERS", {"servers": list(self.servers)}))
 
         # Foreign DISCOVER observation (2.3, goal 4): direct client-visible-outage evidence,
         # not an inference from our own lease count. Silence (nothing observed) raises nothing
@@ -1083,7 +1070,7 @@ class DhcpEngine:
         # _evict_phase() still runs and populates targets, but sends nothing, so every outcome
         # would read no_reaction -- not because nothing reacted, but because nothing was ever
         # sent. That's not evidence of anything; DRY_RUN_SUMMARY covers the dry-run case instead.
-        if self._evict_outcomes and not self.cfg.dry_run:
+        if self._evict.outcomes and not self.cfg.dry_run:
             if self.cfg.mode is Mode.RELEASE_NEIGHBORS:
                 # release never drains the pool -- forcing a clean restart-and-reacquire
                 # (topping out at "rediscovered") is the whole point of this mode, not a harm.
@@ -1095,21 +1082,21 @@ class DhcpEngine:
                 # ("rediscovered") is already evidence the address was taken from its owner by
                 # force -- see the outcome-ladder table in _evict_phase()'s module docstring.
                 fail_rungs = {"declined", "rediscovered", "discover_unanswered", "apipa"}
-            evicted = {ip: rung for ip, rung in self._evict_outcomes.items() if rung in fail_rungs}
+            evicted = {ip: rung for ip, rung in self._evict.outcomes.items() if rung in fail_rungs}
             reacted = {
                 ip: rung
-                for ip, rung in self._evict_outcomes.items()
+                for ip, rung in self._evict.outcomes.items()
                 if rung not in fail_rungs and rung != "no_reaction"
             }
             by_rung: dict[str, int] = {}
-            for rung in self._evict_outcomes.values():
+            for rung in self._evict.outcomes.values():
                 by_rung[rung] = by_rung.get(rung, 0) + 1
             if evicted:
                 self._raise(
                     findings.build(
                         "CLIENTS_EVICTED_FROM_ADDRESSES",
                         {
-                            "targets": len(self._evict_outcomes),
+                            "targets": len(self._evict.outcomes),
                             "evicted": len(evicted),
                             "by_rung": by_rung,
                             "evicted_targets": evicted,
@@ -1123,7 +1110,7 @@ class DhcpEngine:
                     findings.build(
                         "CLIENTS_DEFENDED_ADDRESSES",
                         {
-                            "targets": len(self._evict_outcomes),
+                            "targets": len(self._evict.outcomes),
                             "reacted": len(reacted),
                             "by_rung": by_rung,
                             "rounds": self.cfg.evict_rounds,
@@ -1136,7 +1123,7 @@ class DhcpEngine:
                     findings.build(
                         "ARP_CONFLICTS_UNANSWERED",
                         {
-                            "targets": len(self._evict_outcomes),
+                            "targets": len(self._evict.outcomes),
                             "rounds": self.cfg.evict_rounds,
                         },
                     )
@@ -1253,7 +1240,7 @@ class DhcpEngine:
         host defend once, then go quiet on a second conflict inside DEFEND_INTERVAL (10s) —
         which is what repeated rounds from `_evict_worker()` are for.
 
-        The claimed MAC is always a fresh `random_mac()`, recorded in `_evict_bogus_macs` so
+        The claimed MAC is always a fresh `random_mac()`, recorded in `_evict.bogus_macs` so
         the ARP observer can tell our forgeries apart from real hosts. It must never be ours or
         the victim's real MAC — a bogus MAC blackholes the claim (nothing answers for it, so
         the victim's own traffic just goes nowhere and it notices the conflict); our own MAC
@@ -1271,7 +1258,7 @@ class DhcpEngine:
         sent = 0
         for n in targets:
             bogus = random_mac()
-            self._evict_bogus_macs.add(bogus)
+            self._evict.bogus_macs.add(bogus)
             for op, label in ((packets.ARP_REQUEST, "request"), (packets.ARP_REPLY, "reply")):
                 pkt = packets.build_garp(n.ip, bogus, op=op)
                 if self._send(pkt, target_ip=n.ip):
@@ -1331,11 +1318,11 @@ class DhcpEngine:
             f"evict phase: {len(targets)} target(s) -- "
             + ", ".join(f"{n.ip}/{n.mac}" for n in targets)
         )
-        self._evict_targets = {n.ip for n in targets}
-        self._evict_mac_by_ip = {n.ip: n.mac for n in targets}
-        self._evict_ip_by_mac = {n.mac: n.ip for n in targets}
-        self._evict_outcomes = dict.fromkeys(self._evict_targets, "no_reaction")
-        self._evict_start_ts = time.time()
+        self._evict.targets = {n.ip for n in targets}
+        self._evict.mac_by_ip = {n.ip: n.mac for n in targets}
+        self._evict.ip_by_mac = {n.mac: n.ip for n in targets}
+        self._evict.outcomes = dict.fromkeys(self._evict.targets, "no_reaction")
+        self._evict.start_ts = time.time()
         self._evict_worker(targets)
 
     def _evict_worker(self, targets: list[Neighbor]) -> None:
@@ -1363,22 +1350,22 @@ class DhcpEngine:
         decline a later one."""
         for n in targets:
             rung = "no_reaction"
-            if n.ip in self._evict_defenders:
-                rung = _evict_rung_max(rung, "defended")
-            if n.ip in self._evict_declined_ips:
-                rung = _evict_rung_max(rung, "declined")
+            if n.ip in self._evict.defenders:
+                rung = rung_max(rung, "defended")
+            if n.ip in self._evict.declined_ips:
+                rung = rung_max(rung, "declined")
             discovers = [
                 v
                 for v in self._foreign_discovers.values()
-                if v["mac"] == n.mac and v["ts"] >= self._evict_start_ts
+                if v["mac"] == n.mac and v["ts"] >= self._evict.start_ts
             ]
             if discovers:
-                rung = _evict_rung_max(rung, "rediscovered")
+                rung = rung_max(rung, "rediscovered")
                 if not any(v["answered"] for v in discovers):
-                    rung = _evict_rung_max(rung, "discover_unanswered")
-            if n.ip in self._evict_apipa_ips:
-                rung = _evict_rung_max(rung, "apipa")
-            self._evict_outcomes[n.ip] = rung
+                    rung = rung_max(rung, "discover_unanswered")
+            if n.ip in self._evict.apipa_ips:
+                rung = rung_max(rung, "apipa")
+            self._evict.outcomes[n.ip] = rung
             self.bus.emit(ev.ClientEvicted(ip=n.ip, mac=n.mac, outcome=rung))
             self._debug(f"evict outcome: {n.ip}/{n.mac} -> {rung}")
 
@@ -1398,16 +1385,16 @@ class DhcpEngine:
             if ARP not in pkt or Ether not in pkt:
                 return
             psrc, hwsrc = pkt[ARP].psrc, pkt[Ether].src
-            if not hwsrc or hwsrc in self._evict_bogus_macs:
+            if not hwsrc or hwsrc in self._evict.bogus_macs:
                 return  # our own forged frame, echoed back
-            if psrc in self._evict_targets and hwsrc == self._evict_mac_by_ip.get(psrc):
-                if psrc not in self._evict_defenders:
-                    self._evict_defenders.add(psrc)
+            if psrc in self._evict.targets and hwsrc == self._evict.mac_by_ip.get(psrc):
+                if psrc not in self._evict.defenders:
+                    self._evict.defenders.add(psrc)
                     self._debug(f"evict: {psrc} defended (ARP op={pkt[ARP].op} from {hwsrc})")
-            ip = self._evict_ip_by_mac.get(hwsrc)
+            ip = self._evict.ip_by_mac.get(hwsrc)
             if ip is not None and psrc.startswith("169.254."):
-                if ip not in self._evict_apipa_ips:
-                    self._evict_apipa_ips.add(ip)
+                if ip not in self._evict.apipa_ips:
+                    self._evict.apipa_ips.add(ip)
                     self._debug(f"evict: {ip}/{hwsrc} now sourcing ARP from APIPA ({psrc})")
         except Exception as exc:
             self.bus.emit(ev.ErrorEvent(message=f"evict ARP observer error: {exc!r}"))
@@ -1429,12 +1416,12 @@ class DhcpEngine:
             if BOOTP not in pkt:
                 return
             mac = packets.client_mac_from_offer(pkt)
-            ip = self._evict_ip_by_mac.get(mac)
+            ip = self._evict.ip_by_mac.get(mac)
             self._debug(
                 f"DECLINE xid=0x{pkt[BOOTP].xid:08x} chaddr={mac}" + (f" ({ip})" if ip else "")
             )
             if ip is not None:
-                self._evict_declined_ips.add(ip)
+                self._evict.declined_ips.add(ip)
                 return
             declined = None
             if DHCP in pkt:
@@ -2761,25 +2748,6 @@ def _rand_xid() -> int:
     import random
 
     return random.randint(1, 900000000)
-
-
-# ARP-conflict eviction (2.3, Phase 4) outcome ladder, lowest to highest. This is a causal/
-# temporal ordering, not a strength-of-evidence one: DECLINE is strong evidence on its own, but
-# "rediscovered" (the host went further and restarted at INIT) is a later stage in the same
-# eviction, so it outranks a bare decline. The top two rungs are exhaust-only -- release mode
-# never drains the pool, so a healthy result there tops out at "rediscovered".
-_EVICT_RUNGS = [
-    "no_reaction",
-    "defended",
-    "declined",
-    "rediscovered",
-    "discover_unanswered",
-    "apipa",
-]
-
-
-def _evict_rung_max(a: str, b: str) -> str:
-    return b if _EVICT_RUNGS.index(b) > _EVICT_RUNGS.index(a) else a
 
 
 def _opts_summary(pkt) -> str:

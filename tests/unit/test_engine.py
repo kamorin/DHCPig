@@ -115,7 +115,7 @@ def test_arp_conflict_claimed_mac_is_always_bogus_never_the_targets_real_mac(sen
         assert p[pk.ARP].hwsrc == "aa:bb:cc:dd:ee:ff"
         assert p[pk.ARP].hwsrc != target.mac
         assert p[pk.ARP].hwsrc not in eng._our_macs
-    assert "aa:bb:cc:dd:ee:ff" in eng._evict_bogus_macs
+    assert "aa:bb:cc:dd:ee:ff" in eng._evict.bogus_macs
 
 
 def test_do_arp_conflict_no_longer_takes_a_gateway_blackhole():
@@ -389,14 +389,6 @@ def test_evict_rounds_below_two_raises_config_error():
         SessionConfig(interface="lo", evict_rounds=1)
 
 
-def test_evict_rung_max_picks_the_higher_rung():
-    from dhcpig.core.engine import _evict_rung_max
-
-    assert _evict_rung_max("no_reaction", "defended") == "defended"
-    assert _evict_rung_max("declined", "defended") == "declined"
-    assert _evict_rung_max("rediscovered", "apipa") == "apipa"
-
-
 def test_do_arp_conflict_not_gated_on_stop_event(sent):
     """(2.3) eviction runs from within stop(), after self._stop.set() -- _do_arp_conflict must
     still send, unlike the old _do_garp which would silently no-op here."""
@@ -411,11 +403,11 @@ def test_do_arp_conflict_not_gated_on_stop_event(sent):
 def test_handle_evict_arp_marks_defended_from_real_owner_mac():
     bus, _ = _bus_collect()
     eng = DhcpEngine(SessionConfig(interface="lo"), bus)
-    eng._evict_targets = {"10.0.0.7"}
-    eng._evict_mac_by_ip = {"10.0.0.7": "de:ad:00:00:00:01"}
-    eng._evict_ip_by_mac = {"de:ad:00:00:00:01": "10.0.0.7"}
+    eng._evict.targets = {"10.0.0.7"}
+    eng._evict.mac_by_ip = {"10.0.0.7": "de:ad:00:00:00:01"}
+    eng._evict.ip_by_mac = {"de:ad:00:00:00:01": "10.0.0.7"}
     eng._handle_evict_arp(_arp_pkt("de:ad:00:00:00:01", "10.0.0.7"))
-    assert "10.0.0.7" in eng._evict_defenders
+    assert "10.0.0.7" in eng._evict.defenders
 
 
 def test_handle_evict_arp_ignores_our_own_bogus_mac():
@@ -423,51 +415,51 @@ def test_handle_evict_arp_ignores_our_own_bogus_mac():
     victim defending -- it carries a bogus MAC we generated ourselves, not the real owner's."""
     bus, _ = _bus_collect()
     eng = DhcpEngine(SessionConfig(interface="lo"), bus)
-    eng._evict_targets = {"10.0.0.7"}
-    eng._evict_mac_by_ip = {"10.0.0.7": "de:ad:00:00:00:01"}
-    eng._evict_ip_by_mac = {"de:ad:00:00:00:01": "10.0.0.7"}
+    eng._evict.targets = {"10.0.0.7"}
+    eng._evict.mac_by_ip = {"10.0.0.7": "de:ad:00:00:00:01"}
+    eng._evict.ip_by_mac = {"de:ad:00:00:00:01": "10.0.0.7"}
     bogus = "aa:bb:cc:00:00:01"
-    eng._evict_bogus_macs.add(bogus)
+    eng._evict.bogus_macs.add(bogus)
     eng._handle_evict_arp(_arp_pkt(bogus, "10.0.0.7"))
-    assert eng._evict_defenders == set()
+    assert eng._evict.defenders == set()
 
 
 def test_handle_evict_arp_marks_apipa_when_target_mac_sources_from_link_local():
     bus, _ = _bus_collect()
     eng = DhcpEngine(SessionConfig(interface="lo"), bus)
-    eng._evict_targets = {"10.0.0.7"}
-    eng._evict_mac_by_ip = {"10.0.0.7": "de:ad:00:00:00:01"}
-    eng._evict_ip_by_mac = {"de:ad:00:00:00:01": "10.0.0.7"}
+    eng._evict.targets = {"10.0.0.7"}
+    eng._evict.mac_by_ip = {"10.0.0.7": "de:ad:00:00:00:01"}
+    eng._evict.ip_by_mac = {"de:ad:00:00:00:01": "10.0.0.7"}
     eng._handle_evict_arp(_arp_pkt("de:ad:00:00:00:01", "169.254.12.34"))
-    assert "10.0.0.7" in eng._evict_apipa_ips
+    assert "10.0.0.7" in eng._evict.apipa_ips
 
 
 def test_handle_client_decline_records_target_ip():
     bus, _ = _bus_collect()
     eng = DhcpEngine(SessionConfig(interface="lo"), bus)
-    eng._evict_ip_by_mac = {"de:ad:00:00:00:01": "10.0.0.7"}
+    eng._evict.ip_by_mac = {"de:ad:00:00:00:01": "10.0.0.7"}
     eng._handle_client_decline(_decline_pkt("de:ad:00:00:00:01", 0xB001))
-    assert "10.0.0.7" in eng._evict_declined_ips
+    assert "10.0.0.7" in eng._evict.declined_ips
 
 
 def test_handle_client_decline_from_unknown_mac_is_a_noop():
     bus, _ = _bus_collect()
     eng = DhcpEngine(SessionConfig(interface="lo"), bus)
-    eng._evict_ip_by_mac = {}
+    eng._evict.ip_by_mac = {}
     eng._handle_client_decline(_decline_pkt("de:ad:00:00:00:99", 0xB002))
-    assert eng._evict_declined_ips == set()
+    assert eng._evict.declined_ips == set()
 
 
 def test_on_dhcp_routes_decline_and_arp_to_eviction_handlers():
     bus, _ = _bus_collect()
     eng = DhcpEngine(SessionConfig(interface="lo"), bus)
-    eng._evict_targets = {"10.0.0.7"}
-    eng._evict_mac_by_ip = {"10.0.0.7": "de:ad:00:00:00:01"}
-    eng._evict_ip_by_mac = {"de:ad:00:00:00:01": "10.0.0.7"}
+    eng._evict.targets = {"10.0.0.7"}
+    eng._evict.mac_by_ip = {"10.0.0.7": "de:ad:00:00:00:01"}
+    eng._evict.ip_by_mac = {"de:ad:00:00:00:01": "10.0.0.7"}
     eng._on_dhcp(_decline_pkt("de:ad:00:00:00:01", 0xB003))
-    assert "10.0.0.7" in eng._evict_declined_ips
+    assert "10.0.0.7" in eng._evict.declined_ips
     eng._on_dhcp(_arp_pkt("de:ad:00:00:00:01", "10.0.0.7"))
-    assert "10.0.0.7" in eng._evict_defenders
+    assert "10.0.0.7" in eng._evict.defenders
 
 
 def test_measure_eviction_picks_highest_rung_across_multiple_signals():
@@ -476,12 +468,12 @@ def test_measure_eviction_picks_highest_rung_across_multiple_signals():
     bus, events = _bus_collect()
     eng = DhcpEngine(SessionConfig(interface="lo"), bus)
     n = Neighbor("de:ad:00:00:00:01", "10.0.0.7")
-    eng._evict_targets = {"10.0.0.7"}
-    eng._evict_outcomes = {"10.0.0.7": "no_reaction"}
-    eng._evict_defenders.add("10.0.0.7")
-    eng._evict_declined_ips.add("10.0.0.7")
+    eng._evict.targets = {"10.0.0.7"}
+    eng._evict.outcomes = {"10.0.0.7": "no_reaction"}
+    eng._evict.defenders.add("10.0.0.7")
+    eng._evict.declined_ips.add("10.0.0.7")
     eng._measure_eviction([n])
-    assert eng._evict_outcomes["10.0.0.7"] == "declined"
+    assert eng._evict.outcomes["10.0.0.7"] == "declined"
     evicted = [e for e in events if isinstance(e, ev.ClientEvicted)]
     assert len(evicted) == 1
     assert evicted[0].outcome == "declined"
@@ -491,9 +483,9 @@ def test_measure_eviction_rediscovered_and_unanswered_when_no_offer_followed():
     bus, _ = _bus_collect()
     eng = DhcpEngine(SessionConfig(interface="lo"), bus)
     n = Neighbor("de:ad:00:00:00:01", "10.0.0.7")
-    eng._evict_targets = {"10.0.0.7"}
-    eng._evict_outcomes = {"10.0.0.7": "no_reaction"}
-    eng._evict_start_ts = 100.0
+    eng._evict.targets = {"10.0.0.7"}
+    eng._evict.outcomes = {"10.0.0.7": "no_reaction"}
+    eng._evict.start_ts = 100.0
     eng._foreign_discovers[0xC001] = {
         "mac": "de:ad:00:00:00:01",
         "hostname": None,
@@ -501,16 +493,16 @@ def test_measure_eviction_rediscovered_and_unanswered_when_no_offer_followed():
         "answered": False,
     }
     eng._measure_eviction([n])
-    assert eng._evict_outcomes["10.0.0.7"] == "discover_unanswered"
+    assert eng._evict.outcomes["10.0.0.7"] == "discover_unanswered"
 
 
 def test_measure_eviction_rediscovered_only_when_offer_followed():
     bus, _ = _bus_collect()
     eng = DhcpEngine(SessionConfig(interface="lo"), bus)
     n = Neighbor("de:ad:00:00:00:01", "10.0.0.7")
-    eng._evict_targets = {"10.0.0.7"}
-    eng._evict_outcomes = {"10.0.0.7": "no_reaction"}
-    eng._evict_start_ts = 100.0
+    eng._evict.targets = {"10.0.0.7"}
+    eng._evict.outcomes = {"10.0.0.7": "no_reaction"}
+    eng._evict.start_ts = 100.0
     eng._foreign_discovers[0xC002] = {
         "mac": "de:ad:00:00:00:01",
         "hostname": None,
@@ -518,7 +510,7 @@ def test_measure_eviction_rediscovered_only_when_offer_followed():
         "answered": True,
     }
     eng._measure_eviction([n])
-    assert eng._evict_outcomes["10.0.0.7"] == "rediscovered"
+    assert eng._evict.outcomes["10.0.0.7"] == "rediscovered"
 
 
 def test_measure_eviction_ignores_discover_seen_before_eviction_started():
@@ -527,9 +519,9 @@ def test_measure_eviction_ignores_discover_seen_before_eviction_started():
     bus, _ = _bus_collect()
     eng = DhcpEngine(SessionConfig(interface="lo"), bus)
     n = Neighbor("de:ad:00:00:00:01", "10.0.0.7")
-    eng._evict_targets = {"10.0.0.7"}
-    eng._evict_outcomes = {"10.0.0.7": "no_reaction"}
-    eng._evict_start_ts = 100.0
+    eng._evict.targets = {"10.0.0.7"}
+    eng._evict.outcomes = {"10.0.0.7": "no_reaction"}
+    eng._evict.start_ts = 100.0
     eng._foreign_discovers[0xC003] = {
         "mac": "de:ad:00:00:00:01",
         "hostname": None,
@@ -537,7 +529,7 @@ def test_measure_eviction_ignores_discover_seen_before_eviction_started():
         "answered": False,
     }
     eng._measure_eviction([n])
-    assert eng._evict_outcomes["10.0.0.7"] == "no_reaction"
+    assert eng._evict.outcomes["10.0.0.7"] == "no_reaction"
 
 
 def test_evict_phase_skips_when_disabled():
@@ -546,7 +538,7 @@ def test_evict_phase_skips_when_disabled():
     eng._reacquire_targets = {1: "10.0.0.7"}
     eng._reacquire_outcomes = {1: "granted"}
     eng._evict_phase()
-    assert eng._evict_targets == set()
+    assert eng._evict.targets == set()
 
 
 def test_evict_phase_skips_when_no_granted_reacquisitions():
@@ -555,7 +547,7 @@ def test_evict_phase_skips_when_no_granted_reacquisitions():
     eng._reacquire_targets = {1: "10.0.0.7"}
     eng._reacquire_outcomes = {1: "naked"}  # not granted
     eng._evict_phase()
-    assert eng._evict_targets == set()
+    assert eng._evict.targets == set()
 
 
 def test_evict_phase_only_targets_granted_reacquisitions_excluding_server(sent, monkeypatch):
@@ -577,13 +569,13 @@ def test_evict_phase_only_targets_granted_reacquisitions_excluding_server(sent, 
     eng._reacquire_targets = {1: "172.20.0.7", 2: "172.20.0.8", 3: "172.20.15.1"}
     eng._reacquire_outcomes = {1: "granted", 2: "naked", 3: "granted"}
     eng._evict_phase()
-    assert eng._evict_targets == {"172.20.0.7"}
+    assert eng._evict.targets == {"172.20.0.7"}
 
 
 def test_finalize_findings_evicted_when_declined_or_higher():
     bus, events = _bus_collect()
     eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.EXHAUST), bus)
-    eng._evict_outcomes = {"10.0.0.7": "declined", "10.0.0.8": "no_reaction"}
+    eng._evict.outcomes = {"10.0.0.7": "declined", "10.0.0.8": "no_reaction"}
     eng._finalize_findings()
     ids = [e.finding.id for e in events if isinstance(e, ev.FindingRaised)]
     assert "CLIENTS_EVICTED_FROM_ADDRESSES" in ids
@@ -598,7 +590,7 @@ def test_finalize_findings_evicted_when_declined_or_higher():
 def test_finalize_findings_defended_only_when_no_one_declined():
     bus, events = _bus_collect()
     eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.EXHAUST), bus)
-    eng._evict_outcomes = {"10.0.0.7": "defended"}
+    eng._evict.outcomes = {"10.0.0.7": "defended"}
     eng._finalize_findings()
     ids = [e.finding.id for e in events if isinstance(e, ev.FindingRaised)]
     assert "CLIENTS_DEFENDED_ADDRESSES" in ids
@@ -608,7 +600,7 @@ def test_finalize_findings_defended_only_when_no_one_declined():
 def test_finalize_findings_unanswered_when_nothing_reacted():
     bus, events = _bus_collect()
     eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.EXHAUST), bus)
-    eng._evict_outcomes = {"10.0.0.7": "no_reaction"}
+    eng._evict.outcomes = {"10.0.0.7": "no_reaction"}
     eng._finalize_findings()
     ids = [e.finding.id for e in events if isinstance(e, ev.FindingRaised)]
     assert "ARP_CONFLICTS_UNANSWERED" in ids
@@ -622,7 +614,7 @@ def test_finalize_findings_no_eviction_finding_under_dry_run():
     the dry-run case instead)."""
     bus, events = _bus_collect()
     eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.EXHAUST, dry_run=True), bus)
-    eng._evict_outcomes = {"10.0.0.7": "no_reaction"}
+    eng._evict.outcomes = {"10.0.0.7": "no_reaction"}
     eng._finalize_findings()
     ids = [e.finding.id for e in events if isinstance(e, ev.FindingRaised)]
     assert "ARP_CONFLICTS_UNANSWERED" not in ids
@@ -643,7 +635,7 @@ def test_finalize_findings_silent_when_no_evict_targets():
 def test_status_reports_evict_outcomes_when_present():
     bus, _ = _bus_collect()
     eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.EXHAUST), bus)
-    eng._evict_outcomes = {"10.0.0.7": "declined"}
+    eng._evict.outcomes = {"10.0.0.7": "declined"}
     st = eng.status()
     assert st["evict_targets"] == 1
     assert st["evict_outcomes"] == {"10.0.0.7": "declined"}

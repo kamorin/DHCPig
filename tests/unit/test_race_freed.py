@@ -105,11 +105,11 @@ def test_decline_from_eviction_target_is_not_a_race_trigger(monkeypatch):
     (_evict_declined_ips) -- it must not also enqueue a race; we already hold that address."""
     eng, _ = _engine(monkeypatch)
     _give_server_identity(eng)
-    eng._evict_ip_by_mac["de:ad:00:00:00:61"] = "10.0.0.61"
+    eng._evict.ip_by_mac["de:ad:00:00:00:61"] = "10.0.0.61"
     eng._on_dhcp(
         _client_pkt("decline", 0x6002, "de:ad:00:00:00:61", requested_addr="10.0.0.61")
     )
-    assert "10.0.0.61" in eng._evict_declined_ips
+    assert "10.0.0.61" in eng._evict.declined_ips
     assert list(eng._race_queue) == []
 
 
