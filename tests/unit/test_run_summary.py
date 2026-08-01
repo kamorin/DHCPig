@@ -268,5 +268,3 @@ def test_summary_lines_expand_list_evidence_one_item_per_line():
     )
     assert "Did a thing  ->  a result" in lines
     assert "10.0.0.1" in lines
-
-
