@@ -14,17 +14,13 @@ from pathlib import Path
 from scapy.all import sendp  # module-level so tests can monkeypatch dhcpig.core.engine.sendp
 
 from . import events as ev
-from . import findings, journal, packets
+from . import findings, journal, packets, recovery
 from .events import EventBus
 from .eviction import EvictionState, rung_max
 from .exceptions import ConfigError
 from .fingerprint import extract_signature, resolve
 from .fingerprint import from_mac as fingerprint_from_mac
 from .models import (
-    FAIL,
-    INCONCLUSIVE,
-    INFO,
-    PASS,
     ControlOutcome,
     Finding,
     HostFingerprint,
@@ -1802,12 +1798,9 @@ class DhcpEngine:
             f"no_response={counts['no_response']}); {stopped}/{len(freed)} still ARP-silent"
         )
         self._raise(
-            Finding(
-                id="NEIGHBOR_LEASES_RELEASED",
-                title="Sent DHCPRELEASE for ARP-discovered neighbors, then re-acquired them",
-                verdict=INFO,
-                severity="medium",
-                evidence={
+            findings.build(
+                "NEIGHBOR_LEASES_RELEASED",
+                {
                     "targets": len(freed),
                     "granted": granted,
                     "offered_different": counts["offered_different"],
@@ -1816,29 +1809,8 @@ class DhcpEngine:
                     "still_using_address_arp": len(freed) - stopped,
                     "server_id": server_id,
                 },
-                recommendation=(
-                    "The server acted on unauthenticated RELEASE requests for addresses held by "
-                    "other hosts on the segment, and this run re-acquired "
-                    f"{granted} of {len(freed)} of them by name (DHCP option 50) from a MAC the "
-                    "server had never seen — any host can force another off its lease and then "
-                    "take it. Independent of pool exhaustion and worth reporting on its own; "
-                    "verify DHCP snooping / binding validation on the access switch."
-                    if granted
-                    # granted == 0 is only meaningful once the pool is empty. With addresses
-                    # free, RFC 2131 §4.3.1 has the server prefer a fresh one over honouring
-                    # option 50 for an unknown MAC, so a zero says nothing about the RELEASE.
-                    else "None of the freed addresses could be re-acquired. The pool still had "
-                    "free addresses at this point, so this does NOT show the server protected "
-                    "the bindings: RFC 2131 has a server prefer an unused address over honouring "
-                    "a specific request from a MAC it has never seen, which is the same result. "
-                    "Re-run as `exhaust`, where this step happens after the pool is drained and "
-                    "the two causes can be told apart."
-                    if self.cfg.mode is not Mode.EXHAUST
-                    else "None of the freed addresses could be re-acquired even with the pool "
-                    "drained, so the server had no unused address to prefer instead — it "
-                    "declined to hand another host's address to an unknown MAC. That is the "
-                    "desired behavior and is real evidence here, unlike the same result before "
-                    "exhaustion."
+                recommendation=findings.neighbor_leases_released_recommendation(
+                    granted, len(freed), self.cfg.mode is Mode.EXHAUST
                 ),
             )
         )
@@ -2481,44 +2453,6 @@ class DhcpEngine:
         t.start()
         self._threads.append(t)
 
-    def _select_release_previous_entries(
-        self, entries: list, scope: ScopeGuard, pre_control: ControlOutcome
-    ) -> tuple[list, dict]:
-        """Filter journal entries down to what's safe and relevant to release right now.
-
-        See AGENT_HANDOFF.md §5e for why each step exists: interface,
-        then current CIDR (never an unbounded sweep), then same-server (guards against a
-        journal carried between engagements producing targets on the wrong network -- only
-        evaluable when the pre-flight control actually learned a server identity, which it
-        usually won't on a genuinely exhausted pool; that's an accepted gap, not a bug), then
-        age (an optimisation -- a stale entry is harmless because its MAC simply won't match
-        the server's current binding, see the module-level note in journal.py).
-        """
-        known_server_id = pre_control.server_id if pre_control.attempted else None
-        same_server_filter_applied = bool(self.cfg.require_same_server and known_server_id)
-
-        step1 = [e for e in entries if e.iface == self.cfg.interface]
-        step2 = [e for e in step1 if scope.allows(e.ip)]
-
-        if same_server_filter_applied:
-            step3 = [e for e in step2 if e.server_ip == known_server_id]
-        else:
-            step3 = step2
-
-        now = time.time()
-        max_age_s = max(0.0, self.cfg.max_age_days) * 86400
-        step4 = [e for e in step3 if now - (e.ts + (e.lease_time or 0)) <= max_age_s]
-
-        stats = {
-            "journal_entries_loaded": len(entries),
-            "in_cidr": len(step2),
-            "same_server_filter_applied": same_server_filter_applied,
-            "same_server": len(step3),
-            "within_max_age": len(step4),
-            "selected": len(step4),
-        }
-        return step4, stats
-
     def _release_selected(self, entries: list) -> int:
         """Group by (server_ip, server_mac) so each batch unicasts to the right server --
         a journal can span multiple servers on the same segment (failover pairs, a second
@@ -2553,18 +2487,7 @@ class DhcpEngine:
         cidrs = self._sweep_cidrs()
         if not cidrs:
             self._raise(
-                Finding(
-                    id="RELEASE_PREVIOUS_SCOPE_REQUIRED",
-                    title="release-previous refused to run: no scope and no resolvable "
-                    "interface network",
-                    verdict=INCONCLUSIVE,
-                    severity="medium",
-                    evidence={"interface": self.cfg.interface},
-                    recommendation=(
-                        "Pass --scope explicitly, or run on an interface with a configured "
-                        "IPv4 address, so the recovery sweep stays bounded to a known network."
-                    ),
-                )
+                findings.build("RELEASE_PREVIOUS_SCOPE_REQUIRED", {"interface": self.cfg.interface})
             )
             return
         scope = ScopeGuard(cidrs)
@@ -2575,23 +2498,19 @@ class DhcpEngine:
         self._rp_pre_control = pre
         if pre.success:
             self._raise(
-                Finding(
-                    id="NO_RECOVERY_NEEDED",
-                    title="A new client already obtains an address — nothing to recover",
-                    verdict=INFO,
-                    severity="info",
-                    evidence={
+                findings.build(
+                    "NO_RECOVERY_NEEDED",
+                    {
                         "interface": self.cfg.interface,
                         "journal_entries_loaded": len(all_entries),
                         "offered_ip": pre.offered_ip,
                     },
-                    recommendation="No RELEASE frames were sent.",
                 )
             )
             self.recovery_result = {"outcome": "not_needed", "frames_sent": 0}
             return
 
-        selected, stats = self._select_release_previous_entries(all_entries, scope, pre)
+        selected, stats = recovery.select_entries(self.cfg, all_entries, scope, pre)
         self._debug(
             "release-previous: selection — "
             f"{stats['journal_entries_loaded']} loaded, {stats['in_cidr']} in scope, "
@@ -2602,18 +2521,7 @@ class DhcpEngine:
 
         if not selected:
             self._raise(
-                Finding(
-                    id="NO_JOURNAL_DATA",
-                    title="No journal entries matched this network — nothing to recover",
-                    verdict=INFO,
-                    severity="info",
-                    evidence={"interface": self.cfg.interface, **stats},
-                    recommendation=(
-                        "Either no prior run left an open lease here, or --scope / --max-age "
-                        "/ --any-server need adjusting. release-previous only releases leases "
-                        "this tool recorded taking — it cannot recover what it never recorded."
-                    ),
-                )
+                findings.build("NO_JOURNAL_DATA", {"interface": self.cfg.interface, **stats})
             )
             self.recovery_result = {"outcome": "no_data", "frames_sent": 0, **stats}
             return
@@ -2661,47 +2569,11 @@ class DhcpEngine:
         }
 
         if post.success:
-            self._raise(
-                Finding(
-                    id="POOL_RECOVERED",
-                    title="A new client obtained an address after release-previous ran",
-                    verdict=PASS,
-                    severity="info",
-                    evidence=evidence,
-                    recommendation="Recovery confirmed. No further action needed.",
-                )
-            )
+            self._raise(findings.build("POOL_RECOVERED", evidence))
         elif remaining_targeted:
-            self._raise(
-                Finding(
-                    id="POOL_RECOVERY_PARTIAL",
-                    title="Some targeted leases were not released before the run ended",
-                    verdict=INCONCLUSIVE,
-                    severity="medium",
-                    evidence=evidence,
-                    recommendation=(
-                        "Re-run release-previous to retry the remaining entries, or increase "
-                        "--passes."
-                    ),
-                )
-            )
+            self._raise(findings.build("POOL_RECOVERY_PARTIAL", evidence))
         else:
-            self._raise(
-                Finding(
-                    id="POOL_RECOVERY_FAILED",
-                    title="Every targeted lease was released but a new client is still denied",
-                    verdict=FAIL,
-                    severity="high",
-                    evidence=evidence,
-                    recommendation=(
-                        "The server did not honor these RELEASE frames, or something else is "
-                        "denying new clients. Clear the bindings on the server itself — "
-                        "'omshell' / lease-file edit + reload on ISC dhcpd, 'netsh dhcp server "
-                        "scope <s> delete clientsbyip' or a scope reconcile on Windows Server "
-                        "— or wait for the leases to expire."
-                    ),
-                )
-            )
+            self._raise(findings.build("POOL_RECOVERY_FAILED", evidence))
 
     def _discover_neighbors(
         self, cidrs: list[str] | None = None
