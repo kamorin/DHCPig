@@ -1,5 +1,6 @@
 import json
 
+from dhcpig import __version__
 from dhcpig.core import events as ev
 from dhcpig.core.models import HostFingerprint, IPVersion, Lease, Neighbor, SessionConfig
 from dhcpig.core.reporting import SessionRecorder
@@ -16,6 +17,14 @@ def test_report_roundtrip(tmp_path):
     assert data["tool"] == "dhcpig"
     assert len(data["leases"]) == 1
     assert "fingerprint_db" in data
+
+
+def test_report_version_matches_package_version():
+    """The report's version field must track the installed package -- it sat hardcoded at
+    "2.0.0" through every 2.1-2.5 release, mislabelling every report ever written."""
+    cfg = SessionConfig(interface="eth1")
+    data = SessionRecorder(cfg).to_dict()
+    assert data["version"] == __version__
 
 
 def test_pool_estimate_carried_from_session_ended_into_report():
