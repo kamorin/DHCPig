@@ -1,0 +1,288 @@
+.TH DHCPIG 1 "2026-08-01" "dhcpig 2.5.0" "User Commands"
+.SH NAME
+dhcpig \- DHCP exhaustion / network-hardening validation tool (whitehat)
+.SH SYNOPSIS
+.B dhcpig
+.I command
+.I interface
+.RI [ options ]
+.br
+.B dhcpig ifaces
+.br
+.B dhcpig report
+.I path
+.SH DESCRIPTION
+.B dhcpig
+validates that a network is hardened against DHCP pool exhaustion, forced
+lease release, and gratuitous-ARP disruption, and passively fingerprints
+hosts on the segment. It exhausts a DHCP pool, releases and re-acquires
+neighbours' leases by name, evicts hosts off addresses with forged RFC 5227
+ARP conflicts, and reports whether the network defended itself.
+.PP
+It needs root (raw sockets) and Python 3.11 or newer. A local web UI is
+available as
+.BR dhcpig-web (1).
+.PP
+.B There is no authorization gate.
+.I release
+and
+.I exhaust
+disrupt live clients by design, and
+.B \-\-scope
+is optional \- with none given, a run targets the whole network attached to
+.IR interface .
+Only run this against networks you own or are explicitly authorized to
+test.
+.SH COMMANDS
+.TP
+.BI exhaust " interface"
+Consume the DHCP pool. Non-destructive to the pool itself (it competes for
+free addresses rather than seizing bound ones outright), but it releases
+every ARP-discovered neighbour's lease first and forges ARP conflicts
+against what it re-acquires \- see
+.B "WHAT EACH COMMAND DOES"
+below. This is the default, most invasive mode.
+.TP
+.BI scan " interface"
+Passive ARP + DHCP fingerprinting. Read-only: sends nothing, runs until
+stopped (Ctrl-C). CLI only \- not available from the web UI.
+.TP
+.BI active\-scan " interface"
+Active discovery: ARP-sweeps the scope and sends one DHCPINFORM to
+fingerprint the DHCP server(s). Non-destructive, but
+.B requires \-\-scope
+(or a resolvable interface network) so its sweep stays bounded.
+.TP
+.BI release " interface"
+.B DESTRUCTIVE.
+DHCPRELEASE every in-scope, ARP-discovered neighbour's lease, re-acquire
+the freed addresses by name (DHCP option 50), then contest ownership of
+what it took with forged ARP conflicts (RFC 5227 \(sc2.4). The pool itself
+is left intact, so most hosts can immediately get a new address; the
+verdict is whether any host lost its address and failed to get a new one.
+.TP
+.BI release\-previous " interface"
+Recovery, not an attack. Replays this tool's on-disk lease journal and
+hands back every address a prior
+.I exhaust
+or
+.I release
+run took on this interface/network/server. Sends nothing if a new client
+can already obtain an address.
+.TP
+.BI restore " interface"
+Release exactly the leases the
+.B currently running
+process instance acquired (in-memory only \- useless once that process has
+exited). For recovery after the process is gone, use
+.I release\-previous
+instead.
+.TP
+.B ifaces
+List interface names usable with the other commands.
+.TP
+.BI report " path"
+Re-render a previously saved JSON report file and print a one-line
+summary to stdout.
+.SH OPTIONS
+.SS Common to exhaust, scan, active\-scan, release, release\-previous
+.TP
+.B \-\-ipv6
+DHCPv6 instead of DHCPv4.
+.B Not currently implemented
+\- every packet builder in this version is v4-only; passing this flag
+raises a configuration error immediately rather than running a broken v6
+listen / v4 send mismatch.
+.TP
+.BI \-\-report " FILE"
+Write a JSON session report to
+.I FILE
+when the run ends. (The written format is always JSON regardless of
+.IR FILE 's
+extension; the web UI's Report tab additionally offers CSV and HTML.)
+.TP
+.BI \-v ", " \-\-verbosity " N"
+Output detail, 0\(en3 (default 2). 0 prints results only (findings and the
+final summary); 1 is a compact one-character-per-packet stream; 2 is the
+normal packet-level log; 3 adds internal debug lines.
+.TP
+.BI \-\-status\-interval " SEC"
+Emit a periodic status line with running totals every
+.I SEC
+seconds (default 5; 0 disables it). Shown only at
+.BR \-v3 .
+.SS exhaust only
+.TP
+.BI \-\-request\-option " SPEC"
+DHCP option numbers to request (parameter request list), e.g.
+.RI \(dq 12,14\-19,23 \(dq.
+Defaults to requesting options 0\(en79.
+.TP
+.BI \-\-client\-mac " MAC"
+Use this MAC for a simulated client instead of a random one. Repeatable;
+with more than one, the sender rotates through the list round-robin
+instead of generating random MACs.
+.TP
+.B \-\-spoof\-eth\-src
+Ethernet source address equals the per-client MAC, so each simulated
+client looks like a distinct device at Layer 2 (this is what exercises
+port security / DHCP snooping). Default; this flag exists for symmetry
+with
+.BR \-\-no\-spoof\-eth\-src .
+.TP
+.B \-\-no\-spoof\-eth\-src
+Use the real NIC's MAC as the Ethernet source for every frame, changing
+only the BOOTP
+.I chaddr
+per client. Needed on Wi-Fi, where an access point drops frames whose
+source MAC doesn't match the associated station.
+.TP
+.BI \-\-scope " CIDR"
+Bound the run to this network. Repeatable. Defaults to the interface's own
+network. Supplying it also makes the pool-size estimate in the report
+deterministic (a host count from the CIDR) instead of inferred from the
+first DHCPOFFER's subnet.
+.TP
+.B \-\-dry\-run
+Reconnaissance only: the ARP sweep and the legitimate before/after DHCP
+control transactions run for real (they need a raw-capable interface and
+root), but nothing that would take or disturb a lease is sent \- no
+RELEASE, no re-acquisition flood, no ARP conflict.
+.TP
+.B \-\-no\-journal
+Don't record acquired leases to the on-disk recovery journal (default:
+record them). Without it,
+.I release\-previous
+has nothing to recover with if this run is interrupted.
+.TP
+.B \-\-no\-evict
+Skip the ARP-conflict eviction phase against re-acquired addresses
+(default: run it). See RFC 5227 \(sc2.4.
+.TP
+.B \-\-no\-race\-freed
+Skip firing a targeted DISCOVER the moment a live foreign DHCPNAK or
+DHCPDECLINE shows a specific address just became free at the server
+(default: race it, ahead of the untargeted flood).
+.TP
+.B \-\-race\-on\-rediscover
+Also race on a foreign DHCPDISCOVER from a MAC the ARP inventory already
+has an address for. Off by default \- the highest-volume, lowest-precision
+trigger of the three.
+.SS active\-scan, release, release\-previous
+.TP
+.BI \-\-scope " CIDR"
+Network(s) to sweep / target / recover. Repeatable. Defaults to the
+interface's own network.
+.I active\-scan
+refuses to run if no scope can be determined at all.
+.TP
+.BI \-\-rate " N"
+Send rate in packets per second (default 7; 50 on
+.IR release\-previous ,
+see below). Not available on
+.I exhaust
+\- its windowed handshake pipeline self-paces instead.
+.TP
+.B \-\-dry\-run
+See above.
+.SS release only
+.TP
+.B \-\-no\-evict
+Skip the ARP-conflict eviction phase (default: run it).
+.I release
+shares the same release / re-acquire / evict chain as
+.IR exhaust ,
+minus the pool-draining flood.
+.SS release\-previous only
+.TP
+.BI \-\-journal " PATH"
+Override the lease journal location (default: the resolved
+per-interface path under
+.IR $XDG_STATE_HOME/dhcpig/ ).
+.TP
+.BI \-\-max\-age " DAYS"
+Ignore journal entries older than this many days (default 7). An
+optimisation, not a safety measure \- a stale entry's MAC simply won't
+match the server's current binding.
+.TP
+.B \-\-any\-server
+Release journal entries even when the currently reachable DHCP server
+differs from the one recorded at acquisition time (default: skip
+mismatches, to avoid releasing addresses on the wrong network).
+.TP
+.BI \-\-rate " N"
+Default
+.B 50
+here, not 7 \- this mode runs during an outage the operator is actively
+trying to end, and its frames are unicast to one server rather than
+sprayed at the segment, so a faster default is the right trade-off.
+.TP
+.BI \-\-passes " N"
+DHCPRELEASE has no reply (RFC 2131), so resend the selected set this many
+times as cheap insurance against a dropped frame (default 2).
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 2
+Bad arguments / configuration error (e.g.
+.I active\-scan
+with no resolvable scope,
+.BR \-\-ipv6 ).
+.TP
+.B 3
+No DHCP server detected before the no-server deadline elapsed.
+.TP
+.B 130
+Interrupted (Ctrl-C).
+.SH FILES
+.TP
+.I $XDG_STATE_HOME/dhcpig/leases-<iface>.jsonl
+(or
+.I ~/.local/state/dhcpig/...
+if
+.I $XDG_STATE_HOME
+is unset) \- the append-only lease journal that
+.I release\-previous
+replays. Per-engagement data; delete it when an engagement ends.
+.SH WHAT EACH COMMAND DOES
+See
+.I README.md
+in the source distribution for a walkthrough of each mode's packet
+sequence, and
+.I AGENT_HANDOFF.md
+for the reasoning behind the safety model (what still bounds a run now
+that there is no authorization gate) and the evidence model (why a
+verdict can be trusted).
+.SH EXAMPLES
+.TP
+Exhaust a pool and write a JSON report:
+.B sudo dhcpig exhaust eth0 --report run.json
+.TP
+Release active clients in one /22, DESTRUCTIVE:
+.B sudo dhcpig release eth0 --scope 192.168.4.0/22
+.TP
+Read-only discovery of DHCP servers on a scope:
+.B sudo dhcpig active-scan eth0 --scope 192.168.4.0/22
+.TP
+Undo a previous run from its lease journal:
+.B sudo dhcpig release-previous eth0
+.TP
+Recon only, nothing mutating sent:
+.B sudo dhcpig exhaust eth0 --dry-run
+.SH SECURITY CONSIDERATIONS
+Only run this against networks you own or are explicitly authorized to
+test.
+.I release
+and
+.I exhaust
+disrupt live clients on the segment by design, and, absent
+.BR \-\-scope ,
+target the entire network attached to the given interface. The authors
+are not responsible for misuse.
+.SH SEE ALSO
+.BR dhcpig\-web (1),
+.BR pig (1)
+.SH AUTHOR
+Kevin Amorin
