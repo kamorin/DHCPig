@@ -10,7 +10,7 @@
   from the first OFFER's subnet.
 - **README rewritten** as a getting-started doc: 344 lines down to ~100. Web UI first (three
   commands plus the sudo/token/port-forward gotchas), then the CLI, then what each mode
-  actually does in bullets. Design detail now lives in `AGENT_HANDOFF.md`.
+  actually does in bullets. Design detail now lives in `docs/DESIGN.md`.
 
 - **Exhaust now re-acquires released addresses *after* draining the pool**, not in the prelude.
   RFC 2131 §4.3.1 has a server pick, in order: an address already bound to the client, the
@@ -46,9 +46,9 @@
 
 - **Removed `EXECUTION-PLAN-*.md` and `SECURITY.md`** from the repo. The plan docs were
   build-time blueprints that had served their purpose; everything load-bearing from them, and
-  from SECURITY.md, was folded into AGENT_HANDOFF.md and the README, and the ~20 source and doc
+  from SECURITY.md, was folded into docs/DESIGN.md and the README, and the ~20 source and doc
   comments that pointed at them now point at the AGENT_HANDOFF section covering the same ground.
-  AGENT_HANDOFF.md is the only design document in the repo now.
+  docs/DESIGN.md is the only design document in the repo now.
 
 First tagged release of the 2.x rewrite. Everything below this line shipped in it: the package
 refactor of the single-file `pig.py` (2.0), the windowed/adaptive exhaust sender and the
@@ -58,7 +58,7 @@ addresses (2.3.1), and the reporting rework that ends a run with a plain-languag
 a per-host roll-call on the event log (2.3.2 – 2.3.5).
 
 **Not yet validated against real hardware beyond a single live `/22` exhaust run** — see
-AGENT_HANDOFF.md §9 before relying on the eviction, re-acquisition or recovery paths.
+docs/DESIGN.md §9 before relying on the eviction, re-acquisition or recovery paths.
 
 ## 2.3.5 (unreleased) — the event log is the only results surface
 
@@ -255,7 +255,7 @@ surfaced along the way, and a web-UI stall fix.
   the CLI renderer and web log show `chaddr=`/`option50=`/`hostname=` on every outbound
   DISCOVER/REQUEST line at normal verbosity, not just at `-v3` debug.
 - 312 unit tests passing (up from 265 at the start of 2.3.1); ruff clean. Not yet exercised
-  against real hardware — see AGENT_HANDOFF.md §9.
+  against real hardware — see docs/DESIGN.md §9.
 
 ## 2.3.0 (unreleased) — targeted re-acquisition, RFC 5227 ARP-conflict eviction, restructured `release`
 
@@ -326,7 +326,7 @@ already had rather than its own thinner, buggier path.
   "Reset / Recover DHCP Records" / "Find Neighbors". Passive `scan` removed from the dropdown
   (still a valid CLI subcommand / API mode — `config_from_payload()` unchanged).
 - 265 unit tests passing (up from 200 at the start of 2.3); ruff clean. **Not yet exercised
-  against real hardware** — see AGENT_HANDOFF.md §9/§10.
+  against real hardware** — see docs/DESIGN.md §9/§10.
 
 ## Unreleased — auto-restore-on-exit removed
 
