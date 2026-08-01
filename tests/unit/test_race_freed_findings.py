@@ -4,19 +4,15 @@ See AGENT_HANDOFF.md §5g. See test_race_freed.py (triggers/queue) and
 test_race_freed_sender.py (sender integration + classifier, commit 3) for the rest of the feature.
 """
 
-from dhcpig.core import engine as engine_mod
-from dhcpig.core.engine import DhcpEngine
-from dhcpig.core.events import EventBus, FindingRaised
-from dhcpig.core.models import Mode, SessionConfig
+from conftest import build_engine
+
+from dhcpig.core.events import FindingRaised
+from dhcpig.core.models import Mode
 
 
 def _engine(monkeypatch, **cfg):
-    monkeypatch.setattr(engine_mod, "sendp", lambda *a, **k: None)
-    bus = EventBus()
-    events = []
-    bus.subscribe(events.append)
     cfg.setdefault("mode", Mode.EXHAUST)
-    eng = DhcpEngine(SessionConfig(interface="lo", **cfg), bus)
+    eng, events, _sent = build_engine(monkeypatch, **cfg)
     return eng, events
 
 

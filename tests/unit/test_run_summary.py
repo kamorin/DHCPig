@@ -6,21 +6,18 @@ conclusions about the network's defenses; that stays with the verdict findings.
 
 import time
 
+from conftest import build_engine
+
 from dhcpig.cli.render import Renderer
-from dhcpig.core import engine as engine_mod
-from dhcpig.core.engine import DhcpEngine
-from dhcpig.core.events import EventBus, FindingRaised
-from dhcpig.core.models import ControlOutcome, Mode, SessionConfig
+from dhcpig.core.events import FindingRaised
+from dhcpig.core.models import ControlOutcome, Mode
 
 
 def _engine(monkeypatch, **cfg):
-    monkeypatch.setattr(engine_mod, "sendp", lambda *a, **k: None)
-    bus = EventBus()
-    events = []
-    bus.subscribe(events.append)
+    cfg.setdefault("interface", "wlan0")
     cfg.setdefault("mode", Mode.EXHAUST)
     cfg.setdefault("offline", True)
-    eng = DhcpEngine(SessionConfig(interface="wlan0", **cfg), bus)
+    eng, events, _sent = build_engine(monkeypatch, **cfg)
     eng._started = time.time()
     return eng, events
 

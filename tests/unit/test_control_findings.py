@@ -8,13 +8,12 @@ import threading
 import time
 
 import pytest
+from conftest import build_engine
 from scapy.all import BOOTP, DHCP, IP, UDP, Ether, mac2str
 
 from dhcpig.core import engine as engine_mod
 from dhcpig.core import events as ev
 from dhcpig.core import packets
-from dhcpig.core.engine import DhcpEngine
-from dhcpig.core.events import EventBus
 from dhcpig.core.models import (
     FAIL,
     INCONCLUSIVE,
@@ -47,13 +46,7 @@ def _reply(kind: str, xid: int, mac: str, yiaddr: str = "172.20.0.83"):
 
 
 def _engine(monkeypatch, **cfg):
-    sent = []
-    monkeypatch.setattr(engine_mod, "sendp", lambda pkt, **kw: sent.append(pkt))
-    bus = EventBus()
-    events = []
-    bus.subscribe(events.append)
-    eng = DhcpEngine(SessionConfig(interface="lo", **cfg), bus)
-    return eng, events, sent
+    return build_engine(monkeypatch, **cfg)
 
 
 # ---------------------------------------------------------------- NAK (previously dropped)

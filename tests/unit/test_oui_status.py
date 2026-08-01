@@ -2,14 +2,12 @@
 
 import time
 
+from conftest import build_engine
+
 from dhcpig.cli.render import Renderer, status_summary
-from dhcpig.core import engine as engine_mod
 from dhcpig.core import events as ev
 from dhcpig.core import oui
-from dhcpig.core.engine import DhcpEngine
-from dhcpig.core.events import EventBus
 from dhcpig.core.fingerprint import from_mac
-from dhcpig.core.models import SessionConfig
 
 
 # ---------------------------------------------------------------- OUI lookup
@@ -55,13 +53,11 @@ def test_from_mac_fills_os_device_column_without_claiming_an_os():
 
 # ---------------------------------------------------------------- status heartbeat
 def _engine(monkeypatch, **cfg):
-    monkeypatch.setattr(engine_mod, "sendp", lambda *a, **k: None)
-    bus = EventBus()
-    events = []
-    bus.subscribe(events.append)
     # offline (2.3), not dry_run: these tests call .start()/.stop() and dry_run alone no longer
     # skips the sniffer/control transaction -- offline is the hard no-socket switch they need.
-    return DhcpEngine(SessionConfig(interface="lo", offline=True, **cfg), bus), events
+    cfg.setdefault("offline", True)
+    eng, events, _sent = build_engine(monkeypatch, **cfg)
+    return eng, events
 
 
 def test_status_ticks_are_emitted_periodically(monkeypatch):
