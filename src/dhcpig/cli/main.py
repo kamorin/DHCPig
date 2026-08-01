@@ -36,10 +36,6 @@ _MODE_BY_CMD = {
     "release-previous": Mode.RELEASE_PREVIOUS,
 }
 
-# _run_session()'s polling loop treats "no more worker threads alive" as "this run is done" for
-# these modes. Canonical definition now lives in core.models (the web control plane needs it too).
-_RUN_ONCE_MODES = RUN_ONCE_MODES
-
 
 # --------------------------------------------------------------------------- parsing
 def parse_request_options(spec: str) -> list[int]:
@@ -320,7 +316,9 @@ def _run_session(cfg: SessionConfig) -> int:
                 print("[XX] no DHCP server detected — aborting", file=sys.stderr)
                 rc = EXIT_NOSERVER
                 break
-            if cfg.mode in _RUN_ONCE_MODES and not any(t.is_alive() for t in engine._threads):
+            # "no more worker threads alive" is "this run is done" for these modes. Canonical
+            # definition lives in core.models (the web control plane keys off it too).
+            if cfg.mode in RUN_ONCE_MODES and not any(t.is_alive() for t in engine._threads):
                 break
     except KeyboardInterrupt:
         rc = EXIT_INTERRUPT
