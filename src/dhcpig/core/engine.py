@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import threading
 import time
-from collections import deque
 from pathlib import Path
 
 from scapy.all import sendp  # module-level so tests can monkeypatch dhcpig.core.engine.sendp
@@ -32,6 +31,7 @@ from .models import (
     ServerInfo,
     SessionConfig,
 )
+from .racing import RaceState
 from .safety import Cleanup, RateLimiter, ScopeGuard
 from .sniffer import DhcpSniffer
 
@@ -152,18 +152,9 @@ class DhcpEngine:
         # 2131). Popped once consumed by _handle_nak() so this doesn't grow unbounded on a
         # healthy segment where foreign REQUESTs mostly get ACKed, not NAKed.
         self._foreign_requests: dict[int, str] = {}
-        # race-freed (2.3): addresses queued for a priority targeted DISCOVER, deduped so one
-        # freed address is never queued twice. Kept entirely separate from _reacquire_targets/
-        # _reacquire_outcomes -- _evict_phase() derives its target set from those, and a race
-        # xid must never silently become an eviction target (see AGENT_HANDOFF.md §5g's
-        # "Boundaries" section).
-        self._race_queue: deque[str] = deque()
-        self._raced_ips: set[str] = set()
-        self._race_reasons: dict[str, str] = {}  # ip -> trigger ("nak"/"decline"/"rediscover")
-        self._race_targets: dict[int, str] = {}
-        self._race_outcomes: dict[int, str] = {}
-        self._race_triggers: dict[int, str] = {}  # xid -> trigger, for the finding's breakdown
-        self._race_inflight = 0
+        # race-freed (2.3): see core/racing.py's RaceState docstring for what each field is,
+        # and why it's kept entirely separate from _reacquire_targets/_reacquire_outcomes.
+        self._race = RaceState()
         self.races = 0
         # lease journal (2.2): resolved once so the CLI/report can display the path used.
         # Never active for dry-run -- a dry run must not pollute the recovery record with
@@ -781,7 +772,7 @@ class DhcpEngine:
                     f"{self.acks} held of {self.discovers}; {tail}",
                 )
             if self.races:
-                won = sum(1 for o in self._race_outcomes.values() if o == "granted")
+                won = sum(1 for o in self._race.outcomes.values() if o == "granted")
                 step(f"Raced freed addresses{dry}", f"took {won} of {self.races}")
             ctl(self.control_post, "Retested from this machine")
             ctl(self.control_post_new, "Retested as an unknown device")
@@ -1131,7 +1122,7 @@ class DhcpEngine:
         # covers that case instead.
         if self.races > 0 and not self.cfg.dry_run:
             by_outcome: dict[str, int] = {}
-            for outcome in self._race_outcomes.values():
+            for outcome in self._race.outcomes.values():
                 by_outcome[outcome] = by_outcome.get(outcome, 0) + 1
             won = by_outcome.get("granted", 0)
             lost = (
@@ -1140,7 +1131,7 @@ class DhcpEngine:
                 + by_outcome.get("no_response", 0)
             )
             by_trigger: dict[str, int] = {}
-            for trigger in self._race_triggers.values():
+            for trigger in self._race.triggers.values():
                 by_trigger[trigger] = by_trigger.get(trigger, 0) + 1
             self._raise(
                 findings.build(
@@ -1458,7 +1449,7 @@ class DhcpEngine:
 
         Exclusions, in order:
           * `ip` unresolved -- nothing to queue.
-          * already queued this run (`_raced_ips`) -- dedup, e.g. a decline retransmit.
+          * already queued this run (`_race.raced_ips`) -- dedup, e.g. a decline retransmit.
           * already targeted by *our own* re-acquisition (`_reacquire_targets.values()`) -- the
             release phase's own victims DISCOVER/DECLINE right after being released and evicted
             (that's the `rediscovered` rung, §5f); without this check every one of those would
@@ -1471,7 +1462,7 @@ class DhcpEngine:
         """
         if self.cfg.mode is not Mode.EXHAUST or not self.cfg.race_freed_addresses:
             return
-        if not ip or ip in self._raced_ips:
+        if not ip or ip in self._race.raced_ips:
             return
         if ip in self._reacquire_targets.values():
             self._debug(f"race: {ip} already targeted by re-acquisition, not queuing ({why})")
@@ -1480,9 +1471,9 @@ class DhcpEngine:
         server_id = pre.server_id if pre else None
         if ip in (server_id, self._release_gateway()):
             return
-        self._raced_ips.add(ip)
-        self._race_reasons[ip] = why
-        self._race_queue.append(ip)
+        self._race.raced_ips.add(ip)
+        self._race.reasons[ip] = why
+        self._race.queue.append(ip)
         self._debug(f"race: queued {ip} ({why})")
 
     # ---------------------------------------------------------------- pool estimate / headroom
@@ -2005,11 +1996,11 @@ class DhcpEngine:
             # docstring for why the limiter alone isn't a sufficient backstop in exhaust.
             if (
                 self.cfg.race_freed_addresses
-                and self._race_queue
-                and self._race_inflight < self.cfg.race_max_inflight
+                and self._race.queue
+                and self._race.inflight < self.cfg.race_max_inflight
             ):
-                race_ip = self._race_queue.popleft()
-                race_reason = self._race_reasons.pop(race_ip, "unknown")
+                race_ip = self._race.queue.popleft()
+                race_reason = self._race.reasons.pop(race_ip, "unknown")
                 race_mac = random_mac()
                 race_xid = _rand_xid()
                 race_src = self._src_mac(race_mac)
@@ -2024,9 +2015,9 @@ class DhcpEngine:
                         "sent_at": time.time(),
                         "state": "DISCOVER_SENT",
                     }
-                self._race_targets[race_xid] = race_ip
-                self._race_triggers[race_xid] = race_reason
-                self._race_inflight += 1
+                self._race.targets[race_xid] = race_ip
+                self._race.triggers[race_xid] = race_reason
+                self._race.inflight += 1
                 self.discovers += 1
                 self.races += 1
                 self.bus.emit(
@@ -2037,7 +2028,7 @@ class DhcpEngine:
                 self._debug(
                     f"race: DISCOVER xid=0x{race_xid:08x} option50={race_ip} chaddr={race_mac} "
                     f"trigger={race_reason} "
-                    f"(freed address, inflight {self._race_inflight}/{self.cfg.race_max_inflight})"
+                    f"(freed address, inflight {self._race.inflight}/{self.cfg.race_max_inflight})"
                 )
                 continue
             with self._inflight_lock:
@@ -2238,7 +2229,7 @@ class DhcpEngine:
     def _classify_targeted(self, xid: int, outcome: str, overwrite: bool = True) -> bool:
         """Record `outcome` for `xid` in whichever table owns it -- targeted re-acquisition
         (`_reacquire_targets`/`_reacquire_outcomes`, §5f) or racing
-        (`_race_targets`/`_race_outcomes`, race-freed) -- so the two mechanisms share one
+        (`_race.targets`/`_race.outcomes`, race-freed) -- so the two mechanisms share one
         classification path and can never drift apart in how they call granted/offered_different/
         naked/no_response. The two target dicts are mutually exclusive by construction (see
         `_maybe_race()`'s exclusions), so at most one branch below ever fires.
@@ -2247,7 +2238,7 @@ class DhcpEngine:
         matching the original re-acquisition behavior of never letting a late timeout sweep
         clobber an outcome an ACK/NAK already settled.
 
-        Decrements `_race_inflight` exactly once, only on the write that actually happens --
+        Decrements `_race.inflight` exactly once, only on the write that actually happens --
         each xid reaches a terminal state (ACK, NAK, or timeout) at most once in practice, since
         `_handle_ack()`/`_handle_nak()` both pop the xid from `_inflight` before classifying, and
         `_reap_timeouts()` only ever sees xids still present there.
@@ -2259,10 +2250,10 @@ class DhcpEngine:
             if overwrite or xid not in self._reacquire_outcomes:
                 self._reacquire_outcomes[xid] = outcome
             return True
-        if xid in self._race_targets:
-            if overwrite or xid not in self._race_outcomes:
-                self._race_outcomes[xid] = outcome
-                self._race_inflight = max(0, self._race_inflight - 1)
+        if xid in self._race.targets:
+            if overwrite or xid not in self._race.outcomes:
+                self._race.outcomes[xid] = outcome
+                self._race.inflight = max(0, self._race.inflight - 1)
             return True
         return False
 
@@ -2303,7 +2294,7 @@ class DhcpEngine:
         self.acks += 1
         # requested-IP lookup covers both tables -- they're mutually exclusive, so at most one
         # ever has this xid; _classify_targeted() then writes into whichever one does.
-        requested = self._reacquire_targets.get(xid, self._race_targets.get(xid))
+        requested = self._reacquire_targets.get(xid, self._race.targets.get(xid))
         if requested is not None:
             outcome = "granted" if ip == requested else "offered_different"
             self._classify_targeted(xid, outcome)

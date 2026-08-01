@@ -52,7 +52,7 @@ def test_raced_freed_addresses_finding_not_raised_with_no_races(monkeypatch):
 def test_raced_freed_addresses_finding_summarizes_outcomes(monkeypatch):
     eng, events = _engine(monkeypatch)
     eng.races = 4
-    eng._race_outcomes = {
+    eng._race.outcomes = {
         1: "granted",
         2: "granted",
         3: "offered_different",
@@ -74,8 +74,8 @@ def test_raced_freed_addresses_finding_summarizes_outcomes(monkeypatch):
 def test_raced_freed_addresses_finding_breaks_down_by_trigger(monkeypatch):
     eng, events = _engine(monkeypatch)
     eng.races = 3
-    eng._race_outcomes = {1: "granted", 2: "granted", 3: "naked"}
-    eng._race_triggers = {1: "nak", 2: "decline", 3: "nak"}
+    eng._race.outcomes = {1: "granted", 2: "granted", 3: "naked"}
+    eng._race.triggers = {1: "nak", 2: "decline", 3: "nak"}
     eng._finalize_findings()
     finding = _findings_by_id(events)["RACED_FREED_ADDRESSES"]
     assert finding.evidence["by_trigger"] == {"nak": 2, "decline": 1}
@@ -87,7 +87,7 @@ def test_raced_freed_addresses_finding_gated_off_under_dry_run(monkeypatch):
     same reasoning as the eviction findings block."""
     eng, events = _engine(monkeypatch, dry_run=True)
     eng.races = 2
-    eng._race_outcomes = {1: "granted"}
+    eng._race.outcomes = {1: "granted"}
     eng._finalize_findings()
     assert "RACED_FREED_ADDRESSES" not in _findings_by_id(events)
 
