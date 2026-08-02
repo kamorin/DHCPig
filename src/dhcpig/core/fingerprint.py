@@ -220,7 +220,7 @@ def from_mac(mac: str, ip: str = "", role: str = "client", raw_prl=None) -> Host
         role=role,
         os=None,
         # surfaced in the OS/Device column; marked so it is never mistaken for an OS match
-        device=f"{vendor} (MAC vendor)" if vendor else None,
+        device=f"{vendor} (vendor)" if vendor else None,
         vendor=vendor,
         confidence=15 if vendor else 0,
         matched_via=f"oui:{mac[:8]}" if vendor else "unknown",
