@@ -199,7 +199,7 @@ function renderNeighbors() {
     const resultCls = RESULT_CLASS[n.category] || "";
     tb.insertAdjacentHTML("beforeend",
       `<tr><td>${n.ip}</td><td>${n.mac}</td>` +
-      `<td>${fp.os || fp.device || fp.vendor || ""}</td><td>${fp.confidence ?? ""}</td>` +
+      `<td>${fp.os || fp.device || fp.vendor || ""}</td>` +
       `<td class="${resultCls}">${esc(n.outcome || "")}</td></tr>`);
   }
 }
