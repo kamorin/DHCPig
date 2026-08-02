@@ -1,0 +1,93 @@
+:root {
+  --bg: #12161c; --panel: #1b212b; --edge: #2a3342; --fg: #d7e0ea;
+  --muted: #8fa0b3; --accent: #4ec9b0; --pig: #e0679a; --warn: #e8b04b; --bad: #e5534b;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg);
+  font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
+  margin: 0 0 8px; }
+.hidden { display: none !important; }
+
+.topbar { position: relative; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 52px 10px 14px; background: var(--panel); border-bottom: 1px solid var(--edge); }
+.logo { display: block; width: 28px; height: 28px; flex: none; }
+.brand { font-weight: 700; font-size: 18px; margin-left: -4px; }
+.pig { color: var(--pig); }
+.topbar label { color: var(--muted); font-size: 12px; }
+select, input[type=number], input[type=text] { background: var(--bg); color: var(--fg);
+  border: 1px solid var(--edge); border-radius: 6px; padding: 4px 6px; }
+button { background: var(--edge); color: var(--fg); border: 0; border-radius: 6px;
+  padding: 6px 10px; cursor: pointer; font: inherit; }
+button:hover:not(:disabled) { outline: 1px solid var(--accent); }
+button:disabled { opacity: .4; cursor: default; }
+.exportgrp { color: var(--muted); font-size: 12px; }
+.exportgrp button { padding: 4px 8px; margin-left: 2px; }
+.filebtn { cursor: pointer; }
+/* pinned top-right so it never wraps onto a second row */
+.pill { position: absolute; top: 10px; right: 14px;
+  padding: 3px 8px; border-radius: 999px; font-size: 12px; }
+.pill.off { background: #3a2020; color: var(--bad); }
+.pill.on { background: #1f3a2f; color: var(--accent); }
+
+.banner { display: none; padding: 8px 14px; border-bottom: 1px solid var(--edge); }
+.banner.show { display: block; }
+.banner.warn { background: #3a3216; color: var(--warn); }
+.banner.bad { background: #3a1c1c; color: var(--bad); font-weight: 700; }
+
+/* config | neighbors-hosts tables | dashboard -- tables sit in the middle and take the wider
+   share, since the host roll-call is what an operator reads during a run */
+main { display: grid; grid-template-columns: 260px 1.2fr 0.8fr; gap: 12px; padding: 12px; }
+.panel { background: var(--panel); border: 1px solid var(--edge); border-radius: 10px; padding: 12px; }
+.config label { display: block; margin: 8px 0; color: var(--muted); }
+.config input[type=number], .config input[type=text] { width: 100%; }
+.config label.chk { display: flex; gap: 6px; align-items: center; }
+/* neutral border: this box is shown for every mode now, including the read-only ones, so the
+   old red "destructive" framing would have been misleading */
+.destcfg { border: 1px solid var(--edge); border-radius: 8px; padding: 8px; margin: 8px 0; }
+.config .hint { color: var(--muted); font-size: 11px; margin: 4px 0 8px; }
+/* what pressing Start will do, for the mode currently selected */
+.modenote { border-top: 1px solid var(--edge); padding-top: 8px; margin-top: 10px !important;
+  line-height: 1.5; }
+.modenote.harm { color: var(--warn); }
+
+.counters { display: flex; flex-wrap: wrap; gap: 12px 16px; margin-bottom: 8px; }
+.counter { text-align: center; }
+.counter span { font-size: 22px; font-weight: 700; color: var(--accent); }
+.counter label { display: block; color: var(--muted); font-size: 11px; }
+.counter.dim span { color: var(--muted); }
+canvas { width: 100%; height: 90px; background: #0d1117; border-radius: 8px; }
+.state { margin-top: 8px; color: var(--muted); }
+
+.tabs { display: flex; gap: 4px; margin-bottom: 8px; }
+.tab { background: transparent; color: var(--muted); padding: 4px 8px; }
+.tab.active { color: var(--fg); border-bottom: 2px solid var(--accent); border-radius: 0; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--edge); font-size: 12px; }
+th { color: var(--muted); font-weight: 600; }
+
+.log { margin: 0 12px 12px; }
+#log { margin: 0; max-height: 264px; overflow: auto; white-space: pre-wrap; font-size: 12px; }
+#log .out { color: var(--accent); } #log .in { color: #6ab0ff; }
+#log .note { color: var(--muted); } #log .alert { color: var(--bad); }
+#log .dbg { color: #b48ead; }  /* purple debug */
+#log .ctl { color: #4ec9b0; }  /* control transaction */
+#log .stat { color: #6ab0ff; font-weight: 600; }  /* periodic status heartbeat */
+#log .finding { color: var(--fg); font-weight: 700; }
+/* results: the log is the only findings surface now, so severity has to read at a glance */
+#log .warnline { color: var(--warn); font-weight: 700; }
+#log .alert { font-weight: 700; }
+
+/* neighbors tab: header row + 10 data rows (each ~27px at the table's 12px/1.5 line-height,
+   4px vertical padding, 1px border) before it scrolls */
+.neighbors { max-height: 298px; overflow-y: scroll; overflow-x: hidden; padding-right: 4px; }
+
+.neighbors { scrollbar-width: thin; scrollbar-color: var(--edge) var(--bg); }
+.neighbors::-webkit-scrollbar { width: 10px; }
+.neighbors::-webkit-scrollbar-track {
+  background: var(--bg); border-radius: 6px; }
+.neighbors::-webkit-scrollbar-thumb {
+  background: var(--edge); border-radius: 6px; }
+.neighbors::-webkit-scrollbar-thumb:hover {
+  background: var(--muted); }
+
