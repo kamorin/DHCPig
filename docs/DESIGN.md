@@ -292,9 +292,9 @@ Three pieces, run in `_common_prelude()` order (shared by both `exhaust` and `re
    `cfg.window_initial=8`) DISCOVER/REQUEST transactions in flight at once, rather than an
    open-loop DISCOVER flood. **Only an ACK counts as a held address** (`_grow_window`) — growth is
    deliberately slow: `self._window_growth_accum` banks `cfg.window_growth_per_ack` (default
-   **0.01**) per clean ACK, so **100** clean ACKs widen the window by one — NAKs, timeouts, and
+   **0.005**) per clean ACK, so **200** clean ACKs widen the window by one — NAKs, timeouts, and
    duplicate offers all shrink the window immediately (halve it) and wipe the accumulator
-   (`_shrink_window`) instead of being pushed through. Growth is ~5000× slower than shrink, so a
+   (`_shrink_window`) instead of being pushed through. Growth is ~10000× slower than shrink, so a
    noisy run trends toward the floor of 1 rather than climbing back — that's the deliberate
    trade-off, see `_grow_window()`'s docstring. `--rate` is **gone from exhaust and release**
    (release's re-acquisition leg reuses this same window/backoff — `rate_limit_pps` is fixed at

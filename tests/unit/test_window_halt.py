@@ -67,10 +67,10 @@ def test_window_never_exceeds_its_configured_cap(monkeypatch):
 
 
 def test_ack_grows_window_nak_and_timeout_halve_it(monkeypatch):
-    """(2.3, Phase 7) 100 clean ACKs per +1 slot, not 2 -- 99 calls must not grow the window,
-    the 100th must."""
+    """(2.3, Phase 7) 200 clean ACKs per +1 slot, not 2 -- 199 calls must not grow the window,
+    the 200th must."""
     eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST, window_initial=8, window_max=64)
-    for _ in range(99):
+    for _ in range(199):
         eng._grow_window()
     assert eng._window == 8
     eng._grow_window()
@@ -85,15 +85,15 @@ def test_ack_grows_window_nak_and_timeout_halve_it(monkeypatch):
 def test_growth_accumulator_resets_on_shrink(monkeypatch):
     """A partially-banked accumulator from before a NAK/timeout shouldn't give the ACKs right
     after the shrink a head start -- ramping back up should be just as cautious as ramping up
-    cold: the next 99 calls still must not grow the window."""
+    cold: the next 199 calls still must not grow the window."""
     eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST, window_initial=8, window_max=64)
-    for _ in range(50):
+    for _ in range(100):
         eng._grow_window()  # bank 0.5, well short of a slot
     eng._shrink_window("nak")  # window -> 4, accumulator wiped
-    for _ in range(99):
+    for _ in range(199):
         eng._grow_window()  # starting from zero again -- should NOT grow yet
     assert eng._window == 4
-    eng._grow_window()  # the 100th since the reset
+    eng._grow_window()  # the 200th since the reset
     assert eng._window == 5
 
 
