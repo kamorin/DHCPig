@@ -130,7 +130,7 @@ jobs:
 
       - name: Keep the built package for inspection
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: dhcpig-deb
           path: out/*.deb
@@ -147,7 +147,7 @@ jobs:
       contents: write
     steps:
       - name: Fetch the package built and tested above
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           name: dhcpig-deb
           path: out
