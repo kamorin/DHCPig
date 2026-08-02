@@ -174,7 +174,7 @@ def test_released_but_not_reacquired_is_not_unaffected(monkeypatch):
     assert cats == {"released_unconfirmed": ips}
     outcome = next(r[3] for r in _summary(events).rows if r[0] == ips[0])
     assert "RELEASE sent" in outcome
-    assert "unknown" in outcome
+    assert "unconfirmed" in outcome
     assert "ARP-conflicted" not in outcome  # never became an eviction target
 
 
@@ -217,7 +217,7 @@ def test_defending_an_address_we_hold_the_lease_for_is_lease_taken_not_reacted(m
     eng._emit_neighbor_summary()
     assert _by_category(events) == {"lease_taken": [ips[0]], "unaffected": [ips[1]]}
     outcome = next(r[3] for r in _summary(events).rows if r[0] == ips[0])
-    assert "defended" in outcome and "fails at next renewal" in outcome
+    assert "defended" in outcome and "breaks at renewal" in outcome
 
 
 def test_defending_an_address_we_did_not_take_is_still_reacted(monkeypatch):
@@ -252,14 +252,14 @@ def test_renewal_bound_is_an_upper_bound_from_our_own_lease_and_omitted_when_unk
     ips = _neighbors(eng, 1)
     _reacquired(eng, ips)
     eng._emit_neighbor_summary()
-    assert "within" not in next(r[3] for r in _summary(events).rows if r[0] == ips[0])
+    assert "~" not in next(r[3] for r in _summary(events).rows if r[0] == ips[0])
 
     eng.cleanup.register(
         Lease("de:ad:00:00:00:99", ips[0], "10.0.0.254", 1, IPVersion.V4, lease_time=86400)
     )
     events.clear()
     eng._emit_neighbor_summary()
-    assert "(within ~12h)" in next(r[3] for r in _summary(events).rows if r[0] == ips[0])
+    assert "(~12h)" in next(r[3] for r in _summary(events).rows if r[0] == ips[0])
 
 
 def _named(eng, mac, hostname, answered=True):
@@ -422,7 +422,7 @@ def test_cli_prints_one_merged_outcome_section_not_two_headers(capsys, monkeypat
     hosts = lines[1:5]  # one line per host, in the order emitted -- including untouched ones
     for i, ip in enumerate(ips):
         assert any(ip in ln and f"aa:bb:cc:00:00:{i:02x}" in ln for ln in hosts)
-    assert "fails at next renewal" in out
+    assert "breaks at renewal" in out
 
 
 def test_cli_ends_with_an_outcome_rollup_counting_hosts_per_outcome(capsys, monkeypatch):
@@ -481,9 +481,9 @@ def test_release_sent_prefix_appears_on_every_category_that_was_actually_release
     # ips[3]: never released, never touched -- the control case
     eng._emit_neighbor_summary()
     rows = {r[0]: r[3] for r in _summary(events).rows}
-    assert rows[ips[0]].startswith("RELEASE sent -> ARP-conflicted -> lease taken by us")
+    assert rows[ips[0]].startswith("RELEASE sent -> ARP-conflicted -> we took the lease")
     assert rows[ips[1]].startswith("RELEASE sent -> ARP-conflicted -> restarted")
-    assert rows[ips[2]].startswith("RELEASE sent -> ARP-conflicted -> asked for an address")
+    assert rows[ips[2]].startswith("RELEASE sent -> ARP-conflicted -> DISCOVER got no offer")
     assert rows[ips[3]] == "observed only"
 
 
@@ -496,7 +496,7 @@ def test_release_sent_prefix_never_doubles_up_on_released_unconfirmed(monkeypatc
     eng._reacquire_outcomes = {0: "naked"}
     eng._emit_neighbor_summary()
     outcome = next(r[3] for r in _summary(events).rows if r[0] == ips[0])
-    assert outcome.startswith("RELEASE sent in its name")
+    assert outcome.startswith("RELEASE sent; reclaim unconfirmed")
     assert outcome.count("RELEASE sent") == 1
 
 

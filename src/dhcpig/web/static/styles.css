@@ -37,7 +37,7 @@ button:disabled { opacity: .4; cursor: default; }
 
 /* config | neighbors-hosts tables | dashboard -- tables sit in the middle and take the wider
    share, since the host roll-call is what an operator reads during a run */
-main { display: grid; grid-template-columns: 208px 1.36fr 0.64fr; gap: 12px; padding: 12px; }
+main { display: grid; grid-template-columns: 208px 1.424fr 0.576fr; gap: 12px; padding: 12px; }
 .panel { background: var(--panel); border: 1px solid var(--edge); border-radius: 10px; padding: 12px; }
 .config label { display: block; margin: 8px 0; color: var(--muted); }
 .config input[type=number], .config input[type=text] { width: 100%; }
@@ -76,6 +76,11 @@ th { color: var(--muted); font-weight: 600; }
 .res-warn { color: var(--warn); font-weight: 600; }
 .res-in { color: #6ab0ff; }
 .res-notice { color: var(--muted); }
+
+/* hairline grid on the neighbors/hosts table only -- a faint cell outline, not the heavier
+   1px --edge border the other tabs use */
+#t-neighbors table { border-collapse: collapse; }
+#t-neighbors th, #t-neighbors td { border: 1px solid rgba(143, 160, 179, 0.18); }
 
 .log { margin: 0 12px 12px; }
 #log { margin: 0; max-height: 264px; overflow: auto; white-space: pre-wrap; font-size: 12px; }

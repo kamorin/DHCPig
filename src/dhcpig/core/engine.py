@@ -598,7 +598,7 @@ class DhcpEngine:
         }
 
     def _renewal_suffix(self, ip: str) -> str:
-        """`" (within ~12h)"` when the pool's lease duration is known, `""` when it isn't.
+        """`" (~12h)"` when the pool's lease duration is known, `""` when it isn't.
 
         Deliberately an **upper bound, not a countdown.** We know L, the lease duration the
         server handed *us* for this address, but not when the victim originally got its own
@@ -612,14 +612,14 @@ class DhcpEngine:
             (ln.lease_time for ln in reversed(self.cleanup.all()) if ln.ip == ip and ln.lease_time),
             None,
         )
-        return f" (within ~{_fmt_duration(int(lease_time // 2))})" if lease_time else ""
+        return f" (~{_fmt_duration(int(lease_time // 2))})" if lease_time else ""
 
     # How each eviction rung reads in the roll-call: (category, plain-language outcome).
     # Only apipa/discover_unanswered mean "no working address right now" -- `rediscovered`
     # restarted but *was served*, so it is emphatically not offline.
     _RUNG_ROLLCALL = {
         "apipa": ("offline", "no address -- fell back to 169.254 (apipa)"),
-        "discover_unanswered": ("offline", "asked for an address, got none"),
+        "discover_unanswered": ("offline", "DISCOVER got no offer"),
         "rediscovered": ("reacted", "restarted, got a new address"),
         "declined": ("reacted", "gave up the address (declined)"),
         "defended": ("reacted", "defended its address"),
@@ -721,27 +721,21 @@ class DhcpEngine:
             if rung in self._RUNG_ROLLCALL and not defended_on_stolen:
                 category, outcome = self._RUNG_ROLLCALL[rung]
             elif n.mac in denied_macs:
-                category, outcome = "offline", "asked for an address, got none (pool drained)"
+                category, outcome = "offline", "DISCOVER got no offer (pool drained)"
             elif n.ip in granted_ips:
                 category = "lease_taken"
                 lead = (
                     "defended it, but we hold the lease"
                     if defended_on_stolen
-                    else "lease taken by us -- still using it"
+                    else "we took the lease"
                 )
-                outcome = f"{lead}, fails at next renewal{self._renewal_suffix(n.ip)}"
+                outcome = f"{lead}, breaks at renewal{self._renewal_suffix(n.ip)}"
             elif n.ip in released_ips:
                 category = "released_unconfirmed"
                 if pool_exhausted:
-                    outcome = (
-                        "RELEASE sent in its name; the pool is confirmed exhausted, so if the "
-                        "server honoured it there is nothing free to hand back at renewal"
-                    )
+                    outcome = "RELEASE sent; pool exhausted, nothing to hand back at renewal"
                 else:
-                    outcome = (
-                        "RELEASE sent in its name; this run couldn't reclaim the address, so "
-                        "whether the server acted on it is unknown from here"
-                    )
+                    outcome = "RELEASE sent; reclaim unconfirmed"
             else:
                 # "unaffected" overclaims: a passive scan never attempted anything against
                 # anyone, so every host reading that way isn't a survivor of an attempt --
