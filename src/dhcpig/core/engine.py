@@ -2329,6 +2329,7 @@ class DhcpEngine:
 
     def _active_scan_worker(self) -> None:
         neighbors, _ = self._discover_neighbors()  # benign ARP who-has across scope
+        self._baseline_neighbor_count = len(neighbors)
         self._debug(f"active-scan: {len(neighbors)} host(s) responded to ARP")
         # Actively probe/fingerprint the DHCP server(s) with a single INFORM from our address.
         my_ip = netutils.get_if_ip(self.cfg.interface)
