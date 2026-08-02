@@ -19,11 +19,21 @@ async function api(path, method = "GET", body) {
 }
 
 let running = false;
+// Four independent per-second series, all counting frames this tool actually transmits (never
+// replies received) -- discover/release/arp are self-explanatory; "renew" is the REQUEST this
+// tool sends after every OFFER, which the control transaction's own docstring treats as a
+// renewal probe (see _control_transaction() in engine.py) even though it's never a true
+// unicast RFC 2131 renewal. pps (the dashboard tile) is just their sum.
 const rate = {
-  last: 0, series: [],
+  discoverLast: 0, discoverSeries: [],
   releaseLast: 0, releaseSeries: [],
-  arpLast: 0,
+  arpLast: 0, arpSeries: [],
+  renewLast: 0, renewSeries: [],
 };
+function pushSeries(series, v) {
+  series.push(v);
+  if (series.length > 120) series.shift();
+}
 const servers = new Map();
 const neighbors = new Map();
 const leases = [];
@@ -251,9 +261,9 @@ function renderLeases() {
 }
 
 // ---- canvas sparkline -----------------------------------------------------
-// Two lines share one scale: `pps` (DISCOVER or ARP-discover, whichever's active for the
-// current mode -- see pollStatus()) and DHCPRELEASE pps, so a release-heavy mode's forged
-// RELEASE traffic is visible alongside general activity, not silently dropped.
+// Four lines share one scale -- ARP, DHCP discover, DHCP release, DHCP renew (the REQUEST that
+// follows an OFFER) -- so the full transmit-side traffic mix is visible at once instead of one
+// rate hiding another.
 function drawLine(ctx, s, w, h, max, color) {
   if (s.length < 2) return;
   ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
@@ -266,12 +276,15 @@ function drawLine(ctx, s, w, h, max, color) {
 }
 function drawSpark() {
   const c = $("spark"), ctx = c.getContext("2d");
-  const w = c.width, h = c.height, s = rate.series, rs = rate.releaseSeries;
+  const w = c.width, h = c.height;
+  const { arpSeries: as, discoverSeries: ds, releaseSeries: rs, renewSeries: ns } = rate;
   ctx.clearRect(0, 0, w, h);
-  if (s.length < 2 && rs.length < 2) return;
-  const max = Math.max(1, ...s, ...rs);
-  drawLine(ctx, s, w, h, max, "#4ec9b0");
+  if (as.length < 2 && ds.length < 2 && rs.length < 2 && ns.length < 2) return;
+  const max = Math.max(1, ...as, ...ds, ...rs, ...ns);
+  drawLine(ctx, as, w, h, max, "#6ab0ff");
+  drawLine(ctx, ds, w, h, max, "#4ec9b0");
   drawLine(ctx, rs, w, h, max, "#e0679a");
+  drawLine(ctx, ns, w, h, max, "#e8b04b");
 }
 
 // ---- SSE ------------------------------------------------------------------
@@ -477,21 +490,21 @@ async function pollStatus() {
     const { status } = await api("/api/session/status");
     const mode = $("mode").value;
     const scanlike = mode === "scan" || mode === "active-scan";
-    const releaseLike = mode === "release" || mode === "release-previous";
     const primary = { exhaust: status.leases, scan: neighbors.size,
       "active-scan": neighbors.size, release: status.releases,
       "release-previous": status.releases }[mode] ?? 0;
-    const discoverPps = Math.max(0, (status.discovers ?? 0) - rate.last);
-    rate.last = status.discovers ?? 0;
+    // Every rate is transmit-side (frames this tool actually sent), never a reply received --
+    // see the `rate` object's own comment. "pps" is their sum: total wire activity, not just
+    // whichever single counter happens to be the current mode's primary metric.
+    const discoverPps = Math.max(0, (status.discovers ?? 0) - rate.discoverLast);
+    rate.discoverLast = status.discovers ?? 0;
     const releasePps = Math.max(0, (status.releases ?? 0) - rate.releaseLast);
     rate.releaseLast = status.releases ?? 0;
-    const arpPps = Math.max(0, (status.arp_discovers ?? 0) - rate.arpLast);
-    rate.arpLast = status.arp_discovers ?? 0;
-    // release/release-previous send DHCPRELEASE, not DISCOVER -- the discover-based rate stays 0
-    // for them the whole run, so use the release rate instead. ARP folds into whichever one
-    // applies rather than getting its own tile, so "pps" still reads as "how busy is this run"
-    // even for a mode that's mostly ARP (a passive scan's DHCPINFORM aside).
-    const pps = (releaseLike ? releasePps : discoverPps) + arpPps;
+    const arpPps = Math.max(0, (status.arp_sent ?? 0) - rate.arpLast);
+    rate.arpLast = status.arp_sent ?? 0;
+    const renewPps = Math.max(0, (status.requests_sent ?? 0) - rate.renewLast);
+    rate.renewLast = status.requests_sent ?? 0;
+    const pps = discoverPps + releasePps + arpPps + renewPps;
     $("c-a").textContent = primary;
     $("c-b").textContent = status.servers ?? 0;
     $("c-c").textContent = scanlike ? neighbors.size : pps;
@@ -519,9 +532,10 @@ async function pollStatus() {
       $("l-e").textContent = "headroom (unknown)";
       $("headroomcell").classList.add("dim");
     }
-    rate.series.push(pps); if (rate.series.length > 120) rate.series.shift();
-    rate.releaseSeries.push(releasePps);
-    if (rate.releaseSeries.length > 120) rate.releaseSeries.shift();
+    pushSeries(rate.discoverSeries, discoverPps);
+    pushSeries(rate.releaseSeries, releasePps);
+    pushSeries(rate.arpSeries, arpPps);
+    pushSeries(rate.renewSeries, renewPps);
     drawSpark();
   } catch (_) {}
 }
@@ -532,8 +546,11 @@ async function doStart() {
   const cfg = currentConfig();
   try {
     await api("/api/session/start", "POST", cfg);
-    rate.last = 0; rate.series = []; rate.releaseLast = 0; rate.releaseSeries = [];
-    rate.arpLast = 0; leases.length = 0;
+    rate.discoverLast = 0; rate.discoverSeries = [];
+    rate.releaseLast = 0; rate.releaseSeries = [];
+    rate.arpLast = 0; rate.arpSeries = [];
+    rate.renewLast = 0; rate.renewSeries = [];
+    leases.length = 0;
     servers.clear(); neighbors.clear();
     renderServers(); renderNeighbors(); renderLeases();
     $("tables").classList.remove("alert-flag");

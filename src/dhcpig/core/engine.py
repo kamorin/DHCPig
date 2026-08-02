@@ -86,6 +86,15 @@ class DhcpEngine:
         # every ARP is-at reply that resolved a neighbor, live or during a sweep (_note_neighbor)
         # -- distinct from arp_conflicts, which counts our own forged ARP frames going out
         self.arp_discovers = 0
+        # REQUEST frames we transmit -- both the SELECTING-state REQUEST that follows an OFFER
+        # (_handle_offer()) and the control transaction's own self-leg, which is functionally a
+        # renewal probe (see _control_transaction()'s docstring). Dashboard's "dhcp renew" line.
+        self.requests_sent = 0
+        # who-has ARP requests we transmit during a sweep (_discover_neighbors()) -- counted per
+        # target IP even though scapy sends the batch in one srp() call. Combined with
+        # arp_conflicts for the dashboard's "arp" line: both are ARP frames we put on the wire,
+        # just for different reasons (discovery vs eviction).
+        self.arp_requests_sent = 0
         self.servers: dict[str, ServerInfo] = {}
         # control transactions (legitimate cycle from the real NIC MAC), pre and post run
         self.control_pre: ControlOutcome | None = None  # real NIC MAC (reachability/renewal)
@@ -291,8 +300,13 @@ class DhcpEngine:
             "leases": self.acks,
             "naks": self.naks,
             "releases": self.releases,
+            "requests_sent": self.requests_sent,
             "arp_conflicts": self.arp_conflicts,
             "arp_discovers": self.arp_discovers,
+            # TX-side ARP total for the dashboard's "arp" line -- who-has sweep requests plus
+            # forged eviction frames, both frames this tool actually put on the wire (as opposed
+            # to arp_discovers, which counts inbound is-at replies)
+            "arp_sent": self.arp_requests_sent + self.arp_conflicts,
             "foreign_discovers": observed,
             "foreign_discovers_unanswered": unanswered,
             "races": self.races,
@@ -552,6 +566,7 @@ class DhcpEngine:
             out.lease_time = int(lt) if isinstance(lt, int) else None
             self._debug(f"CONTROL[{phase}/{client}] OFFER {offered_ip} from {sid} subnet={subnet}")
             self._send(packets.build_request_v4(offer, mac), probe=True)
+            self.requests_sent += 1
             if not self._control_ack_evt.wait(self.cfg.timeouts.control):
                 out.reason = f"OFFER {offered_ip} but no ACK within timeout"
                 return out
@@ -2382,6 +2397,7 @@ class DhcpEngine:
         )
         req = packets.build_request_v4(pkt, self._src_mac(lease.mac))
         self._send(req)
+        self.requests_sent += 1
         self.bus.emit(
             ev.RequestSent(lease=lease, option50=offered_ip, hostname=packets.packet_hostname(req))
         )
@@ -2754,6 +2770,7 @@ class DhcpEngine:
         if not targets or self.cfg.offline:
             return list(found.values()), None
         try:
+            self.arp_requests_sent += len(targets)
             ans, _ = srp(
                 Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=targets, psrc=src_ip),
                 timeout=2,

@@ -63,10 +63,13 @@ main { display: grid; grid-template-columns: 208px 1.424fr 0.576fr; gap: 12px; p
 .counter label { display: block; color: var(--muted); font-size: 10px; white-space: nowrap; }
 .counter.dim span { color: var(--muted); }
 canvas { width: 100%; height: 90px; background: #0d1117; border-radius: 8px; }
-.spark-legend { display: flex; gap: 14px; margin-top: 6px; font-size: 11px; color: var(--muted); }
+.spark-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 6px; font-size: 11px;
+  color: var(--muted); }
 .spark-legend .swatch { display: inline-block; width: 10px; height: 2px; margin-right: 5px; vertical-align: middle; }
+.spark-legend .arp { background: #6ab0ff; }
 .spark-legend .discover { background: #4ec9b0; }
 .spark-legend .release { background: var(--pig); }
+.spark-legend .renew { background: var(--warn); }
 .state { margin-top: 8px; color: var(--muted); }
 
 /* mirrors #log's own [!!] styling -- same alert color/weight, just the highest-severity
