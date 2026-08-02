@@ -1,3 +1,19 @@
+dhcpig (2.7.2-1) UNRELEASED; urgency=medium
+
+  * New upstream release 2.7.2 (bumps 2.7.0-1 below, never uploaded).
+    Two upstream releases since 2.7.0: 2.7.1 fixed several roll-call
+    misreports (a defended-but-reassigned lease was filed under the wrong
+    outcome, a forged-RELEASE target with an unconfirmed re-acquisition had
+    no category of its own) and densified the ARP-conflict eviction timing;
+    2.7.2 is web-dashboard visibility work. No packaging-relevant change in
+    either: same console scripts, same runtime dependency, same bundled data
+    files, same test layout.
+  * d/changelog: version bump only. Everything below from 2.7.0-1 still
+    applies verbatim; nothing in this package needed to change to track the
+    new upstream tarball.
+
+ -- Kevin Amorin <kamorin@gmail.com>  Sun, 02 Aug 2026 12:00:00 -0400
+
 dhcpig (2.7.0-1) UNRELEASED; urgency=medium
 
   * New upstream release 2.7.0.
