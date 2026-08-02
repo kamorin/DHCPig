@@ -103,6 +103,12 @@ class Renderer:
         if self.verbosity == 1:
             sys.stdout.write("\n")  # close off the one-char-per-packet stream
         self._line("==", f"OUTCOME  {e.total} host(s) seen before this run")
+        if e.pool_exhausted:
+            self._line(
+                "!!",
+                f"  POOL EXHAUSTED -- {e.leases_acquired} lease(s) acquired; neighbors "
+                "relying on this pool cannot renew",
+            )
         # hostname column only when we actually have one for somebody -- DHCP option 12 is the
         # only source, so an ARP-only segment has none and an always-on column would be blank
         namew = max((len(row[2]) for row in e.rows), default=0)
@@ -112,6 +118,14 @@ class Renderer:
             # column -- most ARP-only neighbours have neither
             tag = f"  [{device}]" if device else ""
             self._line(_ROLLCALL_TAG[category], f"  {ip:<15} {mac}  {name}{outcome}{tag}")
+        # Blank line between the per-host detail and the tally beneath it: one `[==] OUTCOME`
+        # header still covers both (2.7.2's merge stands), but they read as two steps -- who,
+        # then how many -- and a hard break makes that legible instead of running the last host
+        # row straight into the first tally line. Skipped at v1: the roll-call is a single
+        # unbroken one-char-per-host stream there (see `_line`), and a bare newline would just
+        # break that stream rather than separate anything.
+        if self.verbosity >= 2:
+            sys.stdout.write("\n")
         for outcome, n, category in outcome_tally(e.rows):
             self._line(_ROLLCALL_TAG[category], f"  {n:>3} host(s)  {outcome}")
 

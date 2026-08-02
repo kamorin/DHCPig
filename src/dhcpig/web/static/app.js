@@ -155,6 +155,14 @@ function logLine(cls, text, level = 2) {
   span.style.display = level <= currentVerbosity() ? "" : "none";
   el.appendChild(span);
   el.scrollTop = el.scrollHeight;
+  // A [!!] line is the log's highest-severity tag (pool exhaustion, a defensive control
+  // firing, a denied host, ...) -- flag the Dashboard panel too, since its counters/state are
+  // what an operator glances at, not the scrolling log underneath it.
+  if (text.startsWith("[!!]")) flagDashboard();
+}
+
+function flagDashboard() {
+  $("dashboard").classList.add("alert-flag");
 }
 
 function applyVerbosityFilter() {
@@ -175,14 +183,24 @@ function renderServers() {
       `<td>${fp.os || fp.device || fp.vendor || ""}</td><td>${fp.confidence ?? ""}</td></tr>`);
   }
 }
+// Result column classes mirror the OUTCOME roll-call's own severity groupings (see the `cls()`
+// helper in the NeighborSummary case below) so a host's row in this table and its line in the
+// log/OUTCOME block always agree on how bad its outcome is.
+const RESULT_CLASS = {
+  offline: "res-bad", lease_taken: "res-bad",
+  released_unconfirmed: "res-warn",
+  reacted: "res-in", unaffected: "res-notice",
+};
 function renderNeighbors() {
   const tb = document.querySelector("#t-neighbors tbody");
   tb.innerHTML = "";
   for (const n of neighbors.values()) {
     const fp = n.fp || {};
+    const resultCls = RESULT_CLASS[n.category] || "";
     tb.insertAdjacentHTML("beforeend",
       `<tr><td>${n.ip}</td><td>${n.mac}</td>` +
-      `<td>${fp.os || fp.device || fp.vendor || ""}</td><td>${fp.confidence ?? ""}</td></tr>`);
+      `<td>${fp.os || fp.device || fp.vendor || ""}</td><td>${fp.confidence ?? ""}</td>` +
+      `<td class="${resultCls}">${esc(n.outcome || "")}</td></tr>`);
   }
 }
 function esc(s) {
@@ -304,6 +322,19 @@ function handleEvent(e) {
         : c === "released_unconfirmed" ? "warnline"
         : c === "unaffected" ? "notice" : "in";
       logLine("finding", `[==] OUTCOME  ${e.total} host(s) seen before this run`, 0);
+      if (e.pool_exhausted) {
+        logLine("alert",
+          `[!!]   POOL EXHAUSTED -- ${e.leases_acquired} lease(s) acquired; neighbors ` +
+          `relying on this pool cannot renew`, 0);
+      }
+      // Feed each row's outcome/category into the neighbors table's Result column too -- this
+      // is the same per-host classification, just also shown where the run's live discovery
+      // rows already are instead of only at the end of the log.
+      for (const [, mac, , outcome, category] of e.rows || []) {
+        const prev = neighbors.get(mac);
+        if (prev) neighbors.set(mac, { ...prev, outcome, category });
+      }
+      renderNeighbors();
       // hostname column only when we have one for somebody -- DHCP option 12 is the only
       // source, so an ARP-only segment has none and an always-on column would sit blank
       const namew = Math.max(0, ...(e.rows || []).map((r) => (r[2] || "").length));
@@ -314,6 +345,10 @@ function handleEvent(e) {
         const tag = device ? `  [${device}]` : "";
         logLine(cls(category), `       ${ip.padEnd(15)} ${mac}  ${name}${outcome}${tag}`, 0);
       }
+      // Blank line between the per-host detail and the tally beneath it -- mirrors
+      // cli/render.py's Renderer._neighbor_summary(): one [==] OUTCOME header still covers
+      // both, but a hard break separates who from how many.
+      logLine("note", "", 0);
       // the concluding "N host(s) did X" roll-up -- same data, aggregated. Counts and what
       // happened, never a verdict: the findings own pass/fail.
       const tally = new Map();
@@ -452,6 +487,7 @@ async function doStart() {
     rate.last = 0; rate.series = []; leases.length = 0;
     servers.clear(); neighbors.clear();
     renderServers(); renderNeighbors(); renderLeases();
+    $("dashboard").classList.remove("alert-flag");
     setRunning(true);
   } catch (err) { logLine("alert", "[XX] " + err.message); }
 }

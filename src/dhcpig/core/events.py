@@ -115,10 +115,18 @@ class NeighborSummary(Event):
         or `lease_taken` either: whether the server acted on it is unobservable from here (see
         `_finish_release()`'s docstring on why a miss proves nothing on a pool with headroom).
       * `unaffected` -- nothing this run did left a mark on it that we can see.
+
+    `pool_exhausted` and `leases_acquired` carry the same confirmed-exhaustion state that drove
+    `PoolExhausted` (2.3) into this summary too, so a front end doesn't have to remember an
+    earlier live event to show it alongside the roll-call it explains: with the pool actually
+    drained, `leases_acquired` addresses are gone for good until they expire, and any neighbor
+    among these rows still depends on one of them can't renew.
     """
 
     total: int
     rows: list[tuple[str, str, str, str, str, str]] = field(default_factory=list)
+    pool_exhausted: bool = False
+    leases_acquired: int = 0
 
 
 @dataclass

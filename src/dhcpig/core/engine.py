@@ -692,6 +692,11 @@ class DhcpEngine:
         neighbors = list(self._neighbors_by_mac.values())
         if not neighbors:
             return []
+        # Confirmed pool exhaustion (self.state is set before this is called, in stop()) turns
+        # a `released_unconfirmed` row from "unknown either way" into a specific, worse claim:
+        # with no headroom left, a RELEASE the server honoured leaves nothing free to hand the
+        # real host back at its next renewal.
+        pool_exhausted = self.state == EXHAUSTED
         granted_ips = self._granted_ips()
         # Every IP a forged RELEASE + targeted reacquire DISCOVER went out for, granted or not
         # -- `_reacquire_targets` is written for all of them (§5f), `_granted_ips()` is the
@@ -727,10 +732,16 @@ class DhcpEngine:
                 outcome = f"{lead}, fails at next renewal{self._renewal_suffix(n.ip)}"
             elif n.ip in released_ips:
                 category = "released_unconfirmed"
-                outcome = (
-                    "RELEASE sent in its name; this run couldn't reclaim the address, so "
-                    "whether the server acted on it is unknown from here"
-                )
+                if pool_exhausted:
+                    outcome = (
+                        "RELEASE sent in its name; the pool is confirmed exhausted, so if the "
+                        "server honoured it there is nothing free to hand back at renewal"
+                    )
+                else:
+                    outcome = (
+                        "RELEASE sent in its name; this run couldn't reclaim the address, so "
+                        "whether the server acted on it is unknown from here"
+                    )
             else:
                 category, outcome = "unaffected", "unaffected"
             prefixes = []
@@ -767,7 +778,14 @@ class DhcpEngine:
         been measured. Silent on an empty segment -- an empty roll-call is noise."""
         rows = self._neighbor_rollcall()
         if rows:
-            self.bus.emit(ev.NeighborSummary(total=len(rows), rows=rows))
+            self.bus.emit(
+                ev.NeighborSummary(
+                    total=len(rows),
+                    rows=rows,
+                    pool_exhausted=self.state == EXHAUSTED,
+                    leases_acquired=self.acks,
+                )
+            )
 
     def _run_summary_steps(self) -> list[dict[str, str]]:
         """One `{"did": ..., "got": ...}` pair per phase, in run order -- a scannable list.
