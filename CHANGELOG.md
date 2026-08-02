@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.7.2 — 2026-08-02
+
+- **Fixed `debian-package`'s `publish` job, which had never actually published anything.**
+  `gh release create --generate-notes` shells out to `git` to build notes from commit history, but
+  the job never checked out the source — every prior tag push failed at "Attach it to the GitHub
+  release" with `fatal: not a git repository`, silently, since it ran only after the (successful)
+  build job. v2.7.1 was cut without noticing this for exactly that reason; this release exists to
+  get a working publish step onto a tag.
+
 ## 2.7.1 — 2026-08-02
 
 - **The OUTCOME roll-call now names the device: a short OS/vendor tag trails each host line.**
