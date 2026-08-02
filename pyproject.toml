@@ -1,6 +1,6 @@
 [project]
 name = "dhcpig"
-version = "2.7.0"
+version = "2.7.1"
 description = "DHCP exhaustion / network-hardening validation tool (whitehat)"
 readme = "README.md"
 requires-python = ">=3.11"

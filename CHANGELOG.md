@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.7.1 — unreleased
+## 2.7.1 — 2026-08-02
 
 - **The OUTCOME roll-call now names the device: a short OS/vendor tag trails each host line.**
   `_neighbor_rollcall()` rows carry a sixth field, `device` — `"os (vendor)"`, falling back
@@ -53,6 +53,56 @@
   or filtered frame no longer costs the eviction — and the phase finishes marginally sooner than
   the old 4 × 3.0s did. No denser than that on purpose: back-to-back frames get coalesced into one
   conflict event by the victim's ARP input path, so separate arrivals are what count.
+- **Pool exhaustion is now stated plainly in OUTCOME, not just a live `[!!]` log line.**
+  `NeighborSummary` carries `pool_exhausted`/`leases_acquired`, so the end-of-run block reports it
+  with the lease count, and `released_unconfirmed` rows escalate to the stronger renewal-risk
+  wording once the pool is confirmed drained rather than the generic "unknown from here" text. The
+  neighbors/hosts panel gets a matching per-host **Result** column fed by the same roll-call data,
+  and the OUTCOME block's per-host detail is now separated from its tally by a blank line.
+- **`dhcpig-web` now opens a browser by default; `--no-open` opts out.** Every documented usage
+  already passed `--open`, so the flag was pure friction.
+- **The `[device/OS]` tag now leads the roll-call outcome text instead of trailing it** — who a
+  host is, then what happened to it, reads more naturally than the reverse.
+- **Dropped the Conf(idence) column from the neighbors/hosts panel.** It's a debugging detail of
+  the fingerprint match; the OS/Device label it's derived from is the part an operator scanning
+  the table actually needs.
+- **`window_growth_per_ack` halved again: 0.01 → 0.005 (200 clean ACKs per +1 window slot,
+  not 100).** Applies to both exhaust's windowed sender and release's re-acquisition leg, which
+  share the pipeline.
+- **Roll-call outcome text trimmed across the board** — RELEASE/lease/renewal sentences carry the
+  same information in fewer words (`"within ~12h"` → `"~12h"`), the neighbors/hosts table gained a
+  hairline per-cell grid, and a long **Result** cell now scrolls the table sideways instead of
+  wrapping to two lines. The OUI-only vendor label shortened `"(MAC vendor)"` → `"(vendor)"`, and
+  the locally-administered-MAC label to `"randomised/spoofed"`.
+- **"observed only" is now specific about how a host was found.** A host that only ever sourced a
+  DHCP packet (never answered ARP) has no confirmed IP, so reporting it identically to an
+  ARP-confirmed neighbor implied an address we don't actually have — `Neighbor` now tracks
+  `seen_via`, and the passive-scan outcome text distinguishes observed-via-ARP from
+  observed-via-DHCP.
+- **The sparkline now graphs DHCPRELEASE pps alongside DISCOVER pps, with a legend**, and
+  release/release-previous modes — previously stuck showing `0` pps because only the DISCOVER rate
+  was tracked — now show their own real rate. `release-previous` also now reports a CIDR-derived
+  pool size and a live count of journal entries selected for reset in the headroom cell instead of
+  always showing `-`, and runs the same pre-run ARP inventory sweep exhaust/release already do,
+  fixing a step-summary line that always read "0 devices".
+- **Dashboard panel layout rebalanced and its alert flag broadened.** Config narrows from 260px to
+  208px, with the freed space going to the center Neighbors/Hosts panel; the `[!!]`-triggered
+  highlight moves from the Dashboard panel to the center tables panel, and now triggers on *any*
+  alert-styled log line (previously only lines literally prefixed `[!!]`, which missed failed
+  CONTROL transactions like `CONTROL[pre/own MAC/renewal] FAILED`) rather than the log-line-prefix
+  heuristic. The dashboard's counters row was widened past one line by a crammed
+  `"headroom / ~1022"` label plus 6 counters; headroom now reads as a plain `"61 / 1022"` number
+  with "headroom" as a subtitle, keeping the row on one line.
+- **The dashboard graph now plots four separate transmit-side lines — ARP, DISCOVER, RELEASE,
+  RENEW — instead of one merged rate**, with the top-row "pps" tile as their straight,
+  mode-independent sum. ARP covers both who-has sweep requests and forged eviction frames
+  (`arp_sent`); RENEW is the DHCPREQUEST sent after every OFFER, including the control
+  transaction's own self-leg, tracked by a new `requests_sent` counter. This replaced an
+  intermediate arp/s tile that briefly existed as its own dashboard item and graph line before
+  being folded in, since a separate ARP-only view was mostly redundant with, and competed for
+  space against, the DHCP-driven rate already shown. The "pps" tile is now the third counter slot
+  in every mode, including scan/active-scan, which previously never showed it at all (that slot
+  duplicated the adjacent "hosts" tile under the "resolved" label instead).
 
 ## 2.7.0 — 2026-08-01
 
