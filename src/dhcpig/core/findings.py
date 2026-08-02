@@ -163,6 +163,24 @@ _CATALOG: dict[str, dict] = {
             "exhaustion."
         ),
     },
+    # Raised alongside CLIENTS_EVICTED_FROM_ADDRESSES rather than instead of it: the two cover
+    # disjoint sets of hosts, so a run that evicts two targets and leaves a third sitting on a
+    # binding we now own has two separate things to report, not one to choose between.
+    "CLIENTS_HOLDING_STOLEN_LEASES": {
+        "title": "Targets held addresses the server had already reassigned to us",
+        "verdict": FAIL,
+        "severity": "high",
+        "recommendation": (
+            "These hosts won the ARP exchange and are still using their addresses, "
+            "but the server handed those same addresses to this run — they are on "
+            "bindings it no longer recognizes and will lose them at their next "
+            "renewal (RFC 2131 T1), with no warning and nothing to see from here "
+            "until it happens. Defending the ARP conflict did not protect them, "
+            "because the address was taken at the DHCP layer, not the ARP one. "
+            "DHCP snooping with a binding table is what prevents the theft; "
+            "Dynamic ARP Inspection alone would not have."
+        ),
+    },
     "CLIENTS_DEFENDED_ADDRESSES": {
         "title": "Targets reacted to the ARP conflict but were not denied service",
         "verdict": INCONCLUSIVE,

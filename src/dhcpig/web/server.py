@@ -226,7 +226,16 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="dhcpig-web", description="DHCPig local web UI (V1.1)")
     p.add_argument("--bind", default="127.0.0.1", help="bind address (default loopback)")
     p.add_argument("--port", type=int, default=8787)
-    p.add_argument("--open", action="store_true", help="open the browser at the tokenized URL")
+    p.add_argument(
+        "--open",
+        dest="open",
+        action="store_true",
+        default=True,
+        help="open the browser at the tokenized URL (default)",
+    )
+    p.add_argument(
+        "--no-open", dest="open", action="store_false", help="don't open a browser automatically"
+    )
     args = p.parse_args(argv)
 
     app = WebApp()

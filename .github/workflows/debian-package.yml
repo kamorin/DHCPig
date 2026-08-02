@@ -1,0 +1,169 @@
+# Does the Debian packaging still build against this source?
+#
+# The packaging lives on the debian/master branch, not here, so this job checks
+# out both and overlays debian/ onto the current master tree. That combination is
+# exactly what rots silently: rename a data file, add a runtime dependency, or move
+# something under packaging/, and nothing on master notices -- the breakage only
+# surfaces months later when a Debian maintainer tries to build a release. It has
+# already happened once, which is why the build-check job in ci.yml exists.
+#
+# Scheduled as well as on tags, because the other direction rots too: Debian unstable
+# moves under us. debhelper, pybuild and scapy all change, and a package that built in
+# August can stop building in November with no commit of ours in between. Weekly plus
+# on-demand is enough to catch either kind of drift without building on every push --
+# this only needs to be current when a release is about to happen or check in
+# periodically, not after every commit.
+#
+# Nothing here talks to a network under test. The upstream unit suite monkeypatches
+# scapy's sendp, and the autopkgtests only run --help, import the module, and read
+# packaged data files off disk.
+name: debian-package
+
+on:
+  push:
+    tags: ["v*"]
+  schedule:
+    # Mondays. Weekly is enough to catch unstable drifting; daily would just be noise.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out upstream source
+        uses: actions/checkout@v5
+        with:
+          path: src
+
+      - name: Check out the packaging branch
+        uses: actions/checkout@v5
+        with:
+          ref: debian/master
+          path: pkg
+
+      - name: Overlay debian/ onto the current source
+        run: cp -a pkg/debian src/debian
+
+      - name: Match the package version to the tag
+        # debian/master carries whatever version Debian is being offered. On a tag
+        # build that can be older than the tag itself, which would publish a .deb
+        # labelled 2.7.0-1 for a v2.8.0 release. These are upstream convenience
+        # builds, not Debian's official package, so the tag wins.
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          docker run --rm -v "$PWD/src:/s" -e TAG_VERSION="$tag_version" \
+            debian:unstable bash -euo pipefail -c '
+              apt-get update -qq
+              apt-get install -y -qq --no-install-recommends devscripts >/dev/null
+              cd /s
+              current=$(dpkg-parsechangelog -S Version | sed "s/-[^-]*$//")
+              if [ "$current" != "$TAG_VERSION" ]; then
+                echo "changelog says $current, tag says $TAG_VERSION -- retargeting"
+                DEBEMAIL="noreply@github.com" DEBFULLNAME="GitHub Actions" \
+                  dch --newversion "${TAG_VERSION}-1" --distribution UNRELEASED \
+                      "Upstream release ${TAG_VERSION}."
+              else
+                echo "changelog already at $current, nothing to do"
+              fi
+            '
+
+      - name: Build, lintian, install and run the autopkgtests in Debian unstable
+        run: |
+          mkdir -p out
+          docker run --rm -v "$PWD/src:/s:ro" -v "$PWD/out:/out" debian:unstable bash -euo pipefail -c '
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq
+            apt-get install -y -qq --no-install-recommends \
+                build-essential devscripts equivs lintian fakeroot ca-certificates >/dev/null
+
+            cp -a /s /build && cd /build
+
+            # Install exactly what debian/control declares. Never a hardcoded list in
+            # this workflow: a renamed or newly added build dependency has to fail here
+            # rather than quietly diverge from the packaging. libpcap0.8 disappearing in
+            # the 64-bit time_t transition is the kind of thing this catches.
+            mk-build-deps -ir \
+              -t "apt-get -y -o Debug::pkgProblemResolver=yes --no-install-recommends" >/dev/null
+            rm -f /dhcpig-build-deps_*
+
+            echo "::group::dpkg-buildpackage"
+            dpkg-buildpackage -us -uc -b
+            echo "::endgroup::"
+
+            cp /dhcpig_*.deb /dhcpig_*.changes /dhcpig_*.buildinfo /out/
+
+            echo "===== lintian ====="
+            # lintian refuses to run as root, and warnings are failures here: the
+            # packaging is lintian-clean today, so any new tag is a real regression.
+            useradd -m lint && chown -R lint /out
+            su lint -c "lintian --display-info --pedantic --fail-on error,warning /out/dhcpig_*.changes"
+
+            echo "===== install into a clean root ====="
+            apt-get install -y -qq /out/dhcpig_*.deb python3-all >/dev/null 2>&1
+
+            echo "===== autopkgtests ====="
+            export AUTOPKGTEST_TMP=/tmp/autopkgtest && mkdir -p "$AUTOPKGTEST_TMP"
+            rc=0
+            for t in /build/debian/tests/*; do
+              case "$t" in */control) continue;; esac
+              if sh "$t" > /tmp/out 2>&1; then
+                echo "PASS  $(basename "$t")"
+              else
+                echo "FAIL  $(basename "$t")"; cat /tmp/out; rc=1
+              fi
+            done
+
+            echo
+            echo "===== package facts ====="
+            echo "download size : $(stat -c %s /out/dhcpig_*.deb) bytes"
+            dpkg-query -W -f="installed size: \${Installed-Size} KiB\ndepends       : \${Depends}\n" dhcpig
+
+            exit $rc
+          '
+
+      - name: Keep the built package for inspection
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: dhcpig-deb
+          path: out/*.deb
+          if-no-files-found: ignore
+
+  publish:
+    # Separate job purely for least privilege: only this one needs write access to
+    # the repository, and it reuses the artifact rather than rebuilding, so nothing
+    # unverified can be published -- if `build` failed, this never runs.
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out upstream source
+        # gh release create --generate-notes shells out to git to walk commit history since the
+        # previous tag; without a checkout here it fails with "not a git repository".
+        uses: actions/checkout@v5
+
+      - name: Fetch the package built and tested above
+        uses: actions/download-artifact@v8
+        with:
+          name: dhcpig-deb
+          path: out
+
+      - name: Attach it to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          deb=$(ls out/*.deb)
+          echo "publishing $deb to release $GITHUB_REF_NAME"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$deb" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$deb" \
+              --title "$GITHUB_REF_NAME" --generate-notes
+          fi

@@ -7,7 +7,7 @@ def test_unknown_signature_falls_back_to_mac_vendor():
     fp = resolve(sig)
     assert fp.os is None  # no OS claim from a MAC alone
     assert "VMware" in (fp.vendor or "")
-    assert "VMware" in (fp.device or "") and "MAC vendor" in fp.device
+    assert "VMware" in (fp.device or "") and "(vendor)" in fp.device
     assert fp.confidence == 15
     assert fp.matched_via.startswith("oui:")
 

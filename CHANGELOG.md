@@ -1,5 +1,118 @@
 # Changelog
 
+## 2.7.2 — 2026-08-02
+
+- **Fixed `debian-package`'s `publish` job, which had never actually published anything.**
+  `gh release create --generate-notes` shells out to `git` to build notes from commit history, but
+  the job never checked out the source — every prior tag push failed at "Attach it to the GitHub
+  release" with `fatal: not a git repository`, silently, since it ran only after the (successful)
+  build job. v2.7.1 was cut without noticing this for exactly that reason; this release exists to
+  get a working publish step onto a tag.
+
+## 2.7.1 — 2026-08-02
+
+- **The OUTCOME roll-call now names the device: a short OS/vendor tag trails each host line.**
+  `_neighbor_rollcall()` rows carry a sixth field, `device` — `"os (vendor)"`, falling back
+  through device or vendor alone, `""` when the host was never fingerprinted (the same
+  omit-when-empty treatment `hostname` already had). CLI and web log both render it as a
+  trailing `[Windows 10 (Microsoft Corp.)]` tag; the aggregated tally line is unaffected, since
+  it counts outcomes, not devices. Deliberately **not** added to the durable
+  `NEIGHBORS_OBSERVED` finding's evidence — that finding is about what happened to a host, not
+  what it is, and fingerprint detail already reaches the JSON/HTML/CSV export separately via
+  `NeighborFound`/`HostFingerprinted`.
+- **A target that defended an address we already hold the lease for is now reported as
+  `lease_taken`, not `reacted`.** This was the biggest misreport in the roll-call. Eviction only
+  ever targets addresses re-acquisition *granted*, so a host at the `defended` rung won the ARP
+  exchange while the DHCP binding underneath it had already been handed to us — it is sitting on
+  a lease the server no longer recognizes and drops it at the next renewal, exactly like a silent
+  `lease_taken` host. The old row ("defended its address", filed under `reacted`) described the
+  packet exchange and buried the outcome, and it read as the one host on the segment that got
+  away. Outright denial still outranks it: a neighbour that asked for an address and got none is
+  reported `offline`, because that is a present-tense outage rather than a future one.
+- **New finding `CLIENTS_HOLDING_STOLEN_LEASES` (FAIL/high).** Those same targets used to fall
+  under `CLIENTS_DEFENDED_ADDRESSES` (INCONCLUSIVE, "reacted but not denied service"), which
+  understates a pending outage with a known cause and a known mechanism. It is raised *alongside*
+  `CLIENTS_EVICTED_FROM_ADDRESSES` rather than instead of it — the two cover disjoint sets of
+  hosts — and is mode-independent, since it turns only on the server having reassigned the
+  binding. Its recommendation names the actual defense: DHCP snooping with a binding table stops
+  this; Dynamic ARP Inspection alone would not have.
+- **Roll-call rows now carry a renewal bound (`fails at next renewal (within ~12h)`).** Derived
+  from the lease duration the server handed *us* for that address. Deliberately an upper bound,
+  never a countdown — the victim's own T1 depends on when it originally got its lease, which this
+  vantage point cannot see, so `within ~L/2` is the strongest honest claim. Omitted entirely when
+  no lease duration is known.
+- **The forged MAC contesting a target is now stable for the whole eviction.** It was re-rolled
+  every round. RFC 5227 §2.4 makes a host cease only on a *repeat* conflict inside
+  `DEFEND_INTERVAL`, and a new sender MAC each round can read to a stack that tracks conflicts
+  per peer as a different host's *first* conflict — precisely the case it is allowed to defend
+  again. One MAC per target for every round makes each one unambiguously "the same host is still
+  claiming my address", and keeps the victim's ARP cache pointed at a single consistent
+  blackhole. Distinct targets still get distinct MACs.
+- **A third, unicast ARP-conflict frame per target per round.** Same claim as the broadcast
+  reply, addressed straight to the victim's MAC (`build_arp_conflict_unicast()`). Broadcast is
+  the RFC 5227 form and stays the primary; this covers the delivery paths where a broadcast never
+  arrives at all — wireless APs with client isolation drop station-to-station broadcast while
+  still forwarding unicast to a known station, and some stacks filter broadcast ARP far harder on
+  the input path. Not a return of the 2.3-era gateway blackhole: it contests the victim's own
+  address and points at a blackhole, not at us.
+- **Denser conflict rounds: `evict_rounds` 4 → 6, `timeouts.evict_interval` 3.0s → 1.5s.** Staying
+  under `DEFEND_INTERVAL` was already the correctness floor, but the odds improve with the number
+  of *distinct* conflicts landing inside one window, not merely with there being two. All six now
+  fall inside a single 10s window (t=0…7.5s) instead of four straddling its edge, so one dropped
+  or filtered frame no longer costs the eviction — and the phase finishes marginally sooner than
+  the old 4 × 3.0s did. No denser than that on purpose: back-to-back frames get coalesced into one
+  conflict event by the victim's ARP input path, so separate arrivals are what count.
+- **Pool exhaustion is now stated plainly in OUTCOME, not just a live `[!!]` log line.**
+  `NeighborSummary` carries `pool_exhausted`/`leases_acquired`, so the end-of-run block reports it
+  with the lease count, and `released_unconfirmed` rows escalate to the stronger renewal-risk
+  wording once the pool is confirmed drained rather than the generic "unknown from here" text. The
+  neighbors/hosts panel gets a matching per-host **Result** column fed by the same roll-call data,
+  and the OUTCOME block's per-host detail is now separated from its tally by a blank line.
+- **`dhcpig-web` now opens a browser by default; `--no-open` opts out.** Every documented usage
+  already passed `--open`, so the flag was pure friction.
+- **The `[device/OS]` tag now leads the roll-call outcome text instead of trailing it** — who a
+  host is, then what happened to it, reads more naturally than the reverse.
+- **Dropped the Conf(idence) column from the neighbors/hosts panel.** It's a debugging detail of
+  the fingerprint match; the OS/Device label it's derived from is the part an operator scanning
+  the table actually needs.
+- **`window_growth_per_ack` halved again: 0.01 → 0.005 (200 clean ACKs per +1 window slot,
+  not 100).** Applies to both exhaust's windowed sender and release's re-acquisition leg, which
+  share the pipeline.
+- **Roll-call outcome text trimmed across the board** — RELEASE/lease/renewal sentences carry the
+  same information in fewer words (`"within ~12h"` → `"~12h"`), the neighbors/hosts table gained a
+  hairline per-cell grid, and a long **Result** cell now scrolls the table sideways instead of
+  wrapping to two lines. The OUI-only vendor label shortened `"(MAC vendor)"` → `"(vendor)"`, and
+  the locally-administered-MAC label to `"randomised/spoofed"`.
+- **"observed only" is now specific about how a host was found.** A host that only ever sourced a
+  DHCP packet (never answered ARP) has no confirmed IP, so reporting it identically to an
+  ARP-confirmed neighbor implied an address we don't actually have — `Neighbor` now tracks
+  `seen_via`, and the passive-scan outcome text distinguishes observed-via-ARP from
+  observed-via-DHCP.
+- **The sparkline now graphs DHCPRELEASE pps alongside DISCOVER pps, with a legend**, and
+  release/release-previous modes — previously stuck showing `0` pps because only the DISCOVER rate
+  was tracked — now show their own real rate. `release-previous` also now reports a CIDR-derived
+  pool size and a live count of journal entries selected for reset in the headroom cell instead of
+  always showing `-`, and runs the same pre-run ARP inventory sweep exhaust/release already do,
+  fixing a step-summary line that always read "0 devices".
+- **Dashboard panel layout rebalanced and its alert flag broadened.** Config narrows from 260px to
+  208px, with the freed space going to the center Neighbors/Hosts panel; the `[!!]`-triggered
+  highlight moves from the Dashboard panel to the center tables panel, and now triggers on *any*
+  alert-styled log line (previously only lines literally prefixed `[!!]`, which missed failed
+  CONTROL transactions like `CONTROL[pre/own MAC/renewal] FAILED`) rather than the log-line-prefix
+  heuristic. The dashboard's counters row was widened past one line by a crammed
+  `"headroom / ~1022"` label plus 6 counters; headroom now reads as a plain `"61 / 1022"` number
+  with "headroom" as a subtitle, keeping the row on one line.
+- **The dashboard graph now plots four separate transmit-side lines — ARP, DISCOVER, RELEASE,
+  RENEW — instead of one merged rate**, with the top-row "pps" tile as their straight,
+  mode-independent sum. ARP covers both who-has sweep requests and forged eviction frames
+  (`arp_sent`); RENEW is the DHCPREQUEST sent after every OFFER, including the control
+  transaction's own self-leg, tracked by a new `requests_sent` counter. This replaced an
+  intermediate arp/s tile that briefly existed as its own dashboard item and graph line before
+  being folded in, since a separate ARP-only view was mostly redundant with, and competed for
+  space against, the DHCP-driven rate already shown. The "pps" tile is now the third counter slot
+  in every mode, including scan/active-scan, which previously never showed it at all (that slot
+  duplicated the adjacent "hosts" tile under the "resolved" label instead).
+
 ## 2.7.0 — 2026-08-01
 
 - **Fingerprint data relicensed to GPL by replacing its source.** The bundled DHCP fingerprint

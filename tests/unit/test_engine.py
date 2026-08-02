@@ -79,9 +79,10 @@ def test_do_arp_conflict_only_in_scope(sent):
         Neighbor("de:ad:00:00:00:03", "172.20.0.8"),
     ]
     n = eng._do_arp_conflict(targets)
-    # two in-scope targets x (ARP conflict request + reply); no third/gateway frame (2.3)
-    assert n == 4
-    assert len(sent) == 4
+    # two in-scope targets x (broadcast request + broadcast reply + unicast reply, 2.7.1);
+    # still no frame touching the gateway's mapping (2.3)
+    assert n == 6
+    assert len(sent) == 6
     assert any(isinstance(e, ev.Skipped) for e in events)
 
 
@@ -92,9 +93,57 @@ def test_arp_conflict_sends_both_arp_forms(sent):
     eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.RELEASE_NEIGHBORS), bus)
     eng._do_arp_conflict([Neighbor("de:ad:00:00:00:01", "10.0.0.7")])
     ops = [p[pk.ARP].op for p in sent]
-    assert ops == [pk.ARP_REQUEST, pk.ARP_REPLY]
+    assert ops == [pk.ARP_REQUEST, pk.ARP_REPLY, pk.ARP_REPLY]
     for p in sent:  # announcement form: psrc == pdst == the claimed address
         assert p[pk.ARP].psrc == p[pk.ARP].pdst == "10.0.0.7"
+
+
+def test_arp_conflict_adds_a_unicast_frame_addressed_to_the_victim(sent):
+    """(2.7.1) The third frame is the same claim as the broadcast reply, delivered straight to
+    the victim -- broadcast ARP is what wireless client isolation drops first, and a conflict
+    the victim never receives can't evict it."""
+    from scapy.all import Ether
+
+    from dhcpig.core import packets as pk
+
+    bus, _ = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.RELEASE_NEIGHBORS), bus)
+    eng._do_arp_conflict([Neighbor("de:ad:00:00:00:01", "10.0.0.7")])
+    assert [p[Ether].dst for p in sent[:2]] == ["ff:ff:ff:ff:ff:ff"] * 2
+    unicast = sent[2]
+    assert unicast[Ether].dst == "de:ad:00:00:00:01"
+    assert unicast[pk.ARP].hwdst == "de:ad:00:00:00:01"
+    assert unicast[pk.ARP].psrc == unicast[pk.ARP].pdst == "10.0.0.7"
+    # it contests the victim's own address at the same forged MAC -- never points at us
+    assert unicast[pk.ARP].hwsrc == sent[0][pk.ARP].hwsrc != "de:ad:00:00:00:01"
+
+
+def test_arp_conflict_frames_are_all_broadcast_when_the_victim_mac_is_unknown(sent):
+    """No MAC, no unicast frame -- and no crash. The ARP inventory always supplies one in
+    practice, so this is the guard, not the normal path."""
+    bus, _ = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.RELEASE_NEIGHBORS), bus)
+    assert eng._do_arp_conflict([Neighbor("", "10.0.0.7")]) == 2
+
+
+def test_arp_conflict_reuses_one_forged_mac_per_target_across_rounds(sent):
+    """(2.7.1) RFC 5227 SS2.4 makes a host cease only on a *repeat* conflict inside
+    DEFEND_INTERVAL. A fresh MAC each round can read as a different host's first conflict --
+    the case it is allowed to defend again -- so the forged MAC is generated once per target
+    and reused, while distinct targets still get distinct MACs."""
+    from dhcpig.core import packets as pk
+
+    bus, _ = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.RELEASE_NEIGHBORS), bus)
+    targets = [Neighbor("de:ad:00:00:00:01", "10.0.0.7"), Neighbor("de:ad:00:00:00:02", "10.0.0.8")]
+    for _round in range(3):
+        eng._do_arp_conflict(targets)
+    by_ip: dict[str, set[str]] = {}
+    for p in sent:
+        by_ip.setdefault(p[pk.ARP].psrc, set()).add(p[pk.ARP].hwsrc)
+    assert [len(macs) for macs in by_ip.values()] == [1, 1]  # stable across all three rounds
+    assert by_ip["10.0.0.7"] != by_ip["10.0.0.8"]  # but not shared between targets
+    assert eng._evict.bogus_macs == set().union(*by_ip.values())
 
 
 def test_arp_conflict_claimed_mac_is_always_bogus_never_the_targets_real_mac(sent, monkeypatch):
@@ -396,8 +445,8 @@ def test_do_arp_conflict_not_gated_on_stop_event(sent):
     eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.RELEASE_NEIGHBORS), bus)
     eng._stop.set()
     n = eng._do_arp_conflict([Neighbor("de:ad:00:00:00:01", "10.0.0.7")])
-    assert n == 2
-    assert len(sent) == 2
+    assert n == 3
+    assert len(sent) == 3
 
 
 def test_handle_evict_arp_marks_defended_from_real_owner_mac():
@@ -595,6 +644,58 @@ def test_finalize_findings_defended_only_when_no_one_declined():
     ids = [e.finding.id for e in events if isinstance(e, ev.FindingRaised)]
     assert "CLIENTS_DEFENDED_ADDRESSES" in ids
     assert "CLIENTS_EVICTED_FROM_ADDRESSES" not in ids
+    # nothing was re-acquired here, so no lease of theirs is ours to have stolen
+    assert "CLIENTS_HOLDING_STOLEN_LEASES" not in ids
+
+
+def _granted(eng, ips):
+    eng._reacquire_targets = dict(enumerate(ips))
+    eng._reacquire_outcomes = dict.fromkeys(range(len(ips)), "granted")
+
+
+def test_finalize_findings_defending_a_stolen_lease_is_a_fail_not_inconclusive():
+    """(2.7.1) `defended` on an address the server already handed us is a pending outage with a
+    known cause, not the "reacted but unharmed" case CLIENTS_DEFENDED_ADDRESSES describes. It
+    must not be filed under an INCONCLUSIVE finding."""
+    bus, events = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.EXHAUST), bus)
+    _granted(eng, ["10.0.0.7"])
+    eng._evict.outcomes = {"10.0.0.7": "defended"}
+    eng._finalize_findings()
+    by_id = {e.finding.id: e.finding for e in events if isinstance(e, ev.FindingRaised)}
+    assert "CLIENTS_DEFENDED_ADDRESSES" not in by_id
+    assert "ARP_CONFLICTS_UNANSWERED" not in by_id  # it plainly did react
+    f = by_id["CLIENTS_HOLDING_STOLEN_LEASES"]
+    assert f.verdict == "FAIL" and f.severity == "high"
+    assert f.evidence["holding"] == 1
+    assert "10.0.0.7" in f.evidence["addresses"][0]
+
+
+def test_finalize_findings_stolen_leases_reported_alongside_evictions_not_instead():
+    """Two disjoint populations, two findings: the run that evicts some targets and leaves
+    another sitting on a binding it no longer owns has to report both, or the second host
+    silently disappears behind the first finding's headline."""
+    bus, events = _bus_collect()
+    eng = DhcpEngine(SessionConfig(interface="lo", mode=Mode.EXHAUST), bus)
+    _granted(eng, ["10.0.0.7", "10.0.0.8"])
+    eng._evict.outcomes = {"10.0.0.7": "discover_unanswered", "10.0.0.8": "defended"}
+    eng._finalize_findings()
+    by_id = {e.finding.id: e.finding for e in events if isinstance(e, ev.FindingRaised)}
+    assert by_id["CLIENTS_EVICTED_FROM_ADDRESSES"].evidence["evicted"] == 1
+    assert by_id["CLIENTS_HOLDING_STOLEN_LEASES"].evidence["holding"] == 1
+
+
+def test_finalize_findings_stolen_lease_verdict_does_not_depend_on_mode():
+    """Unlike the eviction rungs, this one turns only on the server having reassigned the
+    binding -- which release mode does just as thoroughly as exhaust."""
+    for mode in (Mode.EXHAUST, Mode.RELEASE_NEIGHBORS):
+        bus, events = _bus_collect()
+        eng = DhcpEngine(SessionConfig(interface="lo", mode=mode), bus)
+        _granted(eng, ["10.0.0.7"])
+        eng._evict.outcomes = {"10.0.0.7": "defended"}
+        eng._finalize_findings()
+        ids = [e.finding.id for e in events if isinstance(e, ev.FindingRaised)]
+        assert "CLIENTS_HOLDING_STOLEN_LEASES" in ids
 
 
 def test_finalize_findings_unanswered_when_nothing_reacted():
