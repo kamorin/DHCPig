@@ -307,9 +307,12 @@ function handleEvent(e) {
       // hostname column only when we have one for somebody -- DHCP option 12 is the only
       // source, so an ARP-only segment has none and an always-on column would sit blank
       const namew = Math.max(0, ...(e.rows || []).map((r) => (r[2] || "").length));
-      for (const [ip, mac, host, outcome, category] of e.rows || []) {
+      for (const [ip, mac, host, outcome, category, device] of e.rows || []) {
         const name = namew ? (host || "").padEnd(namew) + "  " : "";
-        logLine(cls(category), `       ${ip.padEnd(15)} ${mac}  ${name}${outcome}`, 0);
+        // [device/OS] tag trails the line, same "" when unknown treatment as the hostname
+        // column above -- most ARP-only neighbours have neither
+        const tag = device ? `  [${device}]` : "";
+        logLine(cls(category), `       ${ip.padEnd(15)} ${mac}  ${name}${outcome}${tag}`, 0);
       }
       // the concluding "N host(s) did X" roll-up -- same data, aggregated. Counts and what
       // happened, never a verdict: the findings own pass/fail.

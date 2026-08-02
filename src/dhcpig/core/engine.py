@@ -626,8 +626,9 @@ class DhcpEngine:
     }
     _ROLLCALL_ORDER = ("offline", "lease_taken", "reacted", "released_unconfirmed", "unaffected")
 
-    def _neighbor_rollcall(self) -> list[tuple[str, str, str, str, str]]:
-        """One `(ip, mac, hostname, outcome, category)` row per discovered neighbor, worst first.
+    def _neighbor_rollcall(self) -> list[tuple[str, str, str, str, str, str]]:
+        """One `(ip, mac, hostname, outcome, category, device)` row per discovered neighbor,
+        worst first.
 
         Single source for both surfaces -- the `NeighborSummary` event (live, on the log) and the
         `NEIGHBORS_OBSERVED` finding (durable, in the JSON/HTML report). They must never disagree
@@ -708,7 +709,7 @@ class DhcpEngine:
         for v in self._foreign_discovers.values():
             if v["mac"] and v["hostname"] and v["mac"] not in hostname_by_mac:
                 hostname_by_mac[v["mac"]] = v["hostname"]
-        rows: list[tuple[str, str, str, str, str]] = []
+        rows: list[tuple[str, str, str, str, str, str]] = []
         for n in neighbors:
             rung = self._evict.outcomes.get(n.ip)
             defended_on_stolen = rung == "defended" and n.ip in granted_ips
@@ -739,9 +740,18 @@ class DhcpEngine:
                 prefixes.append("ARP-conflicted")
             if prefixes:
                 outcome = " -> ".join(prefixes) + f" -> {outcome}"
-            rows.append((n.ip, n.mac, hostname_by_mac.get(n.mac, ""), outcome, category))
+            rows.append(
+                (
+                    n.ip,
+                    n.mac,
+                    hostname_by_mac.get(n.mac, ""),
+                    outcome,
+                    category,
+                    _fp_short_label(n.fingerprint),
+                )
+            )
 
-        def sort_key(row: tuple[str, str, str, str, str]):
+        def sort_key(row: tuple[str, str, str, str, str, str]):
             ip = row[0]
             try:
                 octets = tuple(int(p) for p in ip.split("."))
@@ -933,9 +943,9 @@ class DhcpEngine:
         rollcall = self._neighbor_rollcall()
         if rollcall:
             by_category: dict[str, int] = {}
-            for *_rest, category in rollcall:
-                by_category[category] = by_category.get(category, 0) + 1
-            namew = max((len(h) for *_r, h, _o, _c in rollcall), default=0)
+            for row in rollcall:
+                by_category[row[4]] = by_category.get(row[4], 0) + 1
+            namew = max((len(row[2]) for row in rollcall), default=0)
             self._raise(
                 findings.build(
                     "NEIGHBORS_OBSERVED",
@@ -944,10 +954,17 @@ class DhcpEngine:
                         "by_category": by_category,
                         # pre-formatted one line per host: both renderers print list evidence
                         # one item per line, and every surface is monospace, so the columns line
-                        # up without either front end knowing the shape of a host row
+                        # up without either front end knowing the shape of a host row.
+                        # Deliberately not including the device/OS column (row[5]) here -- this
+                        # finding's evidence is the outcome, and the durable JSON/HTML/CSV export
+                        # already carries fingerprint detail separately (NeighborFound,
+                        # HostFingerprinted); the live OUTCOME roll-call is the one place that
+                        # names outcome and device on the same line.
                         "hosts": [
-                            f"{ip:<15} {mac}  " + (f"{host:<{namew}}  " if namew else "") + outcome
-                            for ip, mac, host, outcome, _c in rollcall
+                            f"{row[0]:<15} {row[1]}  "
+                            + (f"{row[2]:<{namew}}  " if namew else "")
+                            + row[3]
+                            for row in rollcall
                         ],
                     },
                     title=(
@@ -2705,6 +2722,21 @@ def _fmt_duration(seconds: int) -> str:
     if seconds >= 60:
         return f"{round(seconds / 60)}m"
     return f"{seconds}s"
+
+
+def _fp_short_label(fp) -> str:
+    """`"Windows 10 (Microsoft Corp.)"`, or just the OS/device/vendor alone when only one is
+    known -- the same os-then-device-then-vendor fallback `NeighborFound`/`HostFingerprinted`
+    already use in `cli/render.py`, reused here rather than re-derived so the roll-call names a
+    host identically to the live log lines about it. `""` when nothing was ever fingerprinted
+    (most ARP-only neighbours), which the roll-call renders as an absent column, same as
+    `hostname`.
+    """
+    if fp is None:
+        return ""
+    if fp.os and fp.vendor and fp.vendor not in fp.os:
+        return f"{fp.os} ({fp.vendor})"
+    return fp.os or fp.device or fp.vendor or ""
 
 
 def _opts_summary(pkt) -> str:

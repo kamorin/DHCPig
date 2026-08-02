@@ -2,6 +2,15 @@
 
 ## 2.7.1 — unreleased
 
+- **The OUTCOME roll-call now names the device: a short OS/vendor tag trails each host line.**
+  `_neighbor_rollcall()` rows carry a sixth field, `device` — `"os (vendor)"`, falling back
+  through device or vendor alone, `""` when the host was never fingerprinted (the same
+  omit-when-empty treatment `hostname` already had). CLI and web log both render it as a
+  trailing `[Windows 10 (Microsoft Corp.)]` tag; the aggregated tally line is unaffected, since
+  it counts outcomes, not devices. Deliberately **not** added to the durable
+  `NEIGHBORS_OBSERVED` finding's evidence — that finding is about what happened to a host, not
+  what it is, and fingerprint detail already reaches the JSON/HTML/CSV export separately via
+  `NeighborFound`/`HostFingerprinted`.
 - **A target that defended an address we already hold the lease for is now reported as
   `lease_taken`, not `reacted`.** This was the biggest misreport in the roll-call. Eviction only
   ever targets addresses re-acquisition *granted*, so a host at the `defended` rung won the ARP

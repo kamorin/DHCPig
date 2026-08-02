@@ -105,10 +105,13 @@ class Renderer:
         self._line("==", f"OUTCOME  {e.total} host(s) seen before this run")
         # hostname column only when we actually have one for somebody -- DHCP option 12 is the
         # only source, so an ARP-only segment has none and an always-on column would be blank
-        namew = max((len(h) for *_r, h, _o, _c in e.rows), default=0)
-        for ip, mac, host, outcome, category in e.rows:
+        namew = max((len(row[2]) for row in e.rows), default=0)
+        for ip, mac, host, outcome, category, device in e.rows:
             name = f"{host:<{namew}}  " if namew else ""
-            self._line(_ROLLCALL_TAG[category], f"  {ip:<15} {mac}  {name}{outcome}")
+            # [device/OS] tag trails the line, same "" when unknown treatment as the hostname
+            # column -- most ARP-only neighbours have neither
+            tag = f"  [{device}]" if device else ""
+            self._line(_ROLLCALL_TAG[category], f"  {ip:<15} {mac}  {name}{outcome}{tag}")
         for outcome, n, category in outcome_tally(e.rows):
             self._line(_ROLLCALL_TAG[category], f"  {n:>3} host(s)  {outcome}")
 
@@ -215,7 +218,8 @@ def outcome_tally(rows: list) -> list[tuple[str, int, str]]:
     run is exactly the drift `_run_summary_steps()` is documented to avoid.
     """
     seen: dict[str, tuple[int, str]] = {}
-    for *_r, outcome, category in rows:  # rows arrive worst-first, so dict order is too
+    for row in rows:  # rows arrive worst-first, so dict order is too
+        outcome, category = row[3], row[4]
         count, _cat = seen.get(outcome, (0, category))
         seen[outcome] = (count + 1, category)
     return [(outcome, n, cat) for outcome, (n, cat) in seen.items()]

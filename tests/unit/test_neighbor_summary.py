@@ -10,7 +10,7 @@ from conftest import build_engine
 
 from dhcpig.cli.render import Renderer
 from dhcpig.core.events import FindingRaised, NeighborSummary
-from dhcpig.core.models import Mode, Neighbor
+from dhcpig.core.models import HostFingerprint, Mode, Neighbor
 
 
 def _engine(monkeypatch, **cfg):
@@ -41,7 +41,7 @@ def _summary(events):
 
 def _by_category(events):
     out: dict[str, list[str]] = {}
-    for ip, _mac, _host, _outcome, category in _summary(events).rows:
+    for ip, _mac, _host, _outcome, category, _device in _summary(events).rows:
         out.setdefault(category, []).append(ip)
     return out
 
@@ -282,6 +282,80 @@ def test_hostname_is_picked_up_from_a_foreign_discover(monkeypatch):
     assert hosts[ips[0]] == ""  # ARP-only neighbour: no option 12 ever seen, so no guess
 
 
+def test_device_label_is_picked_up_from_the_neighbor_fingerprint(monkeypatch):
+    eng, events = _engine(monkeypatch)
+    ips = _neighbors(eng, 2)
+    mac = "aa:bb:cc:00:00:01"
+    eng._neighbors_by_mac[mac] = Neighbor(
+        mac=mac,
+        ip=ips[1],
+        fingerprint=HostFingerprint(
+            mac=mac, ip=ips[1], role="neighbor", os="Windows 10", vendor="Microsoft Corp."
+        ),
+    )
+    eng._emit_neighbor_summary()
+    devices = {row[0]: row[5] for row in _summary(events).rows}
+    assert devices[ips[1]] == "Windows 10 (Microsoft Corp.)"
+    assert devices[ips[0]] == ""  # never fingerprinted: no guess, same treatment as hostname
+
+
+def test_device_label_omits_vendor_when_vendor_is_already_in_the_os_string(monkeypatch):
+    """`fp.os` alone is enough when it already names the vendor -- "Android (Android)" would be
+    a name repeated for no reason."""
+    eng, events = _engine(monkeypatch)
+    ips = _neighbors(eng, 1)
+    mac = "aa:bb:cc:00:00:00"
+    eng._neighbors_by_mac[mac] = Neighbor(
+        mac=mac,
+        ip=ips[0],
+        fingerprint=HostFingerprint(
+            mac=mac, ip=ips[0], role="neighbor", os="Android 2.3", vendor="Android"
+        ),
+    )
+    eng._emit_neighbor_summary()
+    assert _summary(events).rows[0][5] == "Android 2.3"
+
+
+def test_device_label_falls_back_to_device_then_vendor_when_no_os(monkeypatch):
+    eng, events = _engine(monkeypatch)
+    ips = _neighbors(eng, 2)
+    mac0, mac1 = "aa:bb:cc:00:00:00", "aa:bb:cc:00:00:01"
+    eng._neighbors_by_mac[mac0] = Neighbor(
+        mac=mac0,
+        ip=ips[0],
+        fingerprint=HostFingerprint(
+            mac=mac0, ip=ips[0], role="neighbor", device="UPS", vendor="APC"
+        ),
+    )
+    eng._neighbors_by_mac[mac1] = Neighbor(
+        mac=mac1,
+        ip=ips[1],
+        fingerprint=HostFingerprint(mac=mac1, ip=ips[1], role="neighbor", vendor="VMware, Inc."),
+    )
+    eng._emit_neighbor_summary()
+    devices = {row[0]: row[5] for row in _summary(events).rows}
+    assert devices[ips[0]] == "UPS"  # device wins over vendor when there's no os
+    assert devices[ips[1]] == "VMware, Inc."  # vendor is the only signal at all
+
+
+def test_cli_and_web_findings_never_show_the_device_column(monkeypatch):
+    """The device/OS tag is deliberately CLI/web-log-only -- the durable NEIGHBORS_OBSERVED
+    finding's evidence stays outcome-only, so the JSON/HTML/CSV export doesn't gain a column
+    the rest of that finding's schema never had."""
+    eng, events = _engine(monkeypatch)
+    ips = _neighbors(eng, 1)
+    mac = "aa:bb:cc:00:00:00"
+    eng._neighbors_by_mac[mac] = Neighbor(
+        mac=mac,
+        ip=ips[0],
+        fingerprint=HostFingerprint(mac=mac, ip=ips[0], role="neighbor", os="Windows 10"),
+    )
+    eng._finalize_findings()
+    line = _observed(events).evidence["hosts"][0]
+    assert mac in line
+    assert "Windows 10" not in line
+
+
 def test_cli_shows_a_hostname_column_only_when_one_is_known(capsys, monkeypatch):
     """DHCP option 12 is the only source, so most segments have none -- an always-on column
     would just sit blank."""
@@ -309,7 +383,7 @@ def test_rows_carry_ip_mac_outcome_and_category(monkeypatch):
     ips = _neighbors(eng, 1)
     eng._evict.outcomes = {ips[0]: "apipa"}
     eng._emit_neighbor_summary()
-    ip, mac, _host, outcome, category = _summary(events).rows[0]
+    ip, mac, _host, outcome, category, _device = _summary(events).rows[0]
     assert (ip, mac, category) == (ips[0], "aa:bb:cc:00:00:00", "offline")
     assert "169.254" in outcome
 
@@ -488,10 +562,10 @@ def test_finding_and_event_never_disagree_about_a_host(monkeypatch):
     eng._emit_neighbor_summary()
     eng._finalize_findings()
     rows = _summary(events).rows
-    namew = max(len(h) for *_r, h, _o, _c in rows)
+    namew = max(len(row[2]) for row in rows)
     assert _observed(events).evidence["hosts"] == [
         f"{ip:<15} {mac}  " + (f"{h:<{namew}}  " if namew else "") + outcome
-        for ip, mac, h, outcome, _c in rows
+        for ip, mac, h, outcome, _category, _device in rows
     ]
 
 

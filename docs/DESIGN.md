@@ -144,12 +144,18 @@ together and should be kept together:
   another device (active-scan's steps are an ARP sweep and a DHCPINFORM), so they describe what
   reconnaissance alone demonstrates instead. Keep this split if you add a mode.
 - **The neighbor roll-call has two surfaces, one source.** `_neighbor_rollcall()` does all the
-  classifying and returns `(ip, mac, hostname, outcome, category)` rows (`hostname` is DHCP
-  option 12 off a foreign DISCOVER, `""` when never seen — never inferred from anything else,
-  and the column is omitted entirely when no host has one); **`NeighborSummary`** (live event,
-  event log) and the **`NEIGHBORS_OBSERVED`** INFO finding (durable, reaches
-  `report["findings"]` and so the JSON/HTML exports) both just render it. Never let either
-  compute its own classification — they'd drift, and then a report and the log it came from
+  classifying and returns `(ip, mac, hostname, outcome, category, device)` rows (`hostname` is
+  DHCP option 12 off a foreign DISCOVER, `""` when never seen — never inferred from anything
+  else, and the column is omitted entirely when no host has one; `device` is `_fp_short_label()`
+  on the neighbor's fingerprint — `"os (vendor)"`, falling back through device/vendor alone,
+  `""` when nothing was ever fingerprinted, same omit-when-empty treatment as hostname);
+  **`NeighborSummary`** (live event, event log) and the **`NEIGHBORS_OBSERVED`** INFO finding
+  (durable, reaches `report["findings"]` and so the JSON/HTML exports) both just render it. The
+  `device` column is deliberately **CLI/web-log only** — `NEIGHBORS_OBSERVED`'s evidence stays
+  outcome-only, since that finding is about what happened to a host, not what it is, and
+  fingerprint detail already reaches the report separately via `NeighborFound`/
+  `HostFingerprinted`. Never let either surface compute its own classification — they'd drift,
+  and then a report and the log it came from
   would disagree about what happened to a host. The finding exists because `NeighborSummary` is
   an event and events don't survive into the report at all.
 - **`NeighborSummary` is the event-log counterpart to `RUN_SUMMARY`**: emitted once from
