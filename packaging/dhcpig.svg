@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64"
+     role="img" aria-label="DHCPig">
+  <title>DHCPig</title>
+  <!-- Literal hex, not CSS vars: this file is also the favicon and the .desktop icon, where the
+       stylesheet's :root palette isn't available. Colours mirror styles.css anyway
+       (pig #e0679a, edge #2a3342, accent #4ec9b0, bg #12161c).
+
+       Pig first, hacker second. An earlier version led with a full hoodie and a visor across
+       half the face, which at 28px in the header read as a dark blob rather than an animal.
+       The head now fills the canvas, the ears and snout carry the silhouette, and the hacker
+       cue is reduced to slim shades plus a thin hood brim that stays clear of the ears. -->
+  <path d="M11 28 14 5 30 16Z" fill="#c9527f"/>
+  <path d="M53 28 50 5 34 16Z" fill="#c9527f"/>
+  <path d="M16 23 17.5 12 26 17Z" fill="#f0a2c0"/>
+  <path d="M48 23 46.5 12 38 17Z" fill="#f0a2c0"/>
+
+  <ellipse cx="32" cy="35" rx="23" ry="20" fill="#e0679a"/>
+  <path d="M32 13c-12 0-21 7-22.6 17.5C9.9 20 19.4 12.5 32 12.5S54.1 20 54.6 30.5C53 20 44 13 32 13Z"
+        fill="#2a3342"/>
+
+  <rect x="12" y="26" width="17" height="10" rx="4.5" fill="#12161c"/>
+  <rect x="35" y="26" width="17" height="10" rx="4.5" fill="#12161c"/>
+  <rect x="28" y="29.5" width="8" height="2.6" fill="#12161c"/>
+  <path d="M15 29h9v1.7h-9Zm23 0h9v1.7h-9Z" fill="#4ec9b0" opacity=".9"/>
+
+  <ellipse cx="32" cy="45" rx="11.5" ry="8" fill="#c9527f"/>
+  <ellipse cx="27.9" cy="45" rx="2.2" ry="3.1" fill="#12161c" opacity=".85"/>
+  <ellipse cx="36.1" cy="45" rx="2.2" ry="3.1" fill="#12161c" opacity=".85"/>
+</svg>
