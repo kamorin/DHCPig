@@ -45,10 +45,12 @@ SCOPE_REQUIRED_MODES: set[Mode] = {Mode.ACTIVE_SCAN}
 # natural end, so it runs until stopped.
 RUN_ONCE_MODES: set[Mode] = DESTRUCTIVE_MODES | {Mode.RELEASE_PREVIOUS, Mode.ACTIVE_SCAN}
 
-# Exhaust no longer takes --rate: the windowed handshake pipeline (window_initial/window_max)
-# is the pacing mechanism now. rate_limit_pps is set high enough here that the token bucket
-# never binds; it stays wired through _send() so the invariant "everything funnels through the
-# rate limiter" holds, but the window is what actually shapes exhaust's traffic.
+# Exhaust and release no longer take --rate: the windowed handshake pipeline
+# (window_initial/window_max) is the pacing mechanism now -- release's re-acquisition leg reuses
+# the exact same window/backoff-on-NAK logic as exhaust (2.6). rate_limit_pps is set high enough
+# here that the token bucket never binds; it stays wired through _send() so the invariant
+# "everything funnels through the rate limiter" holds, but the window is what actually shapes
+# both modes' traffic.
 EXHAUST_DEFAULT_RATE_PPS = 500
 
 
