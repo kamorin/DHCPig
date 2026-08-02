@@ -144,6 +144,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Check out upstream source
+        # gh release create --generate-notes shells out to git to walk commit history since the
+        # previous tag; without a checkout here it fails with "not a git repository".
+        uses: actions/checkout@v5
+
       - name: Fetch the package built and tested above
         uses: actions/download-artifact@v8
         with:
