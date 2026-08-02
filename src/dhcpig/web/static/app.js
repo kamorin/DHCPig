@@ -484,15 +484,21 @@ function handleEvent(e) {
       for (const line of f.summary || []) logLine("notice", `        ${line}`, 1);
       break;
     }
-    case "SessionEnded": $("state").textContent = "DONE"; setRunning(false); break;
+    case "SessionEnded":
+      $("state").textContent = "DONE";
+      // One last unconditional poll before the `running` gate shuts pollStatus() off -- a short
+      // run can finish its real traffic burst inside the final ~1s poll window, and if this
+      // SSE event beats that tick, the run's last (often largest) delta never gets sampled.
+      pollStatus(true).finally(() => setRunning(false));
+      break;
     case "ErrorEvent": logLine("alert", "[XX] " + e.message, 0); break;
     case "Debug": logLine("dbg", "[DBG] " + e.message, 3); break;
   }
 }
 
 // ---- status polling -------------------------------------------------------
-async function pollStatus() {
-  if (!running) return;
+async function pollStatus(force) {
+  if (!running && !force) return;
   try {
     const { status } = await api("/api/session/status");
     const mode = $("mode").value;
