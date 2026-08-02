@@ -37,14 +37,15 @@ def config_from_payload(payload: dict) -> SessionConfig:
     if scope is not None and not isinstance(scope, list):
         raise ConfigError("scope_cidrs must be a list")
 
-    # exhaust has no rate control of its own — the windowed handshake pipeline paces it.
-    # release-previous defaults faster than every other mode: it runs during an outage the
+    # exhaust and release have no rate control of their own — release's re-acquisition leg
+    # shares exhaust's windowed handshake pipeline, which paces and backs off on NAKs the same
+    # way. release-previous defaults faster than every other mode: it runs during an outage the
     # operator is trying to end, and its frames are unicast to one server, not sprayed at the
     # segment.
     default_rate = 50 if mode is Mode.RELEASE_PREVIOUS else 7
     rate = (
         EXHAUST_DEFAULT_RATE_PPS
-        if mode is Mode.EXHAUST
+        if mode in (Mode.EXHAUST, Mode.RELEASE_NEIGHBORS)
         else _as_int(payload.get("rate", default_rate), "rate", lo=1, hi=100000)
     )
     journal_path = payload.get("journal_path")
@@ -77,7 +78,7 @@ def as_cli(cfg: SessionConfig) -> str:
     parts = ["dhcpig", cfg.mode.value, cfg.interface]
     if cfg.ip_version is IPVersion.V6:
         parts.append("--ipv6")
-    if cfg.mode is not Mode.EXHAUST:
+    if cfg.mode not in (Mode.EXHAUST, Mode.RELEASE_NEIGHBORS):
         parts += ["--rate", str(cfg.rate_limit_pps)]
     for cidr in cfg.scope_cidrs or []:
         parts += ["--scope", cidr]
