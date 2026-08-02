@@ -7,9 +7,12 @@
 # surfaces months later when a Debian maintainer tries to build a release. It has
 # already happened once, which is why the build-check job in ci.yml exists.
 #
-# Scheduled as well as on push, because the other direction rots too: Debian unstable
+# Scheduled as well as on tags, because the other direction rots too: Debian unstable
 # moves under us. debhelper, pybuild and scapy all change, and a package that built in
-# August can stop building in November with no commit of ours in between.
+# August can stop building in November with no commit of ours in between. Weekly plus
+# on-demand is enough to catch either kind of drift without building on every push --
+# this only needs to be current when a release is about to happen or check in
+# periodically, not after every commit.
 #
 # Nothing here talks to a network under test. The upstream unit suite monkeypatches
 # scapy's sendp, and the autopkgtests only run --help, import the module, and read
@@ -18,11 +21,6 @@ name: debian-package
 
 on:
   push:
-    # No paths filter on purpose. It cannot be scoped differently for branches and
-    # tags in one trigger, and a release tag must always build even when the tagged
-    # commit only touched a changelog. A few extra runs beat a release that silently
-    # skipped its own package build.
-    branches: [master]
     tags: ["v*"]
   schedule:
     # Mondays. Weekly is enough to catch unstable drifting; daily would just be noise.
