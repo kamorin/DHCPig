@@ -19,7 +19,21 @@ async function api(path, method = "GET", body) {
 }
 
 let running = false;
-const rate = { last: 0, series: [] };
+// Four independent per-second series, all counting frames this tool actually transmits (never
+// replies received) -- discover/release/arp are self-explanatory; "renew" is the REQUEST this
+// tool sends after every OFFER, which the control transaction's own docstring treats as a
+// renewal probe (see _control_transaction() in engine.py) even though it's never a true
+// unicast RFC 2131 renewal. pps (the dashboard tile) is just their sum.
+const rate = {
+  discoverLast: 0, discoverSeries: [],
+  releaseLast: 0, releaseSeries: [],
+  arpLast: 0, arpSeries: [],
+  renewLast: 0, renewSeries: [],
+};
+function pushSeries(series, v) {
+  series.push(v);
+  if (series.length > 120) series.shift();
+}
 const servers = new Map();
 const neighbors = new Map();
 const leases = [];
@@ -112,18 +126,22 @@ function onModeChange() {
   if (mode === "release-previous" && +$("rate").value === 7) $("rate").value = 50;
   else if (mode !== "release-previous" && +$("rate").value === 50) $("rate").value = 7;
   autofillScope();
+  // Only the first two counters vary by mode -- the third slot is always "pps" now (a global,
+  // mode-independent sum of every transmit-side rate the graph tracks; see pollStatus()), not a
+  // per-mode label/value like it used to be.
   const labels = {
-    exhaust: ["leases", "servers", "pps"],
-    scan: ["hosts", "servers", "resolved"],
-    "active-scan": ["hosts", "servers", "resolved"],
-    release: ["released", "neighbors", "pps"],
-    "release-previous": ["released", "servers", "pps"],
+    exhaust: ["leases", "servers"],
+    scan: ["hosts", "servers"],
+    "active-scan": ["hosts", "servers"],
+    release: ["released", "neighbors"],
+    "release-previous": ["released", "servers"],
   }[mode];
   $("l-a").textContent = labels[0];
   $("l-b").textContent = labels[1];
-  $("l-c").textContent = labels[2];
-  // headroom only means something for exhaust (it's a DHCP pool concept)
-  if (mode !== "exhaust") {
+  // headroom means something for exhaust (free addresses left) and release-previous (addresses
+  // this run is handing back) -- both are CIDR-derived pool numbers; every other mode leaves it
+  // dimmed since there's no pool concept to report
+  if (mode !== "exhaust" && mode !== "release-previous") {
     $("c-e").textContent = "—";
     $("l-e").textContent = "headroom";
     $("headroomcell").classList.add("dim");
@@ -155,6 +173,25 @@ function logLine(cls, text, level = 2) {
   span.style.display = level <= currentVerbosity() ? "" : "none";
   el.appendChild(span);
   el.scrollTop = el.scrollHeight;
+  // Anything styled "alert" (a [!!] line -- pool exhaustion, a defensive control firing, a
+  // denied host, ... -- or any other line the caller judged alert-worthy, like a failed CONTROL
+  // transaction or an [XX] error) is the log's highest-severity tag -- flag the center tables
+  // panel too, since the neighbors/hosts roll-call is what an operator is looking at, not the
+  // scrolling log underneath it. Also surface it in the dashboard panel, where the graph/
+  // counters already are.
+  if (cls === "alert") { flagAlert(); addDashboardAlert(text); }
+}
+
+function addDashboardAlert(text) {
+  const el = $("alerts");
+  const div = document.createElement("div");
+  div.textContent = text;
+  el.appendChild(div);
+  el.scrollTop = el.scrollHeight;
+}
+
+function flagAlert() {
+  $("tables").classList.add("alert-flag");
 }
 
 function applyVerbosityFilter() {
@@ -175,14 +212,24 @@ function renderServers() {
       `<td>${fp.os || fp.device || fp.vendor || ""}</td><td>${fp.confidence ?? ""}</td></tr>`);
   }
 }
+// Result column classes mirror the OUTCOME roll-call's own severity groupings (see the `cls()`
+// helper in the NeighborSummary case below) so a host's row in this table and its line in the
+// log/OUTCOME block always agree on how bad its outcome is.
+const RESULT_CLASS = {
+  offline: "res-bad", lease_taken: "res-bad",
+  released_unconfirmed: "res-warn",
+  reacted: "res-in", unaffected: "res-notice",
+};
 function renderNeighbors() {
   const tb = document.querySelector("#t-neighbors tbody");
   tb.innerHTML = "";
   for (const n of neighbors.values()) {
     const fp = n.fp || {};
+    const resultCls = RESULT_CLASS[n.category] || "";
     tb.insertAdjacentHTML("beforeend",
       `<tr><td>${n.ip}</td><td>${n.mac}</td>` +
-      `<td>${fp.os || fp.device || fp.vendor || ""}</td><td>${fp.confidence ?? ""}</td></tr>`);
+      `<td>${fp.os || fp.device || fp.vendor || ""}</td>` +
+      `<td class="${resultCls}">${esc(n.outcome || "")}</td></tr>`);
   }
 }
 function esc(s) {
@@ -202,8 +249,8 @@ function esc(s) {
 // someone writing up the engagement reads them -- this is a summary surface, not the record.
 
 // Findings whose content already has a dedicated log block. NEIGHBORS_OBSERVED is the same
-// rows as NEIGHBOR SUMMARY, printed immediately below it -- keep it in report["findings"] for
-// the export, but printing it twice in the log is just noise.
+// rows as the OUTCOME roll-call, printed immediately below it -- keep it in report["findings"]
+// for the export, but printing it twice in the log is just noise.
 const FINDINGS_NOT_LOGGED = new Set(["NEIGHBORS_OBSERVED"]);
 
 function renderLeases() {
@@ -216,19 +263,30 @@ function renderLeases() {
 }
 
 // ---- canvas sparkline -----------------------------------------------------
-function drawSpark() {
-  const c = $("spark"), ctx = c.getContext("2d");
-  const w = c.width, h = c.height, s = rate.series;
-  ctx.clearRect(0, 0, w, h);
+// Four lines share one scale -- ARP, DHCP discover, DHCP release, DHCP renew (the REQUEST that
+// follows an OFFER) -- so the full transmit-side traffic mix is visible at once instead of one
+// rate hiding another.
+function drawLine(ctx, s, w, h, max, color) {
   if (s.length < 2) return;
-  const max = Math.max(1, ...s);
-  ctx.strokeStyle = "#4ec9b0"; ctx.lineWidth = 2; ctx.beginPath();
+  ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
   s.forEach((v, i) => {
     const x = (i / (s.length - 1)) * (w - 4) + 2;
     const y = h - 4 - (v / max) * (h - 8);
     i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
   });
   ctx.stroke();
+}
+function drawSpark() {
+  const c = $("spark"), ctx = c.getContext("2d");
+  const w = c.width, h = c.height;
+  const { arpSeries: as, discoverSeries: ds, releaseSeries: rs, renewSeries: ns } = rate;
+  ctx.clearRect(0, 0, w, h);
+  if (as.length < 2 && ds.length < 2 && rs.length < 2 && ns.length < 2) return;
+  const max = Math.max(1, ...as, ...ds, ...rs, ...ns);
+  drawLine(ctx, as, w, h, max, "#6ab0ff");
+  drawLine(ctx, ds, w, h, max, "#4ec9b0");
+  drawLine(ctx, rs, w, h, max, "#e0679a");
+  drawLine(ctx, ns, w, h, max, "#e8b04b");
 }
 
 // ---- SSE ------------------------------------------------------------------
@@ -297,16 +355,40 @@ function handleEvent(e) {
       break;
     }
     case "NeighborSummary": {
+      // One [==] OUTCOME header covers per-host detail and the tally beneath it (2.7.2) --
+      // mirrors cli/render.py's Renderer._neighbor_summary(), which is the source of truth for
+      // this layout; keep the two in sync if either changes.
       const cls = (c) => c === "offline" || c === "lease_taken" ? "alert"
+        : c === "released_unconfirmed" ? "warnline"
         : c === "unaffected" ? "notice" : "in";
-      logLine("finding", `[==] NEIGHBOR SUMMARY  ${e.total} host(s) seen before this run`, 0);
+      logLine("finding", `[==] OUTCOME  ${e.total} host(s) seen before this run`, 0);
+      if (e.pool_exhausted) {
+        logLine("alert",
+          `[!!]   POOL EXHAUSTED -- ${e.leases_acquired} lease(s) acquired; neighbors ` +
+          `relying on this pool cannot renew`, 0);
+      }
+      // Feed each row's outcome/category into the neighbors table's Result column too -- this
+      // is the same per-host classification, just also shown where the run's live discovery
+      // rows already are instead of only at the end of the log.
+      for (const [, mac, , outcome, category] of e.rows || []) {
+        const prev = neighbors.get(mac);
+        if (prev) neighbors.set(mac, { ...prev, outcome, category });
+      }
+      renderNeighbors();
       // hostname column only when we have one for somebody -- DHCP option 12 is the only
       // source, so an ARP-only segment has none and an always-on column would sit blank
       const namew = Math.max(0, ...(e.rows || []).map((r) => (r[2] || "").length));
-      for (const [ip, mac, host, outcome, category] of e.rows || []) {
+      for (const [ip, mac, host, outcome, category, device] of e.rows || []) {
         const name = namew ? (host || "").padEnd(namew) + "  " : "";
-        logLine(cls(category), `       ${ip.padEnd(15)} ${mac}  ${name}${outcome}`, 0);
+        // [device/OS] tag sits before the outcome text, same "" when unknown treatment as the
+        // hostname column above -- most ARP-only neighbours have neither
+        const tag = device ? `[${device}]  ` : "";
+        logLine(cls(category), `       ${ip.padEnd(15)} ${mac}  ${name}${tag}${outcome}`, 0);
       }
+      // Blank line between the per-host detail and the tally beneath it -- mirrors
+      // cli/render.py's Renderer._neighbor_summary(): one [==] OUTCOME header still covers
+      // both, but a hard break separates who from how many.
+      logLine("note", "", 0);
       // the concluding "N host(s) did X" roll-up -- same data, aggregated. Counts and what
       // happened, never a verdict: the findings own pass/fail.
       const tally = new Map();
@@ -314,7 +396,6 @@ function handleEvent(e) {
         const [n] = tally.get(outcome) || [0, category];
         tally.set(outcome, [n + 1, category]);
       }
-      logLine("finding", "[==] OUTCOME", 0);
       for (const [outcome, [n, category]] of tally) {
         logLine(cls(category), `       ${String(n).padStart(3)} host(s)  ${outcome}`, 0);
       }
@@ -410,29 +491,52 @@ async function pollStatus() {
   try {
     const { status } = await api("/api/session/status");
     const mode = $("mode").value;
-    const scanlike = mode === "scan" || mode === "active-scan";
     const primary = { exhaust: status.leases, scan: neighbors.size,
       "active-scan": neighbors.size, release: status.releases,
       "release-previous": status.releases }[mode] ?? 0;
-    const pps = Math.max(0, (status.discovers ?? 0) - rate.last);
-    rate.last = status.discovers ?? 0;
+    // Every rate is transmit-side (frames this tool actually sent), never a reply received --
+    // see the `rate` object's own comment. "pps" is their sum: total wire activity, not just
+    // whichever single counter happens to be the current mode's primary metric.
+    const discoverPps = Math.max(0, (status.discovers ?? 0) - rate.discoverLast);
+    rate.discoverLast = status.discovers ?? 0;
+    const releasePps = Math.max(0, (status.releases ?? 0) - rate.releaseLast);
+    rate.releaseLast = status.releases ?? 0;
+    const arpPps = Math.max(0, (status.arp_sent ?? 0) - rate.arpLast);
+    rate.arpLast = status.arp_sent ?? 0;
+    const renewPps = Math.max(0, (status.requests_sent ?? 0) - rate.renewLast);
+    rate.renewLast = status.requests_sent ?? 0;
+    const pps = discoverPps + releasePps + arpPps + renewPps;
     $("c-a").textContent = primary;
     $("c-b").textContent = status.servers ?? 0;
-    $("c-c").textContent = scanlike ? neighbors.size : pps;
+    $("c-c").textContent = pps;
     $("c-d").textContent = (status.elapsed ?? 0) + "s";
     $("state").textContent = status.state ?? "";
     if (mode === "exhaust" && status.pool_size != null) {
       const tag = status.pool_source === "scope" ? "" : " est.";
-      $("c-e").textContent = status.headroom != null ? status.headroom : "—";
-      $("l-e").textContent = `headroom / ~${status.pool_size}${tag}`;
+      const n = status.headroom != null ? status.headroom : "—";
+      $("c-e").textContent = `${n} / ${status.pool_size}${tag}`;
+      $("l-e").textContent = "headroom";
       $("headroomcell").classList.remove("dim");
       $("headroomcell").title = status.pool_detail || "";
     } else if (mode === "exhaust") {
       $("c-e").textContent = "—";
       $("l-e").textContent = "headroom (unknown)";
       $("headroomcell").classList.add("dim");
+    } else if (mode === "release-previous" && status.pool_size != null) {
+      const tag = status.pool_source === "scope" ? "" : " est.";
+      const n = status.headroom != null ? status.headroom : "—";
+      $("c-e").textContent = `${n} / ${status.pool_size}${tag}`;
+      $("l-e").textContent = "resetting";
+      $("headroomcell").classList.remove("dim");
+    } else if (mode === "release-previous") {
+      $("c-e").textContent = "—";
+      $("l-e").textContent = "headroom (unknown)";
+      $("headroomcell").classList.add("dim");
     }
-    rate.series.push(pps); if (rate.series.length > 120) rate.series.shift();
+    pushSeries(rate.discoverSeries, discoverPps);
+    pushSeries(rate.releaseSeries, releasePps);
+    pushSeries(rate.arpSeries, arpPps);
+    pushSeries(rate.renewSeries, renewPps);
     drawSpark();
   } catch (_) {}
 }
@@ -443,9 +547,15 @@ async function doStart() {
   const cfg = currentConfig();
   try {
     await api("/api/session/start", "POST", cfg);
-    rate.last = 0; rate.series = []; leases.length = 0;
+    rate.discoverLast = 0; rate.discoverSeries = [];
+    rate.releaseLast = 0; rate.releaseSeries = [];
+    rate.arpLast = 0; rate.arpSeries = [];
+    rate.renewLast = 0; rate.renewSeries = [];
+    leases.length = 0;
     servers.clear(); neighbors.clear();
     renderServers(); renderNeighbors(); renderLeases();
+    $("tables").classList.remove("alert-flag");
+    $("alerts").innerHTML = "";
     setRunning(true);
   } catch (err) { logLine("alert", "[XX] " + err.message); }
 }

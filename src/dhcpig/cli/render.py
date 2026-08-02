@@ -84,9 +84,15 @@ class Renderer:
 
     def _neighbor_summary(self, e) -> None:
         """End-of-run roll-call: **one line per host, every discovered host listed**, worst
-        first. Hosts are named rather than counted -- the operator's next move is usually to go
-        look at a specific machine -- and the untouched ones are listed too, so "unaffected" is
-        visibly distinct from "not examined".
+        first, followed immediately by the same data aggregated into counts. Hosts are named
+        rather than counted -- the operator's next move is usually to go look at a specific
+        machine -- and the untouched ones are listed too, so "unaffected" is visibly distinct
+        from "not examined".
+
+        One `[==] OUTCOME` header covers both the per-host detail and the tally beneath it
+        (2.7.2, was two separate headers -- "NEIGHBOR SUMMARY" then "OUTCOME" -- which read as
+        two different sections when they're one: this *is* the outcome, host by host and then
+        summed).
 
         Shown from verbosity 1 up: at v0 the run is deliberately silent except findings, but at
         v1 (the one-char-per-packet mode) a who-did-this-affect block is exactly what's wanted
@@ -96,14 +102,30 @@ class Renderer:
             return
         if self.verbosity == 1:
             sys.stdout.write("\n")  # close off the one-char-per-packet stream
-        self._line("==", f"NEIGHBOR SUMMARY  {e.total} host(s) seen before this run")
+        self._line("==", f"OUTCOME  {e.total} host(s) seen before this run")
+        if e.pool_exhausted:
+            self._line(
+                "!!",
+                f"  POOL EXHAUSTED -- {e.leases_acquired} lease(s) acquired; neighbors "
+                "relying on this pool cannot renew",
+            )
         # hostname column only when we actually have one for somebody -- DHCP option 12 is the
         # only source, so an ARP-only segment has none and an always-on column would be blank
-        namew = max((len(h) for *_r, h, _o, _c in e.rows), default=0)
-        for ip, mac, host, outcome, category in e.rows:
+        namew = max((len(row[2]) for row in e.rows), default=0)
+        for ip, mac, host, outcome, category, device in e.rows:
             name = f"{host:<{namew}}  " if namew else ""
-            self._line(_ROLLCALL_TAG[category], f"  {ip:<15} {mac}  {name}{outcome}")
-        self._line("==", "OUTCOME")
+            # [device/OS] tag sits before the outcome text, same "" when unknown treatment as
+            # the hostname column -- most ARP-only neighbours have neither
+            tag = f"[{device}]  " if device else ""
+            self._line(_ROLLCALL_TAG[category], f"  {ip:<15} {mac}  {name}{tag}{outcome}")
+        # Blank line between the per-host detail and the tally beneath it: one `[==] OUTCOME`
+        # header still covers both (2.7.2's merge stands), but they read as two steps -- who,
+        # then how many -- and a hard break makes that legible instead of running the last host
+        # row straight into the first tally line. Skipped at v1: the roll-call is a single
+        # unbroken one-char-per-host stream there (see `_line`), and a bare newline would just
+        # break that stream rather than separate anything.
+        if self.verbosity >= 2:
+            sys.stdout.write("\n")
         for outcome, n, category in outcome_tally(e.rows):
             self._line(_ROLLCALL_TAG[category], f"  {n:>3} host(s)  {outcome}")
 
@@ -191,7 +213,13 @@ class Renderer:
                 self._line("DBG", e.message)
 
 
-_ROLLCALL_TAG = {"offline": "!!", "lease_taken": "!!", "reacted": "<-", "unaffected": "--"}
+_ROLLCALL_TAG = {
+    "offline": "!!",
+    "lease_taken": "!!",
+    "reacted": "<-",
+    "released_unconfirmed": "??",
+    "unaffected": "--",
+}
 
 
 def outcome_tally(rows: list) -> list[tuple[str, int, str]]:
@@ -204,7 +232,8 @@ def outcome_tally(rows: list) -> list[tuple[str, int, str]]:
     run is exactly the drift `_run_summary_steps()` is documented to avoid.
     """
     seen: dict[str, tuple[int, str]] = {}
-    for *_r, outcome, category in rows:  # rows arrive worst-first, so dict order is too
+    for row in rows:  # rows arrive worst-first, so dict order is too
+        outcome, category = row[3], row[4]
         count, _cat = seen.get(outcome, (0, category))
         seen[outcome] = (count + 1, category)
     return [(outcome, n, cat) for outcome, (n, cat) in seen.items()]

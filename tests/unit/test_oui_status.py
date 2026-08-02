@@ -46,7 +46,7 @@ def test_lookup_handles_junk():
 def test_from_mac_fills_os_device_column_without_claiming_an_os():
     fp = from_mac("00:0c:29:da:53:f9", ip="10.0.0.5", role="neighbor")
     assert fp.os is None
-    assert "VMware" in fp.device and "MAC vendor" in fp.device
+    assert "VMware" in fp.device and "(vendor)" in fp.device
     assert fp.vendor and fp.confidence == 15
     assert fp.role == "neighbor"
 

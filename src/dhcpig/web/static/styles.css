@@ -37,7 +37,7 @@ button:disabled { opacity: .4; cursor: default; }
 
 /* config | neighbors-hosts tables | dashboard -- tables sit in the middle and take the wider
    share, since the host roll-call is what an operator reads during a run */
-main { display: grid; grid-template-columns: 260px 1.2fr 0.8fr; gap: 12px; padding: 12px; }
+main { display: grid; grid-template-columns: 208px 1.424fr 0.576fr; gap: 12px; padding: 12px; }
 .panel { background: var(--panel); border: 1px solid var(--edge); border-radius: 10px; padding: 12px; }
 .config label { display: block; margin: 8px 0; color: var(--muted); }
 .config input[type=number], .config input[type=text] { width: 100%; }
@@ -51,13 +51,32 @@ main { display: grid; grid-template-columns: 260px 1.2fr 0.8fr; gap: 12px; paddi
   line-height: 1.5; }
 .modenote.harm { color: var(--warn); }
 
-.counters { display: flex; flex-wrap: wrap; gap: 12px 16px; margin-bottom: 8px; }
-.counter { text-align: center; }
-.counter span { font-size: 22px; font-weight: 700; color: var(--accent); }
-.counter label { display: block; color: var(--muted); font-size: 11px; }
+/* set once any [!!] line reaches the log (pool exhaustion, a control firing, a denied host,
+   ...) -- the neighbors/hosts table is what an operator is actually looking at, so the
+   highest-severity tag should be visible there too, not only buried in the scrolling log below */
+.tables.alert-flag { border-color: var(--bad); box-shadow: 0 0 0 1px var(--bad); }
+
+.counters { display: flex; flex-wrap: nowrap; gap: 8px; margin-bottom: 8px; }
+.counter { text-align: center; min-width: 0; }
+.counter span { display: block; font-size: 17px; font-weight: 700; color: var(--accent);
+  white-space: nowrap; }
+.counter label { display: block; color: var(--muted); font-size: 10px; white-space: nowrap; }
 .counter.dim span { color: var(--muted); }
 canvas { width: 100%; height: 90px; background: #0d1117; border-radius: 8px; }
+.spark-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 6px; font-size: 11px;
+  color: var(--muted); }
+.spark-legend .swatch { display: inline-block; width: 10px; height: 2px; margin-right: 5px; vertical-align: middle; }
+.spark-legend .arp { background: #6ab0ff; }
+.spark-legend .discover { background: #4ec9b0; }
+.spark-legend .release { background: var(--pig); }
+.spark-legend .renew { background: var(--warn); }
 .state { margin-top: 8px; color: var(--muted); }
+
+/* mirrors #log's own [!!] styling -- same alert color/weight, just the highest-severity
+   lines only, so they're visible without scrolling the full event log to find them */
+.alerts { margin-top: 8px; max-height: 120px; overflow-y: auto; font-size: 12px; }
+.alerts div { color: var(--bad); font-weight: 700; padding: 2px 0; border-top: 1px solid var(--edge); }
+.alerts div:first-child { border-top: none; }
 
 .tabs { display: flex; gap: 4px; margin-bottom: 8px; }
 .tab { background: transparent; color: var(--muted); padding: 4px 8px; }
@@ -65,6 +84,20 @@ canvas { width: 100%; height: 90px; background: #0d1117; border-radius: 8px; }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--edge); font-size: 12px; }
 th { color: var(--muted); font-weight: 600; }
+/* neighbors table Result column -- same severity groupings as the OUTCOME roll-call's log
+   colors (#log .alert/.warnline/.in/.note), given their own names since they're not under #log */
+.res-bad { color: var(--bad); font-weight: 600; }
+.res-warn { color: var(--warn); font-weight: 600; }
+.res-in { color: #6ab0ff; }
+.res-notice { color: var(--muted); }
+
+/* hairline grid on the neighbors/hosts table only -- a faint cell outline, not the heavier
+   1px --edge border the other tabs use */
+#t-neighbors table { border-collapse: collapse; }
+#t-neighbors th, #t-neighbors td { border: 1px solid rgba(143, 160, 179, 0.18); }
+/* Result is the longest cell -- keep it on one line and let the panel scroll sideways
+   rather than doubling row height */
+#t-neighbors td:last-child { white-space: nowrap; }
 
 .log { margin: 0 12px 12px; }
 #log { margin: 0; max-height: 264px; overflow: auto; white-space: pre-wrap; font-size: 12px; }
@@ -80,7 +113,7 @@ th { color: var(--muted); font-weight: 600; }
 
 /* neighbors tab: header row + 10 data rows (each ~27px at the table's 12px/1.5 line-height,
    4px vertical padding, 1px border) before it scrolls */
-.neighbors { max-height: 298px; overflow-y: scroll; overflow-x: hidden; padding-right: 4px; }
+.neighbors { max-height: 298px; overflow-y: scroll; overflow-x: auto; padding-right: 4px; }
 
 .neighbors { scrollbar-width: thin; scrollbar-color: var(--edge) var(--bg); }
 .neighbors::-webkit-scrollbar { width: 10px; }

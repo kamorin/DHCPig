@@ -10,13 +10,23 @@ Python 3.11+.
 Run the web UI
 --------------
 
+**Debian / Kali:** grab the latest `.deb` from
+[Releases](https://github.com/kamorin/DHCPig/releases/latest) and install it —
+puts `dhcpig` and `dhcpig-web` on `PATH`, no venv needed:
+
+    sudo apt install ./dhcpig_*.deb
+    sudo dhcpig-web --open
+
+**From source** (any Linux, Python 3.11+):
+
     git clone https://github.com/kamorin/DHCPig && cd DHCPig
     python3 -m venv .venv && .venv/bin/pip install -e .
     sudo .venv/bin/dhcpig-web --open
 
 Open the printed `http://127.0.0.1:8787/?token=...` URL. Three gotchas:
 
-* **Use the full `.venv/bin/` path** — `sudo` resets `PATH`. Root is required (raw sockets).
+* **Root is required either way** (raw sockets). From source, use the full `.venv/bin/` path
+  — `sudo` resets `PATH`.
 * **The `?token=` is mandatory.** Without it you get 401s and a blank page.
 * **Headless?** It binds loopback on purpose. Forward it, don't re-bind:
   `ssh -L 8787:127.0.0.1:8787 user@<vm-ip>`. Drop `--open`.

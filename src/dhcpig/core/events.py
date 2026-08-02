@@ -88,27 +88,45 @@ class NeighborSummary(Event):
     roll-call that silently omits the hosts nothing happened to isn't a roll-call; the reader
     can't tell "unaffected" from "not looked at".
 
-    `rows` are `(ip, mac, hostname, outcome, category)`, sorted by category severity then
-    address. `hostname` is DHCP option 12 seen on a foreign DISCOVER and is `""` for any host
-    that didn't ask for an address while we were listening -- which is most of them on a quiet
-    segment. Never guessed from anything else.
+    `rows` are `(ip, mac, hostname, outcome, category, device)`, sorted by category severity
+    then address. `hostname` is DHCP option 12 seen on a foreign DISCOVER and is `""` for any
+    host that didn't ask for an address while we were listening -- which is most of them on a
+    quiet segment. Never guessed from anything else. `device` is a short "os (vendor)" label
+    from the neighbor's fingerprint (falling back through device/vendor alone), `""` when the
+    host was never fingerprinted -- same omit-when-empty treatment as `hostname`.
     `category` drives how a front end colors the line and is one of:
 
       * `offline` -- the host has no working address right now: it reached the `apipa` or
         `discover_unanswered` eviction rung, or (exhaust) it asked for an address during the run
         and got no answer because the pool was drained.
-      * `lease_taken` -- the server handed us its address (re-acquisition `granted`) but the
-        host showed no reaction. **It is still using that address and does not know the lease
-        is gone**; it fails at its next renewal (T1), not now. Reporting these as `offline`
-        overstates present-tense impact; folding them into `unaffected` hides a population that
-        is going to drop with no warning. Hence a category of their own.
-      * `reacted` -- `defended`, `declined` or `rediscovered`: it noticed and is working now,
-        possibly on a different address.
+      * `lease_taken` -- the server handed us its address (re-acquisition `granted`) and the
+        host either showed no reaction or *defended* the address against the ARP conflict.
+        **It is still using that address and does not know the lease is gone**; it fails at its
+        next renewal (T1), not now. Reporting these as `offline` overstates present-tense
+        impact; folding them into `unaffected` hides a population that is going to drop with no
+        warning. Hence a category of their own. Defending belongs here rather than in `reacted`
+        (2.7.1): winning the ARP exchange says nothing about the lease underneath, which was
+        already reassigned -- that host is in exactly the same position as a silent one.
+      * `reacted` -- `declined` or `rediscovered` (or `defended` on an address we did *not*
+        take): it noticed and is working now, possibly on a different address.
+      * `released_unconfirmed` (2.7.3) -- a forged `DHCPRELEASE` was sent naming its address,
+        but re-acquisition never got it back (`offered_different`/`naked`/`no_response`). Not
+        `unaffected`: an unauthenticated RELEASE genuinely went out in its name. Not `offline`
+        or `lease_taken` either: whether the server acted on it is unobservable from here (see
+        `_finish_release()`'s docstring on why a miss proves nothing on a pool with headroom).
       * `unaffected` -- nothing this run did left a mark on it that we can see.
+
+    `pool_exhausted` and `leases_acquired` carry the same confirmed-exhaustion state that drove
+    `PoolExhausted` (2.3) into this summary too, so a front end doesn't have to remember an
+    earlier live event to show it alongside the roll-call it explains: with the pool actually
+    drained, `leases_acquired` addresses are gone for good until they expire, and any neighbor
+    among these rows still depends on one of them can't renew.
     """
 
     total: int
-    rows: list[tuple[str, str, str, str, str]] = field(default_factory=list)
+    rows: list[tuple[str, str, str, str, str, str]] = field(default_factory=list)
+    pool_exhausted: bool = False
+    leases_acquired: int = 0
 
 
 @dataclass
