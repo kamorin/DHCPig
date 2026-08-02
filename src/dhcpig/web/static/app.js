@@ -101,10 +101,11 @@ function onModeChange() {
   const note = MODE_NOTES[mode];
   $("modenote").textContent = note ? note.text : "";
   $("modenote").classList.toggle("harm", !!(note && note.harm));
-  // exhaust has no --rate of its own; the windowed handshake pipeline paces it instead
-  const isExhaust = mode === "exhaust";
-  $("ratecfg").classList.toggle("hidden", isExhaust);
-  $("ratehint").classList.toggle("hidden", !isExhaust);
+  // exhaust and release have no --rate of their own; release's re-acquisition leg shares
+  // exhaust's windowed handshake pipeline, which paces it and backs off on NAKs the same way.
+  const selfPaced = mode === "exhaust" || mode === "release";
+  $("ratecfg").classList.toggle("hidden", selfPaced);
+  $("ratehint").classList.toggle("hidden", !selfPaced);
   // release-previous defaults to 50pps, not the 7pps every other mode uses -- it runs during
   // an outage the operator is trying to end, and its frames are unicast to one server rather
   // than sprayed at the segment. Only nudge the field if it's still sitting at a default.
@@ -486,7 +487,7 @@ $("copycli").addEventListener("click", async () => {
 function cliFromConfig() {
   const c = currentConfig();
   let s = `dhcpig ${c.mode} ${c.interface}`;
-  if (c.mode !== "exhaust") s += ` --rate ${c.rate}`;
+  if (c.mode !== "exhaust" && c.mode !== "release") s += ` --rate ${c.rate}`;
   (c.scope_cidrs || []).forEach((x) => (s += ` --scope ${x}`));
   if (c.dry_run) s += " --dry-run";
   return s;
