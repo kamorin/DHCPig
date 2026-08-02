@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DHCPig</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <img class="logo" src="/icon.svg" alt="" width="28" height="28" />
+    <span class="brand">DHCP<span class="pig">ig</span></span>
+    <label>Iface <select id="iface"></select></label>
+    <label>Mode
+      <select id="mode">
+        <option value="exhaust">DHCP Exhaustion</option>
+        <option value="release">DHCP Release Active Clients</option>
+        <option value="release-previous">Post Exhaustion / Reset DHCP Records</option>
+        <option value="active-scan" selected>Find Neighbors</option>
+      </select>
+    </label>
+    <button id="start">▶ Start</button>
+    <button id="stop" disabled>■ Stop</button>
+    <span class="exportgrp">⤓
+      <button data-fmt="json">JSON</button><button data-fmt="csv">CSV</button><button data-fmt="html">HTML</button>
+    </span>
+    <button id="copycli" title="Copy equivalent dhcpig command">⧉ Copy CLI</button>
+    <button id="saveprofile" title="Download profile">💾</button>
+    <label class="filebtn" title="Load profile">📂<input type="file" id="loadprofile" accept="application/json" hidden /></label>
+    <label>
+      <select id="verbosity">
+        <option value="0">0 · errors</option>
+        <option value="1">1 · minimal</option>
+        <option value="2" selected>2 · normal</option>
+        <option value="3">3 · debug</option>
+      </select>
+      Verbosity
+    </label>
+    <span id="conn" class="pill off">SSE: off</span>
+  </header>
+
+  <div id="drybanner" class="banner warn">DRY RUN — building packets, nothing is sent on the wire</div>
+
+  <main>
+    <section class="panel config">
+      <h2>Config</h2>
+      <div id="ratecfg">
+        <label>Rate (pps) <input type="number" id="rate" value="7" min="1" /></label>
+      </div>
+      <p id="ratehint" class="hint hidden">Self-pacing; backs off on NAKs.</p>
+      <div id="destcfg" class="destcfg">
+        <label>Scope CIDRs <input type="text" id="scope"
+          placeholder="defaults to the interface network" /></label>
+      </div>
+      <label class="chk"><input type="checkbox" id="spoofeth" checked /> spoof eth src (distinct MACs)</label>
+      <label class="chk"><input type="checkbox" id="dryrun" /> Dry-run</label>
+      <p id="modenote" class="hint modenote"></p>
+    </section>
+
+    <section class="panel tables">
+      <div class="tabs">
+        <button class="tab active" data-tab="neighbors">Neighbors / Hosts</button>
+        <button class="tab" data-tab="servers">Servers</button>
+        <button class="tab" data-tab="leases">Leases</button>
+      </div>
+      <div id="t-neighbors" class="tab-body neighbors">
+        <table>
+          <thead><tr><th>Host</th><th>MAC</th><th>OS / Device</th><th>Conf</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <table id="t-servers" class="tab-body hidden">
+        <thead><tr><th>Server</th><th>Offers</th><th>OS / Device</th><th>Conf</th></tr></thead>
+        <tbody></tbody></table>
+      <table id="t-leases" class="tab-body hidden">
+        <thead><tr><th>IP</th><th>MAC</th><th>Server</th></tr></thead>
+        <tbody></tbody></table>
+    </section>
+
+    <section class="panel dashboard">
+      <h2>Dashboard</h2>
+      <div class="counters">
+        <div class="counter"><span id="c-a">0</span><label id="l-a">leases</label></div>
+        <div class="counter"><span id="c-b">0</span><label id="l-b">servers</label></div>
+        <div class="counter"><span id="c-c">0</span><label id="l-c">pps</label></div>
+        <div class="counter"><span id="c-d">0s</span><label>elapsed</label></div>
+        <div class="counter" id="headroomcell"><span id="c-e">—</span><label id="l-e">headroom</label></div>
+      </div>
+      <canvas id="spark" width="520" height="90"></canvas>
+      <div id="state" class="state">IDLE</div>
+    </section>
+  </main>
+
+  <section class="panel log"><h2>Event log</h2><pre id="log"></pre></section>
+
+  <script src="/app.js"></script>
+</body>
+</html>
