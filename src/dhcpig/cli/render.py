@@ -114,10 +114,10 @@ class Renderer:
         namew = max((len(row[2]) for row in e.rows), default=0)
         for ip, mac, host, outcome, category, device in e.rows:
             name = f"{host:<{namew}}  " if namew else ""
-            # [device/OS] tag trails the line, same "" when unknown treatment as the hostname
-            # column -- most ARP-only neighbours have neither
-            tag = f"  [{device}]" if device else ""
-            self._line(_ROLLCALL_TAG[category], f"  {ip:<15} {mac}  {name}{outcome}{tag}")
+            # [device/OS] tag sits before the outcome text, same "" when unknown treatment as
+            # the hostname column -- most ARP-only neighbours have neither
+            tag = f"[{device}]  " if device else ""
+            self._line(_ROLLCALL_TAG[category], f"  {ip:<15} {mac}  {name}{tag}{outcome}")
         # Blank line between the per-host detail and the tally beneath it: one `[==] OUTCOME`
         # header still covers both (2.7.2's merge stands), but they read as two steps -- who,
         # then how many -- and a hard break makes that legible instead of running the last host

@@ -340,10 +340,10 @@ function handleEvent(e) {
       const namew = Math.max(0, ...(e.rows || []).map((r) => (r[2] || "").length));
       for (const [ip, mac, host, outcome, category, device] of e.rows || []) {
         const name = namew ? (host || "").padEnd(namew) + "  " : "";
-        // [device/OS] tag trails the line, same "" when unknown treatment as the hostname
-        // column above -- most ARP-only neighbours have neither
-        const tag = device ? `  [${device}]` : "";
-        logLine(cls(category), `       ${ip.padEnd(15)} ${mac}  ${name}${outcome}${tag}`, 0);
+        // [device/OS] tag sits before the outcome text, same "" when unknown treatment as the
+        // hostname column above -- most ARP-only neighbours have neither
+        const tag = device ? `[${device}]  ` : "";
+        logLine(cls(category), `       ${ip.padEnd(15)} ${mac}  ${name}${tag}${outcome}`, 0);
       }
       // Blank line between the per-host detail and the tally beneath it -- mirrors
       // cli/render.py's Renderer._neighbor_summary(): one [==] OUTCOME header still covers
