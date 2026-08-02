@@ -210,6 +210,33 @@ def test_recommendation_gives_one_wifi_control(monkeypatch):
     assert "client-hardware-address" in rec
 
 
+def test_scan_modes_do_not_claim_dhcp_spoofing_they_never_did(monkeypatch):
+    """The spoofing takeaway is true of the sending modes only. A passive scan sends nothing and
+    active-scan names nobody but itself (ARP sweep + DHCPINFORM), so claiming every step above
+    worked because DHCP trusts the name on a request described a run that didn't happen."""
+    for mode in (Mode.SCAN, Mode.ACTIVE_SCAN):
+        eng, events = _engine(monkeypatch, mode=mode)
+        eng._finalize_findings()
+        rec = _summary(events).recommendation
+        assert "never checks that a request comes from" not in rec, mode
+        assert "on that device's behalf" not in rec, mode
+        assert rec  # every mode still gets a takeaway of its own
+
+
+def test_active_scan_recommendation_describes_reconnaissance(monkeypatch):
+    eng, events = _engine(monkeypatch, mode=Mode.ACTIVE_SCAN)
+    eng._finalize_findings()
+    rec = _summary(events).recommendation
+    assert "took or disturbed a lease" in rec
+    assert "DHCPINFORM" in rec
+
+
+def test_scan_recommendation_says_nothing_was_sent(monkeypatch):
+    eng, events = _engine(monkeypatch, mode=Mode.SCAN)
+    eng._finalize_findings()
+    assert _summary(events).recommendation.startswith("Nothing was sent")
+
+
 # ---------------------------------------------------------------- CLI rendering
 def test_cli_prints_the_shared_summary_lines(capsys, monkeypatch):
     """CLI, web log and HTML report all render a finding through

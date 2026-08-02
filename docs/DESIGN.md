@@ -135,9 +135,13 @@ together and should be kept together:
     conclusion from the same run is worse than one. A regression test asserts the step text
     contains no posture vocabulary.
 
-  Its single recommendation assumes a **Wi-Fi-based** attacker (controller DHCP proxy +
-  client-MAC/chaddr consistency enforcement) — that's the one control that breaks every step in
-  the chain, since all of them depend on sending DHCP on another device's behalf.
+  Its recommendation is **keyed on the mode** (`findings.run_summary_recommendation()`). For the
+  sending modes it assumes a **Wi-Fi-based** attacker (controller DHCP proxy + client-MAC/chaddr
+  consistency enforcement) — that's the one control that breaks every step in the chain, since
+  all of them depend on sending DHCP on another device's behalf. `scan` and `active-scan` get
+  their own text, because that sentence is simply untrue of them: neither sends DHCP naming
+  another device (active-scan's steps are an ARP sweep and a DHCPINFORM), so they describe what
+  reconnaissance alone demonstrates instead. Keep this split if you add a mode.
 - **The neighbor roll-call has two surfaces, one source.** `_neighbor_rollcall()` does all the
   classifying and returns `(ip, mac, hostname, outcome, category)` rows (`hostname` is DHCP
   option 12 off a foreign DISCOVER, `""` when never seen — never inferred from anything else,

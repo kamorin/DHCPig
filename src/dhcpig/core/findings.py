@@ -5,12 +5,11 @@ know every verdict this tool can emit reads this file instead of hunting through
 `_derive_findings()` for `self._raise(` calls.
 
 `build()` covers the common case (a catalogue entry supplies title/verdict/severity/
-recommendation as-is; the caller supplies only `evidence`). Two findings have text that
-genuinely varies per call -- NEIGHBORS_OBSERVED's title includes the host count, and
-DHCP_STARVATION_NOT_ATTAINED's recommendation depends on which of four reasons applied -- so
-`build()` also accepts `title`/`recommendation` overrides, and
-`starvation_not_attained_recommendation()` is the one small helper that picks the right template
-for the latter.
+recommendation as-is; the caller supplies only `evidence`). A few findings have text that
+genuinely varies per call -- NEIGHBORS_OBSERVED's title includes the host count,
+RUN_SUMMARY's recommendation depends on the mode, and DHCP_STARVATION_NOT_ATTAINED's on which
+of four reasons applied -- so `build()` also accepts `title`/`recommendation` overrides, and the
+small `*_recommendation()` helpers below pick the right template for each.
 """
 
 from __future__ import annotations
@@ -19,22 +18,13 @@ from .models import FAIL, INCONCLUSIVE, INFO, PASS, Finding
 
 _CATALOG: dict[str, dict] = {
     "RUN_SUMMARY": {
+        # recommendation is always overridden per call -- see run_summary_recommendation()
+        # below, which keys it on the mode (the read-only scans do nothing the spoofing text
+        # would describe).
         "title": "What this run did, step by step",
         "verdict": INFO,
         "severity": "info",
-        "recommendation": (
-            # First sentence only reaches the log (finding_summary_lines); the rest is
-            # for the report, so it has to stand alone.
-            "Every step above works because DHCP never checks that a request comes from "
-            "the device it names. Assuming this was run from Wi-Fi, the single "
-            "highest-value control is to enable DHCP proxy on the WLAN and have the "
-            "controller drop any DHCP message whose client-hardware-address does not "
-            "match the MAC of the station that sent it. A wireless station's MAC is "
-            "bound to its association (and, under WPA2/WPA3, to its encryption keys), "
-            "so the controller is uniquely able to catch this -- and every step above "
-            "that touched another device's address depended on being able to send DHCP "
-            "on that device's behalf."
-        ),
+        "recommendation": "",
     },
     "NEIGHBORS_OBSERVED": {
         # title is overridden per call (includes the host count) -- kept here anyway so the
@@ -294,6 +284,53 @@ def build(
         severity=entry["severity"],
         evidence=evidence,
         recommendation=(recommendation if recommendation is not None else entry["recommendation"]),
+    )
+
+
+def run_summary_recommendation(mode: str) -> str:
+    """The RUN_SUMMARY recommendation, keyed on `Mode.value`.
+
+    Three variants, because the takeaway from a run is a property of what the run actually did.
+    The sending modes all rest on the same weakness -- DHCP accepts a message that names another
+    device -- but the two scan modes never send DHCP on anyone's behalf, so that sentence was
+    simply false there (an ARP inventory plus a DHCPINFORM names nobody but ourselves). Their
+    text says what reconnaissance alone demonstrates instead.
+
+    First sentence of each only reaches the log (finding_summary_lines); the rest is for the
+    report, so it has to stand alone.
+    """
+    if mode == "scan":
+        return (
+            "Nothing was sent: every line above was learned by listening to broadcast traffic "
+            "the segment was already carrying. That is the point -- ARP and DHCP are broadcast "
+            "in the clear, so any host that can join this network can build this inventory "
+            "without emitting a single frame of its own and without appearing in any server or "
+            "switch log. Treat the host list as what an attacker knows before they do anything. "
+            "Run an active or destructive mode to test whether the segment defends against "
+            "acting on it."
+        )
+    if mode == "active-scan":
+        return (
+            "Nothing above took or disturbed a lease: this run mapped the segment with ARP and "
+            "asked who the DHCP servers are with DHCPINFORM. Both answer anyone -- ARP has no "
+            "authentication at all, and DHCPINFORM is answered without a lease being allocated, "
+            "so it identifies the servers without leaving a lease-log entry behind. The result "
+            "is a free, low-noise map of the hosts and the DHCP infrastructure on this segment; "
+            "the controls worth checking are the ones that limit who can reach it in the first "
+            "place (client isolation on the WLAN, segmentation, and Dynamic ARP Inspection "
+            "against the ARP-based follow-ups). Run exhaust or release to test what happens "
+            "when someone acts on this map."
+        )
+    return (
+        "Every step above works because DHCP never checks that a request comes from "
+        "the device it names. Assuming this was run from Wi-Fi, the single "
+        "highest-value control is to enable DHCP proxy on the WLAN and have the "
+        "controller drop any DHCP message whose client-hardware-address does not "
+        "match the MAC of the station that sent it. A wireless station's MAC is "
+        "bound to its association (and, under WPA2/WPA3, to its encryption keys), "
+        "so the controller is uniquely able to catch this -- and every step above "
+        "that touched another device's address depended on being able to send DHCP "
+        "on that device's behalf."
     )
 
 

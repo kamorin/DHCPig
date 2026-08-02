@@ -830,6 +830,7 @@ class DhcpEngine:
                     "dry_run": self.cfg.dry_run,
                     "steps": self._run_summary_steps(),
                 },
+                recommendation=findings.run_summary_recommendation(self.cfg.mode.value),
             )
         )
 
