@@ -333,8 +333,8 @@ class DhcpEngine:
                 "neighbors": len(self._neighbors_by_mac),
                 **cur,
                 **{f"d_{k}": cur[k] - prev[k] for k in cur},
-                "discover_pps": round((cur["discovers"] - prev["discovers"]) / window, 1),
-                "lease_pps": round((cur["leases"] - prev["leases"]) / window, 1),
+                "discover_ppm": round((cur["discovers"] - prev["discovers"]) / window * 60, 1),
+                "lease_ppm": round((cur["leases"] - prev["leases"]) / window * 60, 1),
                 "since_last_offer": (
                     round(now - self._last_offer_ts, 1) if self._offers_seen_any else None
                 ),
