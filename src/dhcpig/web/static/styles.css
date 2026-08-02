@@ -62,7 +62,17 @@ main { display: grid; grid-template-columns: 208px 1.424fr 0.576fr; gap: 12px; p
 .counter label { display: block; color: var(--muted); font-size: 11px; }
 .counter.dim span { color: var(--muted); }
 canvas { width: 100%; height: 90px; background: #0d1117; border-radius: 8px; }
+.spark-legend { display: flex; gap: 14px; margin-top: 6px; font-size: 11px; color: var(--muted); }
+.spark-legend .swatch { display: inline-block; width: 10px; height: 2px; margin-right: 5px; vertical-align: middle; }
+.spark-legend .discover { background: #4ec9b0; }
+.spark-legend .release { background: var(--pig); }
 .state { margin-top: 8px; color: var(--muted); }
+
+/* mirrors #log's own [!!] styling -- same alert color/weight, just the highest-severity
+   lines only, so they're visible without scrolling the full event log to find them */
+.alerts { margin-top: 8px; max-height: 120px; overflow-y: auto; font-size: 12px; }
+.alerts div { color: var(--bad); font-weight: 700; padding: 2px 0; border-top: 1px solid var(--edge); }
+.alerts div:first-child { border-top: none; }
 
 .tabs { display: flex; gap: 4px; margin-bottom: 8px; }
 .tab { background: transparent; color: var(--muted); padding: 4px 8px; }

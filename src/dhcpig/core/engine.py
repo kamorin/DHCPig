@@ -182,6 +182,10 @@ class DhcpEngine:
         self._rp_pre_control: ControlOutcome | None = None
         self._rp_post_control: ControlOutcome | None = None
         self.recovery_result: dict = {}
+        # live count of journal entries selected for release-previous to reset, as soon as
+        # selection runs -- lets the dashboard show a headroom number mid-run rather than only
+        # after the whole recovery completes (see status()'s RELEASE_PREVIOUS branch)
+        self._rp_selected_count: int | None = None
         # release mode's own pre/self control outcome (2.3, Phase 5) -- same precedent as
         # _rp_pre_control above: kept out of self.control_pre so _finalize_findings()'s
         # DHCP_STARVATION_* derivation (which reads control_pre/control_pre_new) never fires for
@@ -428,6 +432,13 @@ class DhcpEngine:
             out["in_use_observed"] = len(self._neighbors_by_mac)
         if self.cfg.mode is Mode.RELEASE_PREVIOUS:
             out["recovery"] = self.recovery_result or None
+            # headroom here means "how many of the pool's addresses this run is handing back",
+            # not exhaust's "how many are still free" -- the CIDR gives the pool size, the
+            # journal selection (once computed) gives the count being reset
+            est = self._estimate_pool()
+            out["pool_size"] = est.size
+            out["pool_source"] = est.source
+            out["headroom"] = self._rp_selected_count
         if self._evict.outcomes:
             # eviction (2.3): the sniffer/status-ticker are already down by the time _evict_phase
             # runs (it's inline in stop(), after the worker threads are joined), so this only
@@ -2585,10 +2596,13 @@ class DhcpEngine:
     def _release_previous_worker(self) -> None:
         """Replay the lease journal to recover a network this tool previously drained.
 
-        No ARP sweep, no server discovery, no leasequery: the journal already carries mac,
-        ip, server_ip and server_mac for every lease, so the release itself is fully
-        self-sufficient from disk. The pre/post control transactions exist purely to produce
-        a trustworthy verdict -- reused from `_control_transaction()`, not reimplemented.
+        No server discovery, no leasequery: the journal already carries mac, ip, server_ip and
+        server_mac for every lease, so the release itself is fully self-sufficient from disk --
+        the ARP inventory below is not used to pick targets. It exists for the same reason it
+        does in exhaust/release (`_common_prelude()`): parity in the step summary/dashboard, and
+        a live device count for the operator to sanity-check the journal against, not a filter.
+        The pre/post control transactions exist purely to produce a trustworthy verdict --
+        reused from `_control_transaction()`, not reimplemented.
         """
         # Read path is independent of self.journal_path (the *write* path, which is None
         # whenever journaling is off or this is a dry-run) -- release-previous must be able to
@@ -2609,6 +2623,9 @@ class DhcpEngine:
 
         if self._stop.is_set():
             return
+        self._baseline_arp_scan()
+        if self._stop.is_set():
+            return
         pre = self._control_transaction("pre", client="new")
         self._rp_pre_control = pre
         if pre.success:
@@ -2626,6 +2643,7 @@ class DhcpEngine:
             return
 
         selected, stats = recovery.select_entries(self.cfg, all_entries, scope, pre)
+        self._rp_selected_count = stats["selected"]
         self._debug(
             "release-previous: selection — "
             f"{stats['journal_entries_loaded']} loaded, {stats['in_cidr']} in scope, "

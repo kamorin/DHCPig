@@ -19,7 +19,7 @@ async function api(path, method = "GET", body) {
 }
 
 let running = false;
-const rate = { last: 0, series: [] };
+const rate = { last: 0, series: [], releaseLast: 0, releaseSeries: [] };
 const servers = new Map();
 const neighbors = new Map();
 const leases = [];
@@ -122,8 +122,10 @@ function onModeChange() {
   $("l-a").textContent = labels[0];
   $("l-b").textContent = labels[1];
   $("l-c").textContent = labels[2];
-  // headroom only means something for exhaust (it's a DHCP pool concept)
-  if (mode !== "exhaust") {
+  // headroom means something for exhaust (free addresses left) and release-previous (addresses
+  // this run is handing back) -- both are CIDR-derived pool numbers; every other mode leaves it
+  // dimmed since there's no pool concept to report
+  if (mode !== "exhaust" && mode !== "release-previous") {
     $("c-e").textContent = "—";
     $("l-e").textContent = "headroom";
     $("headroomcell").classList.add("dim");
@@ -157,8 +159,17 @@ function logLine(cls, text, level = 2) {
   el.scrollTop = el.scrollHeight;
   // A [!!] line is the log's highest-severity tag (pool exhaustion, a defensive control
   // firing, a denied host, ...) -- flag the center tables panel too, since the neighbors/hosts
-  // roll-call is what an operator is looking at, not the scrolling log underneath it.
-  if (text.startsWith("[!!]")) flagAlert();
+  // roll-call is what an operator is looking at, not the scrolling log underneath it. Also
+  // surface it in the dashboard panel, where the graph/counters already are.
+  if (text.startsWith("[!!]")) { flagAlert(); addDashboardAlert(text); }
+}
+
+function addDashboardAlert(text) {
+  const el = $("alerts");
+  const div = document.createElement("div");
+  div.textContent = text;
+  el.appendChild(div);
+  el.scrollTop = el.scrollHeight;
 }
 
 function flagAlert() {
@@ -234,19 +245,26 @@ function renderLeases() {
 }
 
 // ---- canvas sparkline -----------------------------------------------------
-function drawSpark() {
-  const c = $("spark"), ctx = c.getContext("2d");
-  const w = c.width, h = c.height, s = rate.series;
-  ctx.clearRect(0, 0, w, h);
+// Two lines share one scale (DISCOVER pps vs DHCPRELEASE pps) so a release-heavy mode's
+// forged RELEASE traffic is visible alongside the DISCOVER rate, not silently dropped.
+function drawLine(ctx, s, w, h, max, color) {
   if (s.length < 2) return;
-  const max = Math.max(1, ...s);
-  ctx.strokeStyle = "#4ec9b0"; ctx.lineWidth = 2; ctx.beginPath();
+  ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
   s.forEach((v, i) => {
     const x = (i / (s.length - 1)) * (w - 4) + 2;
     const y = h - 4 - (v / max) * (h - 8);
     i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
   });
   ctx.stroke();
+}
+function drawSpark() {
+  const c = $("spark"), ctx = c.getContext("2d");
+  const w = c.width, h = c.height, s = rate.series, rs = rate.releaseSeries;
+  ctx.clearRect(0, 0, w, h);
+  if (s.length < 2 && rs.length < 2) return;
+  const max = Math.max(1, ...s, ...rs);
+  drawLine(ctx, s, w, h, max, "#4ec9b0");
+  drawLine(ctx, rs, w, h, max, "#e0679a");
 }
 
 // ---- SSE ------------------------------------------------------------------
@@ -452,14 +470,19 @@ async function pollStatus() {
     const { status } = await api("/api/session/status");
     const mode = $("mode").value;
     const scanlike = mode === "scan" || mode === "active-scan";
+    const releaseLike = mode === "release" || mode === "release-previous";
     const primary = { exhaust: status.leases, scan: neighbors.size,
       "active-scan": neighbors.size, release: status.releases,
       "release-previous": status.releases }[mode] ?? 0;
     const pps = Math.max(0, (status.discovers ?? 0) - rate.last);
     rate.last = status.discovers ?? 0;
+    const releasePps = Math.max(0, (status.releases ?? 0) - rate.releaseLast);
+    rate.releaseLast = status.releases ?? 0;
     $("c-a").textContent = primary;
     $("c-b").textContent = status.servers ?? 0;
-    $("c-c").textContent = scanlike ? neighbors.size : pps;
+    // release/release-previous send DHCPRELEASE, not DISCOVER -- the discover-based pps stays 0
+    // for them the whole run, so use the release rate instead of the generic one
+    $("c-c").textContent = scanlike ? neighbors.size : releaseLike ? releasePps : pps;
     $("c-d").textContent = (status.elapsed ?? 0) + "s";
     $("state").textContent = status.state ?? "";
     if (mode === "exhaust" && status.pool_size != null) {
@@ -472,8 +495,19 @@ async function pollStatus() {
       $("c-e").textContent = "—";
       $("l-e").textContent = "headroom (unknown)";
       $("headroomcell").classList.add("dim");
+    } else if (mode === "release-previous" && status.pool_size != null) {
+      const tag = status.pool_source === "scope" ? "" : " est.";
+      $("c-e").textContent = status.headroom != null ? status.headroom : "—";
+      $("l-e").textContent = `resetting / ~${status.pool_size}${tag}`;
+      $("headroomcell").classList.remove("dim");
+    } else if (mode === "release-previous") {
+      $("c-e").textContent = "—";
+      $("l-e").textContent = "headroom (unknown)";
+      $("headroomcell").classList.add("dim");
     }
     rate.series.push(pps); if (rate.series.length > 120) rate.series.shift();
+    rate.releaseSeries.push(releasePps);
+    if (rate.releaseSeries.length > 120) rate.releaseSeries.shift();
     drawSpark();
   } catch (_) {}
 }
@@ -484,10 +518,11 @@ async function doStart() {
   const cfg = currentConfig();
   try {
     await api("/api/session/start", "POST", cfg);
-    rate.last = 0; rate.series = []; leases.length = 0;
+    rate.last = 0; rate.series = []; rate.releaseLast = 0; rate.releaseSeries = []; leases.length = 0;
     servers.clear(); neighbors.clear();
     renderServers(); renderNeighbors(); renderLeases();
     $("tables").classList.remove("alert-flag");
+    $("alerts").innerHTML = "";
     setRunning(true);
   } catch (err) { logLine("alert", "[XX] " + err.message); }
 }
