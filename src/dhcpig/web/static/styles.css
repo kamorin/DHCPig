@@ -56,10 +56,11 @@ main { display: grid; grid-template-columns: 208px 1.424fr 0.576fr; gap: 12px; p
    highest-severity tag should be visible there too, not only buried in the scrolling log below */
 .tables.alert-flag { border-color: var(--bad); box-shadow: 0 0 0 1px var(--bad); }
 
-.counters { display: flex; flex-wrap: wrap; gap: 12px 16px; margin-bottom: 8px; }
-.counter { text-align: center; }
-.counter span { font-size: 22px; font-weight: 700; color: var(--accent); }
-.counter label { display: block; color: var(--muted); font-size: 11px; }
+.counters { display: flex; flex-wrap: nowrap; gap: 8px; margin-bottom: 8px; }
+.counter { text-align: center; min-width: 0; }
+.counter span { display: block; font-size: 17px; font-weight: 700; color: var(--accent);
+  white-space: nowrap; }
+.counter label { display: block; color: var(--muted); font-size: 10px; white-space: nowrap; }
 .counter.dim span { color: var(--muted); }
 canvas { width: 100%; height: 90px; background: #0d1117; border-radius: 8px; }
 .spark-legend { display: flex; gap: 14px; margin-top: 6px; font-size: 11px; color: var(--muted); }

@@ -496,8 +496,9 @@ async function pollStatus() {
     $("state").textContent = status.state ?? "";
     if (mode === "exhaust" && status.pool_size != null) {
       const tag = status.pool_source === "scope" ? "" : " est.";
-      $("c-e").textContent = status.headroom != null ? status.headroom : "—";
-      $("l-e").textContent = `headroom / ~${status.pool_size}${tag}`;
+      const n = status.headroom != null ? status.headroom : "—";
+      $("c-e").textContent = `${n} / ${status.pool_size}${tag}`;
+      $("l-e").textContent = "headroom";
       $("headroomcell").classList.remove("dim");
       $("headroomcell").title = status.pool_detail || "";
     } else if (mode === "exhaust") {
@@ -506,8 +507,9 @@ async function pollStatus() {
       $("headroomcell").classList.add("dim");
     } else if (mode === "release-previous" && status.pool_size != null) {
       const tag = status.pool_source === "scope" ? "" : " est.";
-      $("c-e").textContent = status.headroom != null ? status.headroom : "—";
-      $("l-e").textContent = `resetting / ~${status.pool_size}${tag}`;
+      const n = status.headroom != null ? status.headroom : "—";
+      $("c-e").textContent = `${n} / ${status.pool_size}${tag}`;
+      $("l-e").textContent = "resetting";
       $("headroomcell").classList.remove("dim");
     } else if (mode === "release-previous") {
       $("c-e").textContent = "—";
