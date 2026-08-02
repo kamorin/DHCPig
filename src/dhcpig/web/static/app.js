@@ -19,7 +19,11 @@ async function api(path, method = "GET", body) {
 }
 
 let running = false;
-const rate = { last: 0, series: [], releaseLast: 0, releaseSeries: [] };
+const rate = {
+  last: 0, series: [],
+  releaseLast: 0, releaseSeries: [],
+  arpLast: 0, arpSeries: [],
+};
 const servers = new Map();
 const neighbors = new Map();
 const leases = [];
@@ -245,8 +249,9 @@ function renderLeases() {
 }
 
 // ---- canvas sparkline -----------------------------------------------------
-// Two lines share one scale (DISCOVER pps vs DHCPRELEASE pps) so a release-heavy mode's
-// forged RELEASE traffic is visible alongside the DISCOVER rate, not silently dropped.
+// Three lines share one scale (DISCOVER pps, DHCPRELEASE pps, ARP-discover pps) so a run's
+// full traffic mix is visible at once, not just whichever rate the current mode's primary
+// counter happens to track.
 function drawLine(ctx, s, w, h, max, color) {
   if (s.length < 2) return;
   ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
@@ -259,12 +264,13 @@ function drawLine(ctx, s, w, h, max, color) {
 }
 function drawSpark() {
   const c = $("spark"), ctx = c.getContext("2d");
-  const w = c.width, h = c.height, s = rate.series, rs = rate.releaseSeries;
+  const w = c.width, h = c.height, s = rate.series, rs = rate.releaseSeries, as = rate.arpSeries;
   ctx.clearRect(0, 0, w, h);
-  if (s.length < 2 && rs.length < 2) return;
-  const max = Math.max(1, ...s, ...rs);
+  if (s.length < 2 && rs.length < 2 && as.length < 2) return;
+  const max = Math.max(1, ...s, ...rs, ...as);
   drawLine(ctx, s, w, h, max, "#4ec9b0");
   drawLine(ctx, rs, w, h, max, "#e0679a");
+  drawLine(ctx, as, w, h, max, "#6ab0ff");
 }
 
 // ---- SSE ------------------------------------------------------------------
@@ -478,6 +484,9 @@ async function pollStatus() {
     rate.last = status.discovers ?? 0;
     const releasePps = Math.max(0, (status.releases ?? 0) - rate.releaseLast);
     rate.releaseLast = status.releases ?? 0;
+    const arpPps = Math.max(0, (status.arp_discovers ?? 0) - rate.arpLast);
+    rate.arpLast = status.arp_discovers ?? 0;
+    $("c-f").textContent = arpPps;
     $("c-a").textContent = primary;
     $("c-b").textContent = status.servers ?? 0;
     // release/release-previous send DHCPRELEASE, not DISCOVER -- the discover-based pps stays 0
@@ -508,6 +517,8 @@ async function pollStatus() {
     rate.series.push(pps); if (rate.series.length > 120) rate.series.shift();
     rate.releaseSeries.push(releasePps);
     if (rate.releaseSeries.length > 120) rate.releaseSeries.shift();
+    rate.arpSeries.push(arpPps);
+    if (rate.arpSeries.length > 120) rate.arpSeries.shift();
     drawSpark();
   } catch (_) {}
 }
@@ -518,7 +529,8 @@ async function doStart() {
   const cfg = currentConfig();
   try {
     await api("/api/session/start", "POST", cfg);
-    rate.last = 0; rate.series = []; rate.releaseLast = 0; rate.releaseSeries = []; leases.length = 0;
+    rate.last = 0; rate.series = []; rate.releaseLast = 0; rate.releaseSeries = [];
+    rate.arpLast = 0; rate.arpSeries = []; leases.length = 0;
     servers.clear(); neighbors.clear();
     renderServers(); renderNeighbors(); renderLeases();
     $("tables").classList.remove("alert-flag");

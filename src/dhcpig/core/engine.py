@@ -83,6 +83,9 @@ class DhcpEngine:
         self.naks = 0
         self.arp_conflicts = 0
         self.releases = 0
+        # every ARP is-at reply that resolved a neighbor, live or during a sweep (_note_neighbor)
+        # -- distinct from arp_conflicts, which counts our own forged ARP frames going out
+        self.arp_discovers = 0
         self.servers: dict[str, ServerInfo] = {}
         # control transactions (legitimate cycle from the real NIC MAC), pre and post run
         self.control_pre: ControlOutcome | None = None  # real NIC MAC (reachability/renewal)
@@ -289,6 +292,7 @@ class DhcpEngine:
             "naks": self.naks,
             "releases": self.releases,
             "arp_conflicts": self.arp_conflicts,
+            "arp_discovers": self.arp_discovers,
             "foreign_discovers": observed,
             "foreign_discovers_unanswered": unanswered,
             "races": self.races,
@@ -1319,6 +1323,7 @@ class DhcpEngine:
         "arp" -- an ARP reply is the strongest, most direct evidence a host is live, so it wins
         even over a MAC we'd already fingerprinted via DHCP alone (see `_note_fingerprint()`).
         """
+        self.arp_discovers += 1
         fp = self._fp_by_mac.get(mac)
         if fp is None:
             fp = fingerprint_from_mac(mac, ip=ip, role="neighbor")
