@@ -126,16 +126,18 @@ function onModeChange() {
   if (mode === "release-previous" && +$("rate").value === 7) $("rate").value = 50;
   else if (mode !== "release-previous" && +$("rate").value === 50) $("rate").value = 7;
   autofillScope();
+  // Only the first two counters vary by mode -- the third slot is always "pps" now (a global,
+  // mode-independent sum of every transmit-side rate the graph tracks; see pollStatus()), not a
+  // per-mode label/value like it used to be.
   const labels = {
-    exhaust: ["leases", "servers", "pps"],
-    scan: ["hosts", "servers", "resolved"],
-    "active-scan": ["hosts", "servers", "resolved"],
-    release: ["released", "neighbors", "pps"],
-    "release-previous": ["released", "servers", "pps"],
+    exhaust: ["leases", "servers"],
+    scan: ["hosts", "servers"],
+    "active-scan": ["hosts", "servers"],
+    release: ["released", "neighbors"],
+    "release-previous": ["released", "servers"],
   }[mode];
   $("l-a").textContent = labels[0];
   $("l-b").textContent = labels[1];
-  $("l-c").textContent = labels[2];
   // headroom means something for exhaust (free addresses left) and release-previous (addresses
   // this run is handing back) -- both are CIDR-derived pool numbers; every other mode leaves it
   // dimmed since there's no pool concept to report
@@ -489,7 +491,6 @@ async function pollStatus() {
   try {
     const { status } = await api("/api/session/status");
     const mode = $("mode").value;
-    const scanlike = mode === "scan" || mode === "active-scan";
     const primary = { exhaust: status.leases, scan: neighbors.size,
       "active-scan": neighbors.size, release: status.releases,
       "release-previous": status.releases }[mode] ?? 0;
@@ -507,7 +508,7 @@ async function pollStatus() {
     const pps = discoverPps + releasePps + arpPps + renewPps;
     $("c-a").textContent = primary;
     $("c-b").textContent = status.servers ?? 0;
-    $("c-c").textContent = scanlike ? neighbors.size : pps;
+    $("c-c").textContent = pps;
     $("c-d").textContent = (status.elapsed ?? 0) + "s";
     $("state").textContent = status.state ?? "";
     if (mode === "exhaust" && status.pool_size != null) {
