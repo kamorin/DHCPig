@@ -1,15 +1,19 @@
 """Passive DHCP/host fingerprinting — resolve OS/device for every host on the segment.
 
-Signal: option 55 (parameter-request-list) *exact, order-sensitive* match against the bundled
-static `packetfence_dhcp_fingerprints.json` (see `data/DATA_ATTRIBUTION.md`), sourced entirely
-from the PacketFence project's DHCP fingerprint database. Fully offline, no API keys, no network
-calls.
+Signals, strongest first, against the bundled static `satori_dhcp_fingerprints.json`
+(see `data/DATA_ATTRIBUTION.md`), derived from the Satori project's DHCP fingerprint
+database. Fully offline, no API keys, no network calls.
 
-If there's no exact option-55 match, we fall back to MAC OUI identification alone (see `oui.py`)
-— weak evidence, but better than a blank row.
+1. **option 55** (parameter-request-list), *exact and order-sensitive*. The specific
+   signal: the set and order of options a stack asks for pins down an OS version.
+2. **option 60** (vendor class id), exact. Coarser — "MSFT 5.0" says Windows, not
+   which Windows — so it scores below option 55, but it is still DHCP evidence from
+   the host itself and sits far above a MAC lookup.
+3. **MAC OUI** alone (see `oui.py`) — no DHCP evidence at all, weak, but better than
+   a blank row for ARP-only neighbours.
 
 The matching semantics (normalize the option-55 list, exact dict lookup, flag ambiguous
-multi-candidate fingerprints) mirror `data/fingerprint-merge.py`'s `identify()` so a lookup
+multi-candidate fingerprints) mirror `data/satori-merge.py`'s `identify()` so a lookup
 here and a lookup with that standalone script agree.
 """
 
@@ -24,7 +28,15 @@ from . import oui
 from .models import HostFingerprint
 from .packets import dhcp_option
 
-DB_FILE = "packetfence_dhcp_fingerprints.json"
+DB_FILE = "satori_dhcp_fingerprints.json"
+
+# Confidence bands. Option 55 keeps the 90/75 it always had; vendor class lands between
+# that and the OUI floor of 15 (see `from_mac`) so the three tiers can never be confused
+# for one another in a report.
+CONF_PRL = 90
+CONF_PRL_AMBIGUOUS = 75
+CONF_VENDOR_CLASS = 70
+CONF_VENDOR_CLASS_AMBIGUOUS = 55
 
 
 @dataclass
@@ -39,27 +51,32 @@ class Signature:
 
 @lru_cache(maxsize=1)
 def _db() -> dict:
-    """The bundled packetfence_dhcp_fingerprints.json, loaded once."""
+    """The bundled satori_dhcp_fingerprints.json, loaded once."""
     try:
         with resources.files("dhcpig.data").joinpath(DB_FILE).open(encoding="utf-8") as fh:
             return json.load(fh)
     except (FileNotFoundError, ModuleNotFoundError, json.JSONDecodeError):
-        return {"fingerprints": {}, "sources": {}, "statistics": {}}
+        return {"fingerprints": {}, "vendor_class": {}, "source": {}, "statistics": {}}
 
 
 def _fingerprints() -> dict[str, list[dict]]:
     return _db().get("fingerprints", {})
 
 
+def _vendor_classes() -> dict[str, list[dict]]:
+    return _db().get("vendor_class", {})
+
+
 def _normalize_prl_key(prl: list[int]) -> str:
-    """Match `fingerprint-merge.py`'s `normalize_fingerprint()`: comma-joined decimal options."""
+    """Match `satori-merge.py`'s `normalize_fingerprint()`: comma-joined decimal options."""
     return ",".join(str(x) for x in prl)
 
 
 def _db_version() -> str:
     stats = _db().get("statistics", {})
-    n = stats.get("packetfence_fingerprints", len(_fingerprints()))
-    return f"packetfence_dhcp_fingerprints({n} fp)"
+    n = stats.get("option55_signatures", len(_fingerprints()))
+    v = stats.get("vendor_class_signatures", len(_vendor_classes()))
+    return f"satori_dhcp_fingerprints({n} fp, {v} vc)"
 
 
 DB_VERSION = _db_version()
@@ -108,44 +125,84 @@ def extract_signature(pkt, role: str = "client") -> Signature:
     )
 
 
+def _combine(
+    candidates: list[dict], sig: Signature, role: str, via: str, conf: int, conf_ambiguous: int
+) -> HostFingerprint:
+    """Fold one or more candidate records into a single HostFingerprint.
+
+    A signature with more than one candidate is reported at the lower confidence and
+    flagged in `matched_via`, rather than silently picking one — the tool would rather
+    say "one of these two" than assert the wrong device.
+    """
+    names = sorted({c.get("name", "") for c in candidates if c.get("name")})
+    oses = sorted({c.get("os", "") for c in candidates if c.get("os")})
+    vendors = sorted({c.get("vendor", "") for c in candidates if c.get("vendor")})
+    ambiguous = len(candidates) > 1
+    return HostFingerprint(
+        mac=sig.mac,
+        ip=sig.ip,
+        role=role,
+        # only claim an OS when every candidate agrees on one; "Windows 10 / iOS 12" is
+        # not an OS, it is two guesses, and the device/name field already carries that
+        os=oses[0] if len(oses) == 1 else None,
+        # the specific record name ("Windows 10"), not the record's coarse device_type
+        # ("Smartphone") -- the latter stays in the JSON for `satori-merge.py` to print,
+        # since HostFingerprint has no field for a category and one name is what a report row
+        # has room to say
+        device=" / ".join(names) if len(names) > 1 else (names[0] if names else None),
+        vendor=vendors[0] if len(vendors) == 1 else None,
+        confidence=conf_ambiguous if ambiguous else conf,
+        matched_via=via + (f" (ambiguous x{len(candidates)})" if ambiguous else ""),
+        raw_prl=sig.prl,
+    )
+
+
 def _resolve_from_db(sig: Signature, role: str) -> HostFingerprint | None:
-    """Exact, order-sensitive option-55 lookup against packetfence_dhcp_fingerprints.json."""
+    """Exact, order-sensitive option-55 lookup against satori_dhcp_fingerprints.json."""
     if not sig.prl:
         return None
     key = _normalize_prl_key(sig.prl)
     candidates = _fingerprints().get(key)
     if not candidates:
         return None
-    names = sorted({c.get("name", "") for c in candidates if c.get("name")})
-    device = " / ".join(names) if len(names) > 1 else (names[0] if names else None)
-    vendors = sorted({c.get("vendor", "") for c in candidates if c.get("vendor")})
-    vendor = vendors[0] if len(vendors) == 1 else None
-    ambiguous = len(candidates) > 1
-    matched_via = f"opt55:{key}" + (f" (ambiguous x{len(candidates)})" if ambiguous else "")
-    return HostFingerprint(
-        mac=sig.mac,
-        ip=sig.ip,
-        role=role,
-        os=None,
-        device=device,
-        vendor=vendor,
-        confidence=75 if ambiguous else 90,
-        matched_via=matched_via,
-        raw_prl=sig.prl,
+    return _combine(candidates, sig, role, f"opt55:{key}", CONF_PRL, CONF_PRL_AMBIGUOUS)
+
+
+def _resolve_from_vendor_class(sig: Signature, role: str) -> HostFingerprint | None:
+    """Exact option-60 (vendor class id) lookup — the middle rung.
+
+    Reached only when option 55 missed. Plenty of stacks send a distinctive vendor class
+    while using a parameter-request-list shared with a dozen other devices, so this
+    recovers hosts that would otherwise fall all the way to a bare MAC vendor.
+    """
+    if not sig.vendor_class:
+        return None
+    candidates = _vendor_classes().get(sig.vendor_class.strip())
+    if not candidates:
+        return None
+    return _combine(
+        candidates,
+        sig,
+        role,
+        f"opt60:{sig.vendor_class.strip()}",
+        CONF_VENDOR_CLASS,
+        CONF_VENDOR_CLASS_AMBIGUOUS,
     )
 
 
 def resolve(sig: Signature, role: str = "client") -> HostFingerprint:
     """Map a Signature to an OS/device label with a confidence score.
 
-    1) exact option-55 order match against packetfence_dhcp_fingerprints.json (strongest signal)
-    2) MAC OUI only — no DHCP evidence, but at least says who made the hardware
+    1) exact option-55 order match (strongest signal)
+    2) exact option-60 vendor class match
+    3) MAC OUI only — no DHCP evidence, but at least says who made the hardware
     """
-    fp = _resolve_from_db(sig, role)
-    if fp is not None:
-        if not fp.vendor:  # fill in the hardware vendor the DHCP data didn't carry
-            fp.vendor = oui.lookup(sig.mac)
-        return fp
+    for lookup in (_resolve_from_db, _resolve_from_vendor_class):
+        fp = lookup(sig, role)
+        if fp is not None:
+            if not fp.vendor:  # fill in the hardware vendor the DHCP data didn't carry
+                fp.vendor = oui.lookup(sig.mac)
+            return fp
     return from_mac(sig.mac, ip=sig.ip, role=role, raw_prl=sig.prl)
 
 

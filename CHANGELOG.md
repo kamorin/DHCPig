@@ -1,5 +1,42 @@
 # Changelog
 
+## 2.7.0 — 2026-08-01
+
+- **Fingerprint data relicensed to GPL by replacing its source.** The bundled DHCP fingerprint
+  table was `packetfence_dhcp_fingerprints.json`, derived from PacketFence and therefore from
+  Fingerbank (Inverse inc.), which is **ODbL v1.0 / DbCL v1.0 — not GPL**. That made DHCPig a
+  GPL-2+ program shipping non-GPL data, which is legal but meant two licenses to carry and, for
+  Debian, ~580 lines of license text in `debian/copyright`. It is replaced wholesale by
+  `satori_dhcp_fingerprints.json`, derived from [Satori](https://github.com/xnih/satori) (Eric
+  Kollmann and contributors), which is **GPL-2.0-or-later** — the same terms as this project, so
+  everything now ships under one license. A test asserts the bundled `license` field so a
+  relicensed reimport fails loudly instead of quietly.
+- **Vendor class (DHCP option 60) is a new matching rung.** Fingerprinting used to go
+  straight from "no exact option-55 match" to a bare MAC-vendor guess at confidence 15. There is
+  now a middle tier: 187 exact vendor-class signatures at confidence 70 (55 when ambiguous),
+  between option-55's 90/75 and the OUI floor. Plenty of stacks send a distinctive vendor class
+  while sharing a parameter-request-list with a dozen other devices, and those hosts are now
+  identified instead of written off.
+- **`os` is populated for database matches.** It was hardcoded `None` because the old data
+  didn't cleanly separate OS from device. Satori does, so `os` (`Windows 10`, `iOS 12`,
+  `ChromeOS`, `Raspbian 8`) is now reported alongside `device` — but only when every candidate
+  for a signature agrees on one, since "Windows 10 / iOS 12" is two guesses rather than an
+  answer. `vendor` benefits the same way: it was an empty string on **100%** of the old data's
+  536 entries and is set on 97% of the new one's. The data also carries a 40-category
+  `device_type` on 66% of entries, which `satori-merge.py` prints; `HostFingerprint` has no
+  field for a category, so a report row still shows the specific name.
+- **Coverage moved, and not uniformly up.** 319 option-55 signatures against the old 535: 258
+  carried over, 63 are new, and 277 old ones are gone. That is a real reduction on the raw
+  exact-match dimension, traded for the vendor-class tier, the populated taxonomy, one license,
+  and an upstream that is still being updated (Satori's data has 2025 entries; the PacketFence
+  snapshot was frozen).
+- `data/fingerprint-merge.py` becomes `data/satori-merge.py`, which is now both the standalone
+  lookup CLI and the converter that regenerates the JSON from Satori's `dhcp.xml`
+  (`--convert`). Keeping both halves in one file is deliberate: the rules that build the table
+  and the rules that query it cannot drift apart.
+- The old data file also embedded an absolute path from the maintainer's own machine in its
+  `sources` field; that is gone with it.
+
 ## 2.6.1 — 2026-08-01
 
 - **Fixed: `active-scan`'s ARP inventory step always reported 0 devices.** Its worker runs its
