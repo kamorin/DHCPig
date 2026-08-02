@@ -1,5 +1,27 @@
 # Changelog
 
+## 2.6.1 — 2026-08-01
+
+- **Fixed: `active-scan`'s ARP inventory step always reported 0 devices.** Its worker runs its
+  own ARP sweep but never wrote the result into the field the "ARP inventory" summary step
+  reads, so the step showed "0 devices" regardless of how many hosts actually answered, while
+  the neighbor summary (fed by the sniffer's passive capture from the same run) could show a
+  nonzero count.
+- **Fixed: the web UI's pig icon was broken.** `web/static/icon.svg` had the same invalid `--`
+  sequence inside its XML comment as `packaging/dhcpig.svg` (fixed for the README in 2.6.0);
+  browsers parse SVG as XML, so the malformed comment broke the logo in the header.
+- **Fixed: `mypy src/dhcpig/core` wasn't actually running in CI.** It sits after `ruff format
+  --check`, which was failing, so every job short-circuited before reaching it. Fixing format
+  exposed 19 real errors (scapy's `import *` re-exports needing `follow_imports = "skip"`,
+  a couple of `None`-pinned attribute types, a fallback return that violated its own signature)
+  — all fixed, no behavior change.
+- **Web UI now defaults the mode dropdown to "Find Neighbors" (`active-scan`)** instead of DHCP
+  Exhaustion — non-destructive discovery is the sensible first thing to run against an
+  unfamiliar network.
+- `docs/DESIGN.md` streamlined to drop duplicated version-history/changelog narrative (now just
+  points at this file) and to match current code (`RUN_ONCE_MODES` location, `active_scan_listen`,
+  the `--report` format-dispatch fix, removal of the legacy `pig.py` shim).
+
 ## 2.6.0 — 2026-08-01
 
 - **Breaking: the legacy `pig.py` compatibility layer is gone.** `pig.py` at the repo root, the
