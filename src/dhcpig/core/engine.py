@@ -1719,7 +1719,7 @@ class DhcpEngine:
         self._finish_in_background(f"control detected: {signal} — {detail}")
 
     def _grow_window(self) -> None:
-        """Grow at `cfg.window_growth_per_ack` per clean ACK (default 0.01, i.e. 100 clean ACKs
+        """Grow at `cfg.window_growth_per_ack` per clean ACK (default 0.005, i.e. 200 clean ACKs
         widen the window by one slot) -- a ratchet, not a ramp: `_shrink_window()` still halves
         on NAK/timeout/duplicate-offer and wipes this accumulator, so on any run with even
         occasional errors the window trends toward the floor of 1 rather than climbing back.
