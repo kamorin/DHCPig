@@ -97,13 +97,16 @@ class NeighborSummary(Event):
       * `offline` -- the host has no working address right now: it reached the `apipa` or
         `discover_unanswered` eviction rung, or (exhaust) it asked for an address during the run
         and got no answer because the pool was drained.
-      * `lease_taken` -- the server handed us its address (re-acquisition `granted`) but the
-        host showed no reaction. **It is still using that address and does not know the lease
-        is gone**; it fails at its next renewal (T1), not now. Reporting these as `offline`
-        overstates present-tense impact; folding them into `unaffected` hides a population that
-        is going to drop with no warning. Hence a category of their own.
-      * `reacted` -- `defended`, `declined` or `rediscovered`: it noticed and is working now,
-        possibly on a different address.
+      * `lease_taken` -- the server handed us its address (re-acquisition `granted`) and the
+        host either showed no reaction or *defended* the address against the ARP conflict.
+        **It is still using that address and does not know the lease is gone**; it fails at its
+        next renewal (T1), not now. Reporting these as `offline` overstates present-tense
+        impact; folding them into `unaffected` hides a population that is going to drop with no
+        warning. Hence a category of their own. Defending belongs here rather than in `reacted`
+        (2.7.1): winning the ARP exchange says nothing about the lease underneath, which was
+        already reassigned -- that host is in exactly the same position as a silent one.
+      * `reacted` -- `declined` or `rediscovered` (or `defended` on an address we did *not*
+        take): it noticed and is working now, possibly on a different address.
       * `unaffected` -- nothing this run did left a mark on it that we can see.
     """
 

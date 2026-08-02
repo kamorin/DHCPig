@@ -63,7 +63,14 @@ class Timeouts:
     # DEFEND_INTERVAL -- a second conflict inside that window is what moves a host out of its
     # "defend once" phase; spaced further apart than that, each round looks like a fresh,
     # independently-defensible conflict and the host never gives up the address.
-    evict_interval: float = 3.0
+    # 3.0 -> 1.5 (2.7.1): staying under DEFEND_INTERVAL is the correctness floor, but the odds
+    # improve with the *number* of distinct conflicts that land inside one window, not just
+    # with there being two. At 1.5s the default 6 rounds all fall inside a single 10s window
+    # (t=0..7.5) instead of 4 rounds straddling its edge, so a dropped or filtered frame no
+    # longer costs the whole eviction. Denser than this buys nothing: back-to-back frames get
+    # coalesced into one conflict event by the victim's ARP input path, so what matters is
+    # separate arrivals, not raw frame count.
+    evict_interval: float = 1.5
 
 
 @dataclass
@@ -132,7 +139,11 @@ class SessionConfig:
     # of its "defend once" phase and force a DECLINE/restart-at-INIT. Runs automatically as
     # part of exhaust/release; there is no standalone "evict" mode (GARP_DOS was retired, 2.3).
     evict: bool = True
-    evict_rounds: int = 4  # must be >= 2 -- one round can only ever reach "defended", never more
+    # must be >= 2 -- one round can only ever reach "defended", never more. 4 -> 6 (2.7.1): at
+    # the 1.5s default spacing these six conflicts all land inside one RFC 5227 DEFEND_INTERVAL
+    # (see Timeouts.evict_interval), and the whole run still finishes marginally sooner than the
+    # old 4x3.0s did.
+    evict_rounds: int = 6
     # evict_settle: how long to wait, after the last round, before measuring the outcome ladder
     # -- gives a DECLINE/restart-at-INIT/APIPA time to actually land on the wire. Bumped 8.0 ->
     # 16.0 (2.3) after a live run: a target that DECLINEd was measured before its follow-up

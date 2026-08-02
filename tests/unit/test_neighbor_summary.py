@@ -159,14 +159,73 @@ def test_reacquisition_that_was_not_granted_does_not_count_as_lease_taken(monkey
 
 def test_eviction_outcome_wins_over_the_inferred_states(monkeypatch):
     """Eviction only ever targets addresses re-acquisition granted, so every evicted host is
-    also a lease_taken candidate -- the observed reaction is the better evidence, so it wins."""
+    also a lease_taken candidate -- the observed reaction is the better evidence, so it wins.
+    `rediscovered` in particular means the host is no longer on the address we took at all."""
+    eng, events = _engine(monkeypatch)
+    ips = _neighbors(eng, 1)
+    _reacquired(eng, ips)
+    _denied(eng, ["aa:bb:cc:00:00:00"])
+    eng._evict.outcomes = {ips[0]: "rediscovered"}
+    eng._emit_neighbor_summary()
+    assert _by_category(events) == {"reacted": ips}
+
+
+def test_defending_an_address_we_hold_the_lease_for_is_lease_taken_not_reacted(monkeypatch):
+    """(2.7.1) The one rung that does *not* outrank the inferred state. Defending settles the
+    ARP exchange, not the lease -- and eviction only targets addresses the server already
+    reassigned to us, so this host is on a binding that dies at its next renewal, exactly like
+    a silent lease_taken one. Calling it "reacted" reported the packets and buried the outcome.
+    """
+    eng, events = _engine(monkeypatch)
+    ips = _neighbors(eng, 2)
+    _reacquired(eng, [ips[0]])
+    eng._evict.outcomes = {ips[0]: "defended"}
+    eng._emit_neighbor_summary()
+    assert _by_category(events) == {"lease_taken": [ips[0]], "unaffected": [ips[1]]}
+    outcome = next(r[3] for r in _summary(events).rows if r[0] == ips[0])
+    assert "defended" in outcome and "fails at next renewal" in outcome
+
+
+def test_defending_an_address_we_did_not_take_is_still_reacted(monkeypatch):
+    """The boundary the test above depends on: without a granted re-acquisition for that IP,
+    a defence is just a defence and the host really is fine."""
+    eng, events = _engine(monkeypatch)
+    ips = _neighbors(eng, 1)
+    eng._evict.outcomes = {ips[0]: "defended"}
+    eng._emit_neighbor_summary()
+    assert _by_category(events) == {"reacted": ips}
+
+
+def test_outright_denial_still_outranks_a_stolen_lease(monkeypatch):
+    """lease_taken is a *future* outage. A host that asked for an address during the run and
+    got none is offline now, which is worse and is what the row must say."""
     eng, events = _engine(monkeypatch)
     ips = _neighbors(eng, 1)
     _reacquired(eng, ips)
     _denied(eng, ["aa:bb:cc:00:00:00"])
     eng._evict.outcomes = {ips[0]: "defended"}
     eng._emit_neighbor_summary()
-    assert _by_category(events) == {"reacted": ips}
+    assert _by_category(events) == {"offline": ips}
+
+
+def test_renewal_bound_is_an_upper_bound_from_our_own_lease_and_omitted_when_unknown(monkeypatch):
+    """We know the pool's lease duration L (the server gave us one for this very address) but
+    not when the victim got its own lease, so the only honest statement is "within ~L/2" --
+    never a countdown. With no lease on file, the row says nothing rather than guessing."""
+    from dhcpig.core.models import IPVersion, Lease
+
+    eng, events = _engine(monkeypatch)
+    ips = _neighbors(eng, 1)
+    _reacquired(eng, ips)
+    eng._emit_neighbor_summary()
+    assert "within" not in next(r[3] for r in _summary(events).rows if r[0] == ips[0])
+
+    eng.cleanup.register(
+        Lease("de:ad:00:00:00:99", ips[0], "10.0.0.254", 1, IPVersion.V4, lease_time=86400)
+    )
+    events.clear()
+    eng._emit_neighbor_summary()
+    assert "(within ~12h)" in next(r[3] for r in _summary(events).rows if r[0] == ips[0])
 
 
 def _named(eng, mac, hostname, answered=True):

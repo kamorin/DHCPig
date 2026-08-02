@@ -35,10 +35,10 @@ Both front ends drive the SAME `DhcpEngine` and never touch scapy directly.
 | File | Role |
 |------|------|
 | `core/models.py` | dataclasses/enums: `SessionConfig`, `Lease`, `ServerInfo`, `Neighbor`, `HostFingerprint`, `PoolEstimate`, `Mode`, `IPVersion`, `Timeouts`. `DESTRUCTIVE_MODES = {RELEASE_NEIGHBORS}`; `RUN_ONCE_MODES = DESTRUCTIVE_MODES \| {RELEASE_PREVIOUS, ACTIVE_SCAN}` (re-exported by `cli/main.py`) — the set the CLI polling loop and web reaper use to detect a worker-thread run finishing; keep it "does the worker finishing mean the run is over", not "is this mode destructive". `ControlOutcome`/`Lease` carry `server_mac`. |
-| `core/packets.py` | **pure** scapy builders/parsers (no I/O): `build_discover_v4` (takes `requested_addr` for option 50, §5f), `build_request_v4`, `build_release_v4` (carries an `Ether` layer, §5c), `build_inform_v4`, `build_garp` (op=1/2, reused by eviction, §5b), `server_identifier`, `client_mac_from_offer`, `parse_offer`, `is_offer`/`is_ack`/`is_nak`/`is_discover`/`is_decline`, `dhcp_option`. |
+| `core/packets.py` | **pure** scapy builders/parsers (no I/O): `build_discover_v4` (takes `requested_addr` for option 50, §5f), `build_request_v4`, `build_release_v4` (carries an `Ether` layer, §5c), `build_inform_v4`, `build_garp` (op=1/2, reused by eviction, §5b), `build_arp_conflict_unicast` (the same claim delivered unicast to the victim, §5b), `server_identifier`, `client_mac_from_offer`, `parse_offer`, `is_offer`/`is_ack`/`is_nak`/`is_discover`/`is_decline`, `dhcp_option`. |
 | `core/engine.py` | `DhcpEngine(cfg, bus)`: `start/stop/status/restore`. One state machine, `threading.Event` stop, worker threads + sniffer. **Every outbound frame goes through `_send()`** (the single chokepoint; `probe=True` bypasses dry-run suppression only, never `offline` — §8). Control transaction, release phase, re-acquisition, the windowed sender, halt detection, and pool estimate all live here (§5a–§5f); finding *text* lives in `core/findings.py`, eviction state in `core/eviction.py`, race state in `core/racing.py`, release-previous's entry filter in `core/recovery.py` — engine.py keeps the branching logic and calls into all four. Debug via `_debug()`. ~2570 lines. |
 | `core/findings.py` | The finding catalogue: every id's title/verdict/severity/recommendation in one declarative dict, plus `build(id, evidence, **overrides)`, `finding_summary_lines()` + `EVIDENCE_SKIP` (the one rule for displaying a finding, shared by the CLI renderer, the HTML report, and `events.to_dict()`'s `summary` field, which `app.js` renders directly instead of re-deriving — §5a), and the two-variant recommendation helpers (`starvation_not_attained_recommendation()`, `neighbor_leases_released_recommendation()`). Engine methods decide *whether* a finding fires and with what evidence; this file owns the *text*. |
-| `core/eviction.py` | `EvictionState` (the per-run eviction attributes, `self._evict` on the engine) and the pure outcome-rung ordering (`RUNGS`, `rung_max()`). The eviction *methods* (`_do_arp_conflict`, `_evict_phase`, `_evict_worker`, `_measure_eviction`, `_handle_evict_arp`) stay on `DhcpEngine` — they're threaded through `_send()`/the bus/`cfg`/other engine dicts closely enough that wrapping them in a class holding a back-reference to the engine would add indirection without reducing coupling. |
+| `core/eviction.py` | `EvictionState` (the per-run eviction attributes, `self._evict` on the engine — including `forged_mac_by_ip`, the one stable forged MAC per target, §5b) and the pure outcome-rung ordering (`RUNGS`, `rung_max()`). The eviction *methods* (`_do_arp_conflict`, `_evict_phase`, `_evict_worker`, `_measure_eviction`, `_handle_evict_arp`) stay on `DhcpEngine` — they're threaded through `_send()`/the bus/`cfg`/other engine dicts closely enough that wrapping them in a class holding a back-reference to the engine would add indirection without reducing coupling. |
 | `core/recovery.py` | `select_entries(cfg, entries, scope, pre_control)` — the one piece of `release-previous`'s logic that's genuinely decoupled from the engine (a pure filter over `cfg` + the loaded journal). `_run_release_previous`/`_release_selected`/`_release_previous_worker` stay engine methods, same coupling reasoning as eviction. |
 | `core/racing.py` | `RaceState` (the per-run race-freed attributes, `self._race` on the engine — §5g). `races` (the plain attempted-count) stays a normal engine attribute alongside its sibling counters. |
 | `core/events.py` | `EventBus` (thread-safe), event dataclasses (including `ControlDetected`, `ForeignDiscover`, `ClientEvicted`), `to_dict()` + `jsonable()` (recursively converts enums/bytes/Path so JSON never breaks). `to_dict()` also attaches `finding.summary` (via `core/findings.finding_summary_lines()`) to every `FindingRaised` payload — §5a. |
@@ -163,14 +163,23 @@ together and should be kept together:
     point) a neighbor whose DISCOVER during the run went unanswered because the pool was
     drained. Reading only `_evict.outcomes` would report those as `unaffected`, exactly backwards.
     `rediscovered` is **not** offline: it restarted and *was served*.
-  - `lease_taken` — re-acquisition `granted` for that IP with no eviction reaction observed. **Do
-    not merge this into either neighbouring bucket.** The host is working at the moment the
-    summary is emitted (so it isn't offline) but the server has handed us its address, so it
-    fails at its next renewal, silently, with nothing observable from our vantage point (same
-    reason `_reprobe_released()` is colour only, §5f).
-  - An observed eviction rung always wins over the inferred `lease_taken` state for the same
-    host — eviction only ever targets addresses re-acquisition granted, so every evicted host is
-    also a `lease_taken` candidate, and the observed reaction is the better evidence.
+  - `lease_taken` — re-acquisition `granted` for that IP, and the host either showed no eviction
+    reaction **or reached the `defended` rung**. **Do not merge this into either neighbouring
+    bucket.** The host is working at the moment the summary is emitted (so it isn't offline) but
+    the server has handed us its address, so it fails at its next renewal, silently, with nothing
+    observable from our vantage point (same reason `_reprobe_released()` is colour only, §5f).
+    `_renewal_suffix()` appends an **upper bound** (`(within ~12h)`) derived from the lease
+    duration the server gave *us* for that address — never a countdown, because the victim's own
+    T1 depends on when it originally got its lease, which we cannot see.
+  - `defended` + `granted` is `lease_taken`, not `reacted` (2.7.1) — the one rung that does not
+    outrank the inferred state. Defending settles the ARP exchange while the lease underneath it
+    is already gone, so the host is in exactly the position a silent `lease_taken` host is in;
+    reporting "defended its address" described the packets and buried the outcome. The other
+    rungs still win, because they are genuinely different news rather than the same news:
+    `apipa`/`discover_unanswered` mean no working address *now*, `declined`/`rediscovered` mean
+    the host is no longer on the stolen address at all.
+  - Outright denial still outranks a stolen binding: a neighbour in `denied_macs` is reported
+    `offline` even when we hold its lease — present-tense outage beats a future one.
 - **The event log is the only results surface.** There is **no findings tab** in the web UI, and
   no client-side finding store — `FindingRaised` renders straight into the log. Findings are all
   raised in one pass at the end of a run, so a panel that fills instantly at the end was never
@@ -203,16 +212,34 @@ together and should be kept together:
 *already lost the DHCP binding for* (re-acquired in §5f's re-acquisition step) — not a
 general-purpose connectivity-denial tool.
 
-Per target per round: a broadcast ARP **request** + **reply** (`build_garp`, stacks honour
-different forms), claiming the target's own IP at a fresh `random_mac()`. There is no third
-frame targeting the default gateway's mapping — that would cross from denial-of-service into
-traffic-interception-adjacent territory and adds nothing eviction needs: RFC 5227 §2.4 address
-conflict detection is what does the work (§5f), not a severed default route.
+Per target per round, three frames claiming the target's own IP:
+
+1. broadcast ARP **request** (`build_garp(op=1)`) — the announcement form
+2. broadcast ARP **reply** (`build_garp(op=2)`) — the unsolicited form; stacks honour different
+   ones, which is why both go out
+3. unicast ARP **reply** to the victim's own MAC (`build_arp_conflict_unicast()`, 2.7.1) — the
+   *same claim as 2*, differing in delivery rather than form. Broadcast is the RFC 5227 form and
+   is what conforming ACD listens for; this exists for the segments where the broadcast never
+   arrives (wireless APs with client isolation drop station-to-station broadcast while still
+   forwarding unicast to a known station; some stacks filter broadcast ARP far harder on the
+   input path). Skipped when the neighbour's MAC is unknown, which the ARP inventory means is
+   never the case in practice.
+
+There is still no frame targeting the **default gateway's** mapping — that would cross from
+denial-of-service into traffic-interception-adjacent territory and adds nothing eviction needs:
+RFC 5227 §2.4 address conflict detection is what does the work (§5f), not a severed default
+route. Frame 3 is not a reintroduction of it: it contests the victim's *own* address and points
+at a blackhole, not at us.
 
 The forged MAC is always bogus, recorded in `_evict.bogus_macs` so the ARP observer
 (`_handle_evict_arp()`) can tell forged frames apart from the real owner's. **Never point it at
 our own MAC** — blackhole is address-conflict detection (in scope); redirecting traffic through
-us would be interception (out of scope, §1).
+us would be interception (out of scope, §1). It is generated **once per target and reused for
+every round** (`_evict.forged_mac_by_ip`, 2.7.1), not re-rolled per round: §2.4 makes a host
+cease only on a *repeat* conflict inside `DEFEND_INTERVAL`, and a new sender MAC each round can
+read to a stack that tracks conflicts per peer as a different host's first conflict — precisely
+the case it may defend again. A stable MAC also keeps the victim's ARP cache pointed at one
+consistent blackhole. Distinct targets still get distinct MACs.
 
 ## 5c. Release phase, windowed sender, halt-on-control
 Three pieces, run in `_common_prelude()` order (shared by both `exhaust` and `release`, §5f):
@@ -348,12 +375,17 @@ Ties §5b/§5c together into the actual attack chain both `exhaust` and `release
   re-acquired (`granted`, from re-acquisition above) — conflicting with an address still bound to
   the victim just makes them defend and re-ARP; conflicting with one *we* now hold is what forces
   the DECLINE/restart. Excludes gateway and DHCP server (via `_prelude_pre_control()` — see
-  below). Guarded by `cfg.evict` (default `True`) / `--no-evict`. `evict_rounds` (default 4,
-  **must be ≥ 2**) spaced `timeouts.evict_interval` (default 3.0s, **must stay < 10.0s** —
+  below). Guarded by `cfg.evict` (default `True`) / `--no-evict`. `evict_rounds` (default 6,
+  **must be ≥ 2**) spaced `timeouts.evict_interval` (default 1.5s, **must stay < 10.0s** —
   RFC 5227 §2.4's `DEFEND_INTERVAL`: a host defends once, then MUST cease on a *second* conflict
   inside that window; spaced 10s+ apart, each round looks like a fresh independently-defensible
   conflict and the host never gives up the address). `SessionConfig.__post_init__` raises
-  `ConfigError` naming RFC 5227 if either constraint is violated. After the last round, sleeps
+  `ConfigError` naming RFC 5227 if either constraint is violated. The 2.7.1 defaults (was 4 ×
+  3.0s) put all six conflicts inside a *single* `DEFEND_INTERVAL` (t=0…7.5s) rather than four
+  straddling its edge, so one dropped or filtered frame no longer costs the eviction — and the
+  phase finishes marginally sooner than it used to. Denser spacing buys nothing: back-to-back
+  frames get coalesced into one conflict event by the victim's ARP input path, so what counts is
+  separate arrivals, not frame count. After the last round, sleeps
   `evict_settle` (default 16.0s) before measuring — gives a DECLINE/restart/APIPA time to land.
   **Outcome ladder** (causal/temporal order, not evidence-strength — a host that reaches a later
   rung passed through the earlier ones, whether or not we directly observed them):
@@ -373,7 +405,20 @@ Ties §5b/§5c together into the actual attack chain both `exhaust` and `release
   clean restart-and-immediate-reacquire is the whole point of the mode, not harm — so only
   `discover_unanswered`/`apipa` count as FAIL there; `declined`/`rediscovered` land in
   `CLIENTS_DEFENDED_ADDRESSES` (INCONCLUSIVE, "reacted but not denied service") instead. Don't
-  collapse this distinction back to one threshold. Under dry-run every outcome reads
+  collapse this distinction back to one threshold.
+  **`CLIENTS_HOLDING_STOLEN_LEASES` (FAIL/high, 2.7.1) is the exception to all of the above**:
+  targets at the `defended` rung whose address is in `_granted_ips()` are held out of `reacted`
+  and reported separately, because "defended" describes the ARP exchange while the binding
+  underneath was already reassigned to us — a pending outage with a known cause, not the
+  INCONCLUSIVE "reacted but unharmed" case. It is **mode-independent** (it turns only on the
+  server having handed us the binding, which `release` does as thoroughly as `exhaust`) and it is
+  raised **alongside** `CLIENTS_EVICTED_FROM_ADDRESSES`, outside the if/elif chain, not instead
+  of it — the two describe disjoint sets of hosts, so a run that evicts two targets and leaves a
+  third on a dead binding has two things to report. `ARP_CONFLICTS_UNANSWERED` is suppressed when
+  `holding` is non-empty (something plainly did react).
+  `_granted_ips()` is the single definition of "the server bound this to us", shared by eviction
+  target selection, the roll-call and these findings — they must never disagree about whose lease
+  we hold. Under dry-run every outcome reads
   `no_reaction` because nothing was ever sent — not evidence of anything — so the whole findings
   block is gated on `not cfg.dry_run`; `DRY_RUN_SUMMARY` covers that case (`would_evict` count).
   **No PASS verdict exists here on purpose** — "nobody reacted" can't be told apart from "the

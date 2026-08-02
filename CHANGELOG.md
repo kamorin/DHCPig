@@ -1,5 +1,50 @@
 # Changelog
 
+## 2.7.1 — unreleased
+
+- **A target that defended an address we already hold the lease for is now reported as
+  `lease_taken`, not `reacted`.** This was the biggest misreport in the roll-call. Eviction only
+  ever targets addresses re-acquisition *granted*, so a host at the `defended` rung won the ARP
+  exchange while the DHCP binding underneath it had already been handed to us — it is sitting on
+  a lease the server no longer recognizes and drops it at the next renewal, exactly like a silent
+  `lease_taken` host. The old row ("defended its address", filed under `reacted`) described the
+  packet exchange and buried the outcome, and it read as the one host on the segment that got
+  away. Outright denial still outranks it: a neighbour that asked for an address and got none is
+  reported `offline`, because that is a present-tense outage rather than a future one.
+- **New finding `CLIENTS_HOLDING_STOLEN_LEASES` (FAIL/high).** Those same targets used to fall
+  under `CLIENTS_DEFENDED_ADDRESSES` (INCONCLUSIVE, "reacted but not denied service"), which
+  understates a pending outage with a known cause and a known mechanism. It is raised *alongside*
+  `CLIENTS_EVICTED_FROM_ADDRESSES` rather than instead of it — the two cover disjoint sets of
+  hosts — and is mode-independent, since it turns only on the server having reassigned the
+  binding. Its recommendation names the actual defense: DHCP snooping with a binding table stops
+  this; Dynamic ARP Inspection alone would not have.
+- **Roll-call rows now carry a renewal bound (`fails at next renewal (within ~12h)`).** Derived
+  from the lease duration the server handed *us* for that address. Deliberately an upper bound,
+  never a countdown — the victim's own T1 depends on when it originally got its lease, which this
+  vantage point cannot see, so `within ~L/2` is the strongest honest claim. Omitted entirely when
+  no lease duration is known.
+- **The forged MAC contesting a target is now stable for the whole eviction.** It was re-rolled
+  every round. RFC 5227 §2.4 makes a host cease only on a *repeat* conflict inside
+  `DEFEND_INTERVAL`, and a new sender MAC each round can read to a stack that tracks conflicts
+  per peer as a different host's *first* conflict — precisely the case it is allowed to defend
+  again. One MAC per target for every round makes each one unambiguously "the same host is still
+  claiming my address", and keeps the victim's ARP cache pointed at a single consistent
+  blackhole. Distinct targets still get distinct MACs.
+- **A third, unicast ARP-conflict frame per target per round.** Same claim as the broadcast
+  reply, addressed straight to the victim's MAC (`build_arp_conflict_unicast()`). Broadcast is
+  the RFC 5227 form and stays the primary; this covers the delivery paths where a broadcast never
+  arrives at all — wireless APs with client isolation drop station-to-station broadcast while
+  still forwarding unicast to a known station, and some stacks filter broadcast ARP far harder on
+  the input path. Not a return of the 2.3-era gateway blackhole: it contests the victim's own
+  address and points at a blackhole, not at us.
+- **Denser conflict rounds: `evict_rounds` 4 → 6, `timeouts.evict_interval` 3.0s → 1.5s.** Staying
+  under `DEFEND_INTERVAL` was already the correctness floor, but the odds improve with the number
+  of *distinct* conflicts landing inside one window, not merely with there being two. All six now
+  fall inside a single 10s window (t=0…7.5s) instead of four straddling its edge, so one dropped
+  or filtered frame no longer costs the eviction — and the phase finishes marginally sooner than
+  the old 4 × 3.0s did. No denser than that on purpose: back-to-back frames get coalesced into one
+  conflict event by the victim's ARP input path, so separate arrivals are what count.
+
 ## 2.7.0 — 2026-08-01
 
 - **Fingerprint data relicensed to GPL by replacing its source.** The bundled DHCP fingerprint

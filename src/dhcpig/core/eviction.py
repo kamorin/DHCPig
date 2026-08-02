@@ -43,6 +43,13 @@ class EvictionState:
 
     targets: set[str] = field(default_factory=set)  # target IPs
     bogus_macs: set[str] = field(default_factory=set)
+    # The forged MAC contesting each target, generated once and reused for every round against
+    # that target (2.7.1). A fresh MAC per round -- what this used to do -- can read to a stack
+    # that tracks conflicts per peer as a *different* host's first conflict, which is precisely
+    # the case RFC 5227 SS2.4 lets it defend again instead of ceasing. Holding it stable makes
+    # every round unambiguously "the same host is still claiming my address"; it also keeps the
+    # victim's ARP cache pointed at one consistent blackhole rather than a new one each round.
+    forged_mac_by_ip: dict[str, str] = field(default_factory=dict)
     defenders: set[str] = field(default_factory=set)  # target IPs that answered our ARP conflict
     declined_ips: set[str] = field(default_factory=set)
     apipa_ips: set[str] = field(default_factory=set)

