@@ -364,7 +364,7 @@ def test_cli_shows_a_hostname_column_only_when_one_is_known(capsys, monkeypatch)
     eng._emit_neighbor_summary()
     Renderer(verbosity=2, color=False).handle(_summary(events))
     bare = capsys.readouterr().out
-    assert "10.0.0.1        aa:bb:cc:00:00:00  observed only" in bare  # no gap for a name
+    assert "10.0.0.1        aa:bb:cc:00:00:00  observed via ARP" in bare  # no gap for a name
 
     eng2, events2 = _engine(monkeypatch)
     _neighbors(eng2, 2)
@@ -372,9 +372,9 @@ def test_cli_shows_a_hostname_column_only_when_one_is_known(capsys, monkeypatch)
     eng2._emit_neighbor_summary()
     Renderer(verbosity=2, color=False).handle(_summary(events2))
     named = capsys.readouterr().out
-    assert "aa:bb:cc:00:00:01  laptop-07  observed only" in named
+    assert "aa:bb:cc:00:00:01  laptop-07  observed via ARP" in named
     # the nameless host keeps its columns lined up with the named one
-    assert "aa:bb:cc:00:00:00             observed only" in named
+    assert "aa:bb:cc:00:00:00             observed via ARP" in named
 
 
 def test_rows_carry_ip_mac_outcome_and_category(monkeypatch):
@@ -440,7 +440,7 @@ def test_cli_ends_with_an_outcome_rollup_counting_hosts_per_outcome(capsys, monk
 
     assert "1 host(s)  ARP-conflicted -> no address -- fell back to 169.254 (apipa)" in tail
     assert "1 host(s)  ARP-conflicted -> defended its address" in tail
-    assert "2 host(s)  observed only" in tail
+    assert "2 host(s)  observed via ARP" in tail
     assert tail.count("host(s)") == 3  # one line per distinct outcome, not per host
     for word in ("FAIL", "PASS", "vulnerable"):
         assert word not in tail
@@ -484,7 +484,7 @@ def test_release_sent_prefix_appears_on_every_category_that_was_actually_release
     assert rows[ips[0]].startswith("RELEASE sent -> ARP-conflicted -> we took the lease")
     assert rows[ips[1]].startswith("RELEASE sent -> ARP-conflicted -> restarted")
     assert rows[ips[2]].startswith("RELEASE sent -> ARP-conflicted -> DISCOVER got no offer")
-    assert rows[ips[3]] == "observed only"
+    assert rows[ips[3]] == "observed via ARP"
 
 
 def test_release_sent_prefix_never_doubles_up_on_released_unconfirmed(monkeypatch):

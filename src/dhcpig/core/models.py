@@ -247,6 +247,11 @@ class Neighbor:
     mac: str
     ip: str
     fingerprint: HostFingerprint | None = None
+    # How this host was first found: "arp" (it answered an ARP who-has, so we have its IP) or
+    # "dhcp" (only ever seen as the source of a DHCP packet -- OS/device may be known but the
+    # IP usually isn't, since DISCOVER/REQUEST carry ciaddr=0.0.0.0). Drives the "observed via
+    # ARP"/"observed via DHCP" split in the roll-call (engine.py's _neighbor_rollcall()).
+    seen_via: str = "arp"
 
 
 @dataclass

@@ -752,7 +752,12 @@ class DhcpEngine:
                 # anyone, so every host reading that way isn't a survivor of an attempt --
                 # the category stays "unaffected" (it's the stable classification key used
                 # throughout, tests included), but the displayed text says only what's true.
-                category, outcome = "unaffected", "observed only"
+                # It also says *how*: a host that never answered ARP has no confirmed address,
+                # only a MAC we saw source a DHCP packet (n.seen_via, set in _note_neighbor()/
+                # _note_fingerprint()) -- worth surfacing since "observed only" would otherwise
+                # imply an IP we don't actually have.
+                category = "unaffected"
+                outcome = "observed via ARP" if n.seen_via == "arp" else "observed via DHCP"
             prefixes = []
             if category not in ("unaffected", "released_unconfirmed") and n.ip in released_ips:
                 prefixes.append("RELEASE sent")
@@ -1310,27 +1315,40 @@ class DhcpEngine:
         """Record/refresh a neighbor, attaching any DHCP fingerprint already seen for this MAC.
 
         With no DHCP evidence we fall back to the MAC's OUI, so an ARP-only host still shows
-        its hardware vendor rather than an empty OS/Device column.
+        its hardware vendor rather than an empty OS/Device column. Always marks `seen_via`
+        "arp" -- an ARP reply is the strongest, most direct evidence a host is live, so it wins
+        even over a MAC we'd already fingerprinted via DHCP alone (see `_note_fingerprint()`).
         """
         fp = self._fp_by_mac.get(mac)
         if fp is None:
             fp = fingerprint_from_mac(mac, ip=ip, role="neighbor")
-        n = Neighbor(mac=mac, ip=ip, fingerprint=fp)
+        n = Neighbor(mac=mac, ip=ip, fingerprint=fp, seen_via="arp")
         self._neighbors_by_mac[mac] = n
         self.bus.emit(ev.NeighborFound(neighbor=n))
         return n
 
     def _note_fingerprint(self, fp: HostFingerprint) -> None:
         """Record a resolved fingerprint by MAC; if that host is already a known neighbor
-        (ARP arrived before/without DHCP), refresh its row so the Neighbors table picks it up."""
+        (ARP arrived before/without DHCP), refresh its row so the Neighbors table picks it up.
+
+        When it *isn't* already known, this is the only evidence this host exists -- a MAC seen
+        only as the source of a DHCP packet, never answering ARP (DISCOVER/REQUEST carry
+        ciaddr=0.0.0.0, so `fp.ip` is always empty here). Add it to the roll-call anyway,
+        marked `seen_via="dhcp"`, rather than silently dropping a host we did observe just
+        because we never learned its address.
+        """
         if fp.confidence <= 0 or not fp.mac:
             return
         self._fp_by_mac[fp.mac] = fp
         existing = self._neighbors_by_mac.get(fp.mac)
-        if existing is not None and (
-            existing.fingerprint is None or fp.confidence > existing.fingerprint.confidence
-        ):
-            updated = Neighbor(mac=existing.mac, ip=existing.ip, fingerprint=fp)
+        if existing is None:
+            n = Neighbor(mac=fp.mac, ip="", fingerprint=fp, seen_via="dhcp")
+            self._neighbors_by_mac[fp.mac] = n
+            self.bus.emit(ev.NeighborFound(neighbor=n))
+        elif existing.fingerprint is None or fp.confidence > existing.fingerprint.confidence:
+            updated = Neighbor(
+                mac=existing.mac, ip=existing.ip, fingerprint=fp, seen_via=existing.seen_via
+            )
             self._neighbors_by_mac[fp.mac] = updated
             self.bus.emit(ev.NeighborFound(neighbor=updated))
 
