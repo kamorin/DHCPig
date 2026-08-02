@@ -14,7 +14,9 @@ Run the web UI
 [Releases](https://github.com/kamorin/DHCPig/releases/latest) and install it —
 puts `dhcpig` and `dhcpig-web` on `PATH`, no venv needed:
 
-    sudo apt install ./dhcpig_*.deb
+    curl -sL $(curl -s https://api.github.com/repos/kamorin/DHCPig/releases/latest \
+      | grep browser_download_url | cut -d '"' -f4) -o dhcpig.deb
+    sudo apt install ./dhcpig.deb
     sudo dhcpig-web --open
 
 **From source** (any Linux, Python 3.11+):
