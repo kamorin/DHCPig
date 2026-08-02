@@ -25,21 +25,23 @@ def test_exhaust_has_no_no_control_flag():
         cli.build_parser().parse_args(["exhaust", "eth1", "--no-control"])
 
 
-def test_exhaust_has_no_rate_flag_windowing_paces_it_instead():
-    """--rate was removed from exhaust: the windowed handshake pipeline is the pacing now."""
+def test_exhaust_and_release_have_no_rate_flag_windowing_paces_them_instead():
+    """--rate was removed from exhaust and release: release's re-acquisition leg shares
+    exhaust's windowed handshake pipeline, so the same pacing applies to both."""
     from dhcpig.core.models import EXHAUST_DEFAULT_RATE_PPS
 
-    with pytest.raises(SystemExit):
-        cli.build_parser().parse_args(["exhaust", "eth1", "--rate", "30"])
-    cfg = cli.build_config(cli.build_parser().parse_args(["exhaust", "eth1"]))
-    assert cfg.rate_limit_pps == EXHAUST_DEFAULT_RATE_PPS
+    for cmd in ("exhaust", "release"):
+        with pytest.raises(SystemExit):
+            cli.build_parser().parse_args([cmd, "eth1", "--rate", "30"])
+        cfg = cli.build_config(cli.build_parser().parse_args([cmd, "eth1"]))
+        assert cfg.rate_limit_pps == EXHAUST_DEFAULT_RATE_PPS
 
 
-def test_rate_flag_still_present_on_release_and_active_scan():
-    for cmd in ("release", "active-scan"):
-        extra = ["--scope", "10.0.0.0/24"] if cmd == "active-scan" else []
-        args = cli.build_parser().parse_args([cmd, "eth1", "--rate", "42", *extra])
-        assert cli.build_config(args).rate_limit_pps == 42
+def test_rate_flag_still_present_on_active_scan():
+    args = cli.build_parser().parse_args(
+        ["active-scan", "eth1", "--rate", "42", "--scope", "10.0.0.0/24"]
+    )
+    assert cli.build_config(args).rate_limit_pps == 42
 
 
 def test_release_previous_defaults():
@@ -172,9 +174,11 @@ def test_build_config_ipv6_and_request_options():
 
 def test_destructive_modes_take_no_authorization_flags():
     """The gate is gone: release parses with just an interface, and --scope is optional."""
+    from dhcpig.core.models import EXHAUST_DEFAULT_RATE_PPS
+
     cfg = cli.build_config(cli.build_parser().parse_args(["release", "eth1"]))
     assert cfg.scope_cidrs is None
-    assert cfg.rate_limit_pps == 7
+    assert cfg.rate_limit_pps == EXHAUST_DEFAULT_RATE_PPS
     cfg = cli.build_config(
         cli.build_parser().parse_args(["release", "eth1", "--scope", "10.0.0.0/24"])
     )

@@ -160,7 +160,6 @@ def build_parser() -> argparse.ArgumentParser:
             metavar="CIDR",
             help="limit targets to these networks (default: the interface's own network)",
         )
-        d.add_argument("--rate", type=int, default=7)
         d.add_argument("--dry-run", action="store_true")
         d.add_argument(
             "--no-evict",
@@ -244,10 +243,14 @@ def build_config(args) -> SessionConfig:
         client_macs=getattr(args, "client_macs", None),
         spoof_ethernet_src=not getattr(args, "no_spoof_eth_src", False),
         request_options=req_opts,
-        # exhaust has no --rate: the windowed handshake pipeline paces it. Everything else
-        # (release/active-scan/release-previous) still takes --rate as its only pacing mechanism.
+        # exhaust and release (2.6, Phase 5's shared chain) have no --rate: release's
+        # re-acquisition leg is the same windowed handshake pipeline exhaust uses, so it paces
+        # and backs off on NAKs the same way. active-scan/release-previous still take --rate as
+        # their only pacing mechanism.
         rate_limit_pps=(
-            EXHAUST_DEFAULT_RATE_PPS if mode is Mode.EXHAUST else getattr(args, "rate", 7)
+            EXHAUST_DEFAULT_RATE_PPS
+            if mode in (Mode.EXHAUST, Mode.RELEASE_NEIGHBORS)
+            else getattr(args, "rate", 7)
         ),
         dry_run=getattr(args, "dry_run", False),
         scope_cidrs=scope,
