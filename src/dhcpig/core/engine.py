@@ -733,7 +733,7 @@ class DhcpEngine:
             elif n.ip in released_ips:
                 category = "released_unconfirmed"
                 if pool_exhausted:
-                    outcome = "RELEASE sent; pool exhausted, nothing to hand back at renewal"
+                    outcome = "RELEASE sent; pool exhausted, breaks at renewal"
                 else:
                     outcome = "RELEASE sent; reclaim unconfirmed"
             else:
