@@ -202,8 +202,8 @@ function esc(s) {
 // someone writing up the engagement reads them -- this is a summary surface, not the record.
 
 // Findings whose content already has a dedicated log block. NEIGHBORS_OBSERVED is the same
-// rows as NEIGHBOR SUMMARY, printed immediately below it -- keep it in report["findings"] for
-// the export, but printing it twice in the log is just noise.
+// rows as the OUTCOME roll-call, printed immediately below it -- keep it in report["findings"]
+// for the export, but printing it twice in the log is just noise.
 const FINDINGS_NOT_LOGGED = new Set(["NEIGHBORS_OBSERVED"]);
 
 function renderLeases() {
@@ -297,9 +297,12 @@ function handleEvent(e) {
       break;
     }
     case "NeighborSummary": {
+      // One [==] OUTCOME header covers per-host detail and the tally beneath it (2.7.2) --
+      // mirrors cli/render.py's Renderer._neighbor_summary(), which is the source of truth for
+      // this layout; keep the two in sync if either changes.
       const cls = (c) => c === "offline" || c === "lease_taken" ? "alert"
         : c === "unaffected" ? "notice" : "in";
-      logLine("finding", `[==] NEIGHBOR SUMMARY  ${e.total} host(s) seen before this run`, 0);
+      logLine("finding", `[==] OUTCOME  ${e.total} host(s) seen before this run`, 0);
       // hostname column only when we have one for somebody -- DHCP option 12 is the only
       // source, so an ARP-only segment has none and an always-on column would sit blank
       const namew = Math.max(0, ...(e.rows || []).map((r) => (r[2] || "").length));
@@ -314,7 +317,6 @@ function handleEvent(e) {
         const [n] = tally.get(outcome) || [0, category];
         tally.set(outcome, [n + 1, category]);
       }
-      logLine("finding", "[==] OUTCOME", 0);
       for (const [outcome, [n, category]] of tally) {
         logLine(cls(category), `       ${String(n).padStart(3)} host(s)  ${outcome}`, 0);
       }

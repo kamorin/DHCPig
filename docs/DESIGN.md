@@ -180,6 +180,17 @@ together and should be kept together:
     the host is no longer on the stolen address at all.
   - Outright denial still outranks a stolen binding: a neighbour in `denied_macs` is reported
     `offline` even when we hold its lease — present-tense outage beats a future one.
+  - **`ARP-conflicted -> ` prefix (2.7.2).** Any row whose IP was an eviction target this run
+    gets the prefix, independent of *why* it landed in its category — a target that also
+    happens to be in `denied_macs` was still contested, even though the pool drain is what
+    actually took it offline. It never reaches `unaffected`: eviction only ever targets
+    `_granted_ips()`, so a targeted host is already guaranteed `lease_taken` or better.
+- **CLI/web render one merged `[==] OUTCOME` section (2.7.2), not two.** Per-host detail and the
+  aggregate tally used to sit under separate headers (`NEIGHBOR SUMMARY` then `OUTCOME`), which
+  read as two different findings about the run rather than one. `Renderer._neighbor_summary()`
+  in `cli/render.py` is the source layout; the `NeighborSummary` handler in `web/static/app.js`
+  mirrors it by hand (no shared renderer between Python and JS here) — keep them in sync if
+  either changes.
 - **The event log is the only results surface.** There is **no findings tab** in the web UI, and
   no client-side finding store — `FindingRaised` renders straight into the log. Findings are all
   raised in one pass at the end of a run, so a panel that fills instantly at the end was never

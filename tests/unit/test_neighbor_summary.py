@@ -294,7 +294,10 @@ def test_stop_emits_the_summary_last_so_the_run_ends_on_it(monkeypatch):
 
 
 # ---------------------------------------------------------------- CLI rendering
-def test_cli_prints_one_line_per_host_for_every_host(capsys, monkeypatch):
+def test_cli_prints_one_merged_outcome_section_not_two_headers(capsys, monkeypatch):
+    """(2.7.2) Per-host detail and the aggregate tally used to sit under two headers
+    (NEIGHBOR SUMMARY, then OUTCOME) -- now there is exactly one, since they're the same
+    outcome, not two different findings about the run."""
     eng, events = _engine(monkeypatch)
     ips = _neighbors(eng, 4)
     _reacquired(eng, ips[:2])
@@ -304,10 +307,11 @@ def test_cli_prints_one_line_per_host_for_every_host(capsys, monkeypatch):
     r.handle(_summary(events))
     out = capsys.readouterr().out
     lines = out.splitlines()
-    hosts = lines[1 : lines.index("[==] OUTCOME")]
 
-    assert "NEIGHBOR SUMMARY  4 host(s) seen" in out
-    assert len(hosts) == 4  # every host, one line each -- including the untouched ones
+    assert "NEIGHBOR SUMMARY" not in out
+    assert lines[0] == "[==] OUTCOME  4 host(s) seen before this run"
+    assert lines.count("[==] OUTCOME  4 host(s) seen before this run") == 1
+    hosts = lines[1:5]  # one line per host, in the order emitted -- including untouched ones
     for i, ip in enumerate(ips):
         assert any(ip in ln and f"aa:bb:cc:00:00:{i:02x}" in ln for ln in hosts)
     assert "fails at next renewal" in out
@@ -323,14 +327,33 @@ def test_cli_ends_with_an_outcome_rollup_counting_hosts_per_outcome(capsys, monk
     eng._emit_neighbor_summary()
     Renderer(verbosity=2, color=False).handle(_summary(events))
     out = capsys.readouterr().out
-    tail = out.split("[==] OUTCOME\n")[1]
+    lines = out.splitlines()
+    tail = "\n".join(lines[5:])  # header + 4 per-host rows, then the tally
 
-    assert "1 host(s)  no address -- fell back to 169.254 (apipa)" in tail
-    assert "1 host(s)  defended its address" in tail
+    assert "1 host(s)  ARP-conflicted -> no address -- fell back to 169.254 (apipa)" in tail
+    assert "1 host(s)  ARP-conflicted -> defended its address" in tail
     assert "2 host(s)  unaffected" in tail
     assert tail.count("host(s)") == 3  # one line per distinct outcome, not per host
     for word in ("FAIL", "PASS", "vulnerable"):
         assert word not in tail
+
+
+def test_cli_outcome_rows_flag_eviction_targets_as_arp_conflicted(capsys, monkeypatch):
+    """(2.7.2) A row for a host this run actually contested by ARP says so, even when the
+    category it lands in was decided by something else (here, pool exhaustion) -- the operator
+    shouldn't have to cross-reference the live evict-outcome lines to know it was targeted."""
+    eng, events = _engine(monkeypatch)
+    ips = _neighbors(eng, 2)
+    _reacquired(eng, [ips[0]])
+    _denied(eng, ["aa:bb:cc:00:00:00"])
+    eng._evict.outcomes = {ips[0]: "no_reaction"}
+    eng._emit_neighbor_summary()
+    Renderer(verbosity=2, color=False).handle(_summary(events))
+    out = capsys.readouterr().out
+    row0 = next(ln for ln in out.splitlines() if ips[0] in ln)
+    row1 = next(ln for ln in out.splitlines() if ips[1] in ln)
+    assert "ARP-conflicted ->" in row0
+    assert "ARP-conflicted ->" not in row1  # never targeted -- nothing to flag
 
 
 def test_cli_finding_line_shows_no_verdict_word_but_the_verdict_survives(capsys):

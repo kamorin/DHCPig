@@ -658,6 +658,17 @@ class DhcpEngine:
         An observed eviction rung otherwise wins over the inferred states -- it is the better
         evidence -- except that being denied service outright (`denied_macs`) still outranks a
         stolen binding, since that is present-tense outage against a future one.
+
+        **`ARP-conflicted -> ` prefix (2.7.2).** Any row whose IP was an eviction target this
+        run (`n.ip in self._evict.outcomes`) gets that prefix on its outcome text, whether or
+        not the ARP conflict is *why* it landed in its category -- a host in `denied_macs`
+        that also happened to be an eviction target lost its address to the drained pool, not
+        to the forged ARP, but it was still contested and the operator should be able to see
+        that from the row alone rather than cross-referencing the live `ClientEvicted` log
+        lines. It never applies to `unaffected`, but not because of a special case: eviction
+        only ever targets `_granted_ips()`, so any host with a recorded rung is already
+        guaranteed to land in `lease_taken` or better -- `unaffected` is only reachable for a
+        host this run never touched at all.
         """
         neighbors = list(self._neighbors_by_mac.values())
         if not neighbors:
@@ -693,6 +704,8 @@ class DhcpEngine:
                 outcome = f"{lead}, fails at next renewal{self._renewal_suffix(n.ip)}"
             else:
                 category, outcome = "unaffected", "unaffected"
+            if rung is not None and category != "unaffected":
+                outcome = f"ARP-conflicted -> {outcome}"
             rows.append((n.ip, n.mac, hostname_by_mac.get(n.mac, ""), outcome, category))
 
         def sort_key(row: tuple[str, str, str, str, str]):

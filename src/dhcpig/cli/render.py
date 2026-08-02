@@ -84,9 +84,15 @@ class Renderer:
 
     def _neighbor_summary(self, e) -> None:
         """End-of-run roll-call: **one line per host, every discovered host listed**, worst
-        first. Hosts are named rather than counted -- the operator's next move is usually to go
-        look at a specific machine -- and the untouched ones are listed too, so "unaffected" is
-        visibly distinct from "not examined".
+        first, followed immediately by the same data aggregated into counts. Hosts are named
+        rather than counted -- the operator's next move is usually to go look at a specific
+        machine -- and the untouched ones are listed too, so "unaffected" is visibly distinct
+        from "not examined".
+
+        One `[==] OUTCOME` header covers both the per-host detail and the tally beneath it
+        (2.7.2, was two separate headers -- "NEIGHBOR SUMMARY" then "OUTCOME" -- which read as
+        two different sections when they're one: this *is* the outcome, host by host and then
+        summed).
 
         Shown from verbosity 1 up: at v0 the run is deliberately silent except findings, but at
         v1 (the one-char-per-packet mode) a who-did-this-affect block is exactly what's wanted
@@ -96,14 +102,13 @@ class Renderer:
             return
         if self.verbosity == 1:
             sys.stdout.write("\n")  # close off the one-char-per-packet stream
-        self._line("==", f"NEIGHBOR SUMMARY  {e.total} host(s) seen before this run")
+        self._line("==", f"OUTCOME  {e.total} host(s) seen before this run")
         # hostname column only when we actually have one for somebody -- DHCP option 12 is the
         # only source, so an ARP-only segment has none and an always-on column would be blank
         namew = max((len(h) for *_r, h, _o, _c in e.rows), default=0)
         for ip, mac, host, outcome, category in e.rows:
             name = f"{host:<{namew}}  " if namew else ""
             self._line(_ROLLCALL_TAG[category], f"  {ip:<15} {mac}  {name}{outcome}")
-        self._line("==", "OUTCOME")
         for outcome, n, category in outcome_tally(e.rows):
             self._line(_ROLLCALL_TAG[category], f"  {n:>3} host(s)  {outcome}")
 
