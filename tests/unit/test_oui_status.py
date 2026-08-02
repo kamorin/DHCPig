@@ -115,10 +115,10 @@ def test_status_summary_shows_totals_deltas_and_rates():
             "window": 5.0,
             "leases": 142,
             "d_leases": 38,
-            "lease_pps": 7.6,
+            "lease_ppm": 7.6,
             "discovers": 520,
             "d_discovers": 150,
-            "discover_pps": 30.0,
+            "discover_ppm": 30.0,
             "offers": 145,
             "d_offers": 40,
             "naks": 0,
@@ -128,8 +128,8 @@ def test_status_summary_shows_totals_deltas_and_rates():
         }
     )
     assert "t=15s" in line and "RUNNING" in line
-    assert "leases 142 (+38 in 5s, 7.6/s)" in line
-    assert "discovers 520 (+150 in 5s, 30.0/s)" in line
+    assert "leases 142 (+38 in 5s, 7.6/min)" in line
+    assert "discovers 520 (+150 in 5s, 30.0/min)" in line
     assert "servers 1" in line
     assert "naks" not in line  # zero-valued counters are omitted
 

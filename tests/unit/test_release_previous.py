@@ -90,6 +90,35 @@ def test_no_recovery_needed_when_a_new_client_already_gets_an_address(monkeypatc
     assert sent == []  # the fake never touches _send, so nothing hit the wire at all
 
 
+# ---------------------------------------------------------------- pool not exhausted, but
+# ---------------------------------------------------------------- journal still has entries
+def test_release_still_runs_when_pool_is_not_exhausted_but_journal_has_entries(
+    monkeypatch, tmp_path
+):
+    """A free address right now doesn't mean every lease this tool took has been given back --
+    release-previous must keep releasing whatever the journal still holds open, and record that
+    the pool wasn't exhausted rather than treating it as nothing-to-do."""
+    jpath = tmp_path / "leases-lo.jsonl"
+    _seed_journal(jpath, "de:ad:00:00:00:01", "172.20.0.51")
+    eng, events, sent = _engine(
+        monkeypatch, journal_path=jpath, scope_cidrs=["172.20.0.0/24"], release_passes=1
+    )
+    _fake_control(
+        monkeypatch,
+        eng,
+        ControlOutcome(
+            phase="pre", client="new", attempted=True, success=True, offered_ip="9.9.9.9"
+        ),
+        ControlOutcome(phase="post", client="new", attempted=True, success=True),
+    )
+    eng._release_previous_worker()
+
+    assert _released_addrs(sent) == {"172.20.0.51"}
+    assert eng.recovery_result["pool_exhausted"] is False
+    findings = [e.finding for e in events if isinstance(e, ev.FindingRaised)]
+    assert not any(f.id == "NO_RECOVERY_NEEDED" for f in findings)
+
+
 # ---------------------------------------------------------------- NO_JOURNAL_DATA
 def test_no_journal_data_when_journal_is_missing(monkeypatch, tmp_path):
     jpath = tmp_path / "does-not-exist.jsonl"
