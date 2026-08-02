@@ -185,6 +185,18 @@ together and should be kept together:
     happens to be in `denied_macs` was still contested, even though the pool drain is what
     actually took it offline. It never reaches `unaffected`: eviction only ever targets
     `_granted_ips()`, so a targeted host is already guaranteed `lease_taken` or better.
+  - **`released_unconfirmed` (2.7.3)** — a neighbour with a forged `DHCPRELEASE` sent in its
+    name (`n.ip in set(self._reacquire_targets.values())`) whose re-acquisition never came back
+    `granted`. Before this it fell straight through to `unaffected`, which claims more
+    confidence than the run has: `_finish_release()`'s own docstring explains that on a pool
+    with headroom (`release` mode; `exhaust` differs once the pool actually drains, per RFC
+    2131 §4.3.1 rule 3 vs. rule 4) an `offered_different`/`naked`/`no_response` result is the
+    *expected* answer whether or not the server honoured the RELEASE — this vantage point
+    cannot distinguish "the real host kept its lease" from "the binding was freed and handed to
+    someone else before we asked". Ranked between `reacted` (positive evidence the host is
+    fine) and `unaffected` (nothing sent at all) — worse than the former, better than the
+    latter, and never `lease_taken`-adjacent since that category requires certainty this one by
+    definition lacks.
 - **CLI/web render one merged `[==] OUTCOME` section (2.7.2), not two.** Per-host detail and the
   aggregate tally used to sit under separate headers (`NEIGHBOR SUMMARY` then `OUTCOME`), which
   read as two different findings about the run rather than one. `Renderer._neighbor_summary()`

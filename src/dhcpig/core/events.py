@@ -107,6 +107,11 @@ class NeighborSummary(Event):
         already reassigned -- that host is in exactly the same position as a silent one.
       * `reacted` -- `declined` or `rediscovered` (or `defended` on an address we did *not*
         take): it noticed and is working now, possibly on a different address.
+      * `released_unconfirmed` (2.7.3) -- a forged `DHCPRELEASE` was sent naming its address,
+        but re-acquisition never got it back (`offered_different`/`naked`/`no_response`). Not
+        `unaffected`: an unauthenticated RELEASE genuinely went out in its name. Not `offline`
+        or `lease_taken` either: whether the server acted on it is unobservable from here (see
+        `_finish_release()`'s docstring on why a miss proves nothing on a pool with headroom).
       * `unaffected` -- nothing this run did left a mark on it that we can see.
     """
 

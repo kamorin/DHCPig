@@ -148,13 +148,47 @@ def test_host_whose_lease_we_hold_is_neither_offline_nor_unaffected(monkeypatch)
 
 
 def test_reacquisition_that_was_not_granted_does_not_count_as_lease_taken(monkeypatch):
-    """offered_different / naked / no_response mean we never got that address."""
+    """offered_different / naked / no_response mean we never got that address -- so it's not
+    lease_taken. It's also not unaffected (2.7.3): a forged RELEASE genuinely went out naming
+    each of these, we just can't tell if the server acted on it."""
     eng, events = _engine(monkeypatch)
     ips = _neighbors(eng, 3)
     eng._reacquire_targets = dict(enumerate(ips))
     eng._reacquire_outcomes = {0: "offered_different", 1: "naked", 2: "no_response"}
     eng._emit_neighbor_summary()
-    assert _by_category(events) == {"unaffected": ips}
+    assert _by_category(events) == {"released_unconfirmed": ips}
+    assert "lease_taken" not in _by_category(events)
+
+
+def test_released_but_not_reacquired_is_not_unaffected(monkeypatch):
+    """(2.7.3) The exact scenario a live release run hits constantly: RFC 2131 rule 4 beats
+    rule 3 while the pool has headroom, so offered_different is the *expected* answer whether
+    or not the server honoured the forged RELEASE -- `unaffected` overclaimed certainty this
+    run doesn't have. See `_finish_release()`'s docstring for the rule 3/4 reasoning."""
+    eng, events = _engine(monkeypatch)
+    ips = _neighbors(eng, 1)
+    eng._reacquire_targets = {0: ips[0]}
+    eng._reacquire_outcomes = {0: "offered_different"}
+    eng._emit_neighbor_summary()
+    cats = _by_category(events)
+    assert cats == {"released_unconfirmed": ips}
+    outcome = next(r[3] for r in _summary(events).rows if r[0] == ips[0])
+    assert "RELEASE sent" in outcome
+    assert "unknown" in outcome
+    assert "ARP-conflicted" not in outcome  # never became an eviction target
+
+
+def test_released_unconfirmed_ranks_between_reacted_and_unaffected(monkeypatch):
+    eng, events = _engine(monkeypatch)
+    ips = _neighbors(eng, 3)
+    _reacquired(eng, [ips[0]])  # lease_taken -> reacted once we add a rung
+    eng._evict.outcomes = {ips[0]: "rediscovered"}
+    eng._reacquire_targets[1] = ips[1]
+    eng._reacquire_outcomes[1] = "naked"
+    # ips[2] stays completely untouched -- unaffected
+    eng._emit_neighbor_summary()
+    cats = [row[4] for row in _summary(events).rows]
+    assert cats.index("reacted") < cats.index("released_unconfirmed") < cats.index("unaffected")
 
 
 def test_eviction_outcome_wins_over_the_inferred_states(monkeypatch):
@@ -354,6 +388,42 @@ def test_cli_outcome_rows_flag_eviction_targets_as_arp_conflicted(capsys, monkey
     row1 = next(ln for ln in out.splitlines() if ips[1] in ln)
     assert "ARP-conflicted ->" in row0
     assert "ARP-conflicted ->" not in row1  # never targeted -- nothing to flag
+
+
+def test_release_sent_prefix_appears_on_every_category_that_was_actually_released(monkeypatch):
+    """(2.7.3) `RELEASE sent -> ` isn't specific to `released_unconfirmed` -- every one of
+    these hosts had a forged RELEASE sent for it (lease_taken/reacted/this offline row all
+    require `granted`, which is a subset of `released_ips`), and the row should say so, not
+    just the one category built around not knowing what happened next. Order is chronological:
+    RELEASE happens before the ARP conflict in every mode, so the prefix reads in that order."""
+    eng, events = _engine(monkeypatch)
+    ips = _neighbors(eng, 4)
+    _reacquired(eng, ips[:3])
+    eng._evict.outcomes = {
+        ips[0]: "no_reaction",  # -> lease_taken
+        ips[1]: "rediscovered",  # -> reacted
+        ips[2]: "discover_unanswered",  # -> offline
+    }
+    # ips[3]: never released, never touched -- the control case
+    eng._emit_neighbor_summary()
+    rows = {r[0]: r[3] for r in _summary(events).rows}
+    assert rows[ips[0]].startswith("RELEASE sent -> ARP-conflicted -> lease taken by us")
+    assert rows[ips[1]].startswith("RELEASE sent -> ARP-conflicted -> restarted")
+    assert rows[ips[2]].startswith("RELEASE sent -> ARP-conflicted -> asked for an address")
+    assert rows[ips[3]] == "unaffected"
+
+
+def test_release_sent_prefix_never_doubles_up_on_released_unconfirmed(monkeypatch):
+    """released_unconfirmed's own sentence already says a RELEASE went out -- prefixing it
+    with "RELEASE sent -> " on top would just repeat the first four words of its own text."""
+    eng, events = _engine(monkeypatch)
+    ips = _neighbors(eng, 1)
+    eng._reacquire_targets = {0: ips[0]}
+    eng._reacquire_outcomes = {0: "naked"}
+    eng._emit_neighbor_summary()
+    outcome = next(r[3] for r in _summary(events).rows if r[0] == ips[0])
+    assert outcome.startswith("RELEASE sent in its name")
+    assert outcome.count("RELEASE sent") == 1
 
 
 def test_cli_finding_line_shows_no_verdict_word_but_the_verdict_survives(capsys):

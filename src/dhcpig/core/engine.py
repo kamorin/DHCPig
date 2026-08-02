@@ -624,7 +624,7 @@ class DhcpEngine:
         "declined": ("reacted", "gave up the address (declined)"),
         "defended": ("reacted", "defended its address"),
     }
-    _ROLLCALL_ORDER = ("offline", "lease_taken", "reacted", "unaffected")
+    _ROLLCALL_ORDER = ("offline", "lease_taken", "reacted", "released_unconfirmed", "unaffected")
 
     def _neighbor_rollcall(self) -> list[tuple[str, str, str, str, str]]:
         """One `(ip, mac, hostname, outcome, category)` row per discovered neighbor, worst first.
@@ -659,21 +659,43 @@ class DhcpEngine:
         evidence -- except that being denied service outright (`denied_macs`) still outranks a
         stolen binding, since that is present-tense outage against a future one.
 
-        **`ARP-conflicted -> ` prefix (2.7.2).** Any row whose IP was an eviction target this
-        run (`n.ip in self._evict.outcomes`) gets that prefix on its outcome text, whether or
-        not the ARP conflict is *why* it landed in its category -- a host in `denied_macs`
-        that also happened to be an eviction target lost its address to the drained pool, not
-        to the forged ARP, but it was still contested and the operator should be able to see
-        that from the row alone rather than cross-referencing the live `ClientEvicted` log
-        lines. It never applies to `unaffected`, but not because of a special case: eviction
-        only ever targets `_granted_ips()`, so any host with a recorded rung is already
-        guaranteed to land in `lease_taken` or better -- `unaffected` is only reachable for a
-        host this run never touched at all.
+        * **`released_unconfirmed` (2.7.3) is not `unaffected`.** A neighbor with a forged
+          `DHCPRELEASE` sent in its name whose re-acquisition came back `offered_different`/
+          `naked`/`no_response` never reaches `granted_ips`, so before this it fell straight
+          through to `unaffected` -- which reads as "this run left it alone", when a forged,
+          unauthenticated RELEASE naming its address genuinely went out. `_finish_release()`'s
+          own docstring explains why the miss proves nothing either way: under `release` (pool
+          never drained) RFC 2131 rule 4 beats rule 3, so a server that *did* honour the RELEASE
+          and a server that ignored it both produce `offered_different` here -- this vantage
+          point cannot tell "the real host kept its lease" from "the binding was freed and
+          handed to something else before we asked". `unaffected` claims the former with a
+          confidence this run does not have; `released_unconfirmed` says only what is known: a
+          RELEASE was sent, the outcome is not observable from here. Ranked worse than
+          `reacted` (that category is *positive* evidence the host is fine) but better than
+          `lease_taken` (that one is certain, not merely possible, future harm).
+
+        **`RELEASE sent -> ` / `ARP-conflicted -> ` prefixes (2.7.2, extended 2.7.3).** Any row
+        whose IP had a forged RELEASE sent for it (`n.ip in released_ips`) gets a `RELEASE
+        sent -> ` prefix, and any row that was also an eviction target (`rung is not None`)
+        gets `ARP-conflicted -> ` after it -- in that order, because release happens before
+        eviction in every mode. Both are independent of *why* the row landed in its category:
+        a host in `denied_macs` that also happened to be a release/eviction target lost its
+        address to the drained pool, not directly to either forgery, but both were still done
+        to it and the operator should see that from the row alone rather than cross-referencing
+        the live `LeaseReleased`/`ClientEvicted` log lines. Neither applies to `unaffected` (a
+        host this run never touched at all) or to `released_unconfirmed` (whose one-sentence
+        outcome text already says a RELEASE was sent -- prefixing it would repeat itself).
+        `ARP-conflicted` specifically never reaches a row outside `released_ips`: eviction only
+        ever targets `_granted_ips()`, itself a subset of `released_ips`.
         """
         neighbors = list(self._neighbors_by_mac.values())
         if not neighbors:
             return []
         granted_ips = self._granted_ips()
+        # Every IP a forged RELEASE + targeted reacquire DISCOVER went out for, granted or not
+        # -- `_reacquire_targets` is written for all of them (§5f), `_granted_ips()` is the
+        # subset the server actually handed back to us.
+        released_ips = set(self._reacquire_targets.values())
         # MACs that asked for an address during this run and never got one -- denial of service
         # by pool exhaustion rather than by ARP conflict
         denied_macs = {
@@ -702,10 +724,21 @@ class DhcpEngine:
                     else "lease taken by us -- still using it"
                 )
                 outcome = f"{lead}, fails at next renewal{self._renewal_suffix(n.ip)}"
+            elif n.ip in released_ips:
+                category = "released_unconfirmed"
+                outcome = (
+                    "RELEASE sent in its name; this run couldn't reclaim the address, so "
+                    "whether the server acted on it is unknown from here"
+                )
             else:
                 category, outcome = "unaffected", "unaffected"
+            prefixes = []
+            if category not in ("unaffected", "released_unconfirmed") and n.ip in released_ips:
+                prefixes.append("RELEASE sent")
             if rung is not None and category != "unaffected":
-                outcome = f"ARP-conflicted -> {outcome}"
+                prefixes.append("ARP-conflicted")
+            if prefixes:
+                outcome = " -> ".join(prefixes) + f" -> {outcome}"
             rows.append((n.ip, n.mac, hostname_by_mac.get(n.mac, ""), outcome, category))
 
         def sort_key(row: tuple[str, str, str, str, str]):

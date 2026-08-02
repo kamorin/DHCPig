@@ -301,6 +301,7 @@ function handleEvent(e) {
       // mirrors cli/render.py's Renderer._neighbor_summary(), which is the source of truth for
       // this layout; keep the two in sync if either changes.
       const cls = (c) => c === "offline" || c === "lease_taken" ? "alert"
+        : c === "released_unconfirmed" ? "warnline"
         : c === "unaffected" ? "notice" : "in";
       logLine("finding", `[==] OUTCOME  ${e.total} host(s) seen before this run`, 0);
       // hostname column only when we have one for somebody -- DHCP option 12 is the only

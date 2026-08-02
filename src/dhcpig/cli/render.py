@@ -196,7 +196,13 @@ class Renderer:
                 self._line("DBG", e.message)
 
 
-_ROLLCALL_TAG = {"offline": "!!", "lease_taken": "!!", "reacted": "<-", "unaffected": "--"}
+_ROLLCALL_TAG = {
+    "offline": "!!",
+    "lease_taken": "!!",
+    "reacted": "<-",
+    "released_unconfirmed": "??",
+    "unaffected": "--",
+}
 
 
 def outcome_tally(rows: list) -> list[tuple[str, int, str]]:
