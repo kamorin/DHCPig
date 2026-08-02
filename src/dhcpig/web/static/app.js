@@ -22,7 +22,7 @@ let running = false;
 const rate = {
   last: 0, series: [],
   releaseLast: 0, releaseSeries: [],
-  arpLast: 0, arpSeries: [],
+  arpLast: 0,
 };
 const servers = new Map();
 const neighbors = new Map();
@@ -161,11 +161,13 @@ function logLine(cls, text, level = 2) {
   span.style.display = level <= currentVerbosity() ? "" : "none";
   el.appendChild(span);
   el.scrollTop = el.scrollHeight;
-  // A [!!] line is the log's highest-severity tag (pool exhaustion, a defensive control
-  // firing, a denied host, ...) -- flag the center tables panel too, since the neighbors/hosts
-  // roll-call is what an operator is looking at, not the scrolling log underneath it. Also
-  // surface it in the dashboard panel, where the graph/counters already are.
-  if (text.startsWith("[!!]")) { flagAlert(); addDashboardAlert(text); }
+  // Anything styled "alert" (a [!!] line -- pool exhaustion, a defensive control firing, a
+  // denied host, ... -- or any other line the caller judged alert-worthy, like a failed CONTROL
+  // transaction or an [XX] error) is the log's highest-severity tag -- flag the center tables
+  // panel too, since the neighbors/hosts roll-call is what an operator is looking at, not the
+  // scrolling log underneath it. Also surface it in the dashboard panel, where the graph/
+  // counters already are.
+  if (cls === "alert") { flagAlert(); addDashboardAlert(text); }
 }
 
 function addDashboardAlert(text) {
@@ -249,9 +251,9 @@ function renderLeases() {
 }
 
 // ---- canvas sparkline -----------------------------------------------------
-// Three lines share one scale (DISCOVER pps, DHCPRELEASE pps, ARP-discover pps) so a run's
-// full traffic mix is visible at once, not just whichever rate the current mode's primary
-// counter happens to track.
+// Two lines share one scale: `pps` (DISCOVER or ARP-discover, whichever's active for the
+// current mode -- see pollStatus()) and DHCPRELEASE pps, so a release-heavy mode's forged
+// RELEASE traffic is visible alongside general activity, not silently dropped.
 function drawLine(ctx, s, w, h, max, color) {
   if (s.length < 2) return;
   ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
@@ -264,13 +266,12 @@ function drawLine(ctx, s, w, h, max, color) {
 }
 function drawSpark() {
   const c = $("spark"), ctx = c.getContext("2d");
-  const w = c.width, h = c.height, s = rate.series, rs = rate.releaseSeries, as = rate.arpSeries;
+  const w = c.width, h = c.height, s = rate.series, rs = rate.releaseSeries;
   ctx.clearRect(0, 0, w, h);
-  if (s.length < 2 && rs.length < 2 && as.length < 2) return;
-  const max = Math.max(1, ...s, ...rs, ...as);
+  if (s.length < 2 && rs.length < 2) return;
+  const max = Math.max(1, ...s, ...rs);
   drawLine(ctx, s, w, h, max, "#4ec9b0");
   drawLine(ctx, rs, w, h, max, "#e0679a");
-  drawLine(ctx, as, w, h, max, "#6ab0ff");
 }
 
 // ---- SSE ------------------------------------------------------------------
@@ -480,18 +481,20 @@ async function pollStatus() {
     const primary = { exhaust: status.leases, scan: neighbors.size,
       "active-scan": neighbors.size, release: status.releases,
       "release-previous": status.releases }[mode] ?? 0;
-    const pps = Math.max(0, (status.discovers ?? 0) - rate.last);
+    const discoverPps = Math.max(0, (status.discovers ?? 0) - rate.last);
     rate.last = status.discovers ?? 0;
     const releasePps = Math.max(0, (status.releases ?? 0) - rate.releaseLast);
     rate.releaseLast = status.releases ?? 0;
     const arpPps = Math.max(0, (status.arp_discovers ?? 0) - rate.arpLast);
     rate.arpLast = status.arp_discovers ?? 0;
-    $("c-f").textContent = arpPps;
+    // release/release-previous send DHCPRELEASE, not DISCOVER -- the discover-based rate stays 0
+    // for them the whole run, so use the release rate instead. ARP folds into whichever one
+    // applies rather than getting its own tile, so "pps" still reads as "how busy is this run"
+    // even for a mode that's mostly ARP (a passive scan's DHCPINFORM aside).
+    const pps = (releaseLike ? releasePps : discoverPps) + arpPps;
     $("c-a").textContent = primary;
     $("c-b").textContent = status.servers ?? 0;
-    // release/release-previous send DHCPRELEASE, not DISCOVER -- the discover-based pps stays 0
-    // for them the whole run, so use the release rate instead of the generic one
-    $("c-c").textContent = scanlike ? neighbors.size : releaseLike ? releasePps : pps;
+    $("c-c").textContent = scanlike ? neighbors.size : pps;
     $("c-d").textContent = (status.elapsed ?? 0) + "s";
     $("state").textContent = status.state ?? "";
     if (mode === "exhaust" && status.pool_size != null) {
@@ -519,8 +522,6 @@ async function pollStatus() {
     rate.series.push(pps); if (rate.series.length > 120) rate.series.shift();
     rate.releaseSeries.push(releasePps);
     if (rate.releaseSeries.length > 120) rate.releaseSeries.shift();
-    rate.arpSeries.push(arpPps);
-    if (rate.arpSeries.length > 120) rate.arpSeries.shift();
     drawSpark();
   } catch (_) {}
 }
@@ -532,7 +533,7 @@ async function doStart() {
   try {
     await api("/api/session/start", "POST", cfg);
     rate.last = 0; rate.series = []; rate.releaseLast = 0; rate.releaseSeries = [];
-    rate.arpLast = 0; rate.arpSeries = []; leases.length = 0;
+    rate.arpLast = 0; leases.length = 0;
     servers.clear(); neighbors.clear();
     renderServers(); renderNeighbors(); renderLeases();
     $("tables").classList.remove("alert-flag");

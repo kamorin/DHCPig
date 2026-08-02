@@ -67,7 +67,6 @@ canvas { width: 100%; height: 90px; background: #0d1117; border-radius: 8px; }
 .spark-legend .swatch { display: inline-block; width: 10px; height: 2px; margin-right: 5px; vertical-align: middle; }
 .spark-legend .discover { background: #4ec9b0; }
 .spark-legend .release { background: var(--pig); }
-.spark-legend .arp { background: #6ab0ff; }
 .state { margin-top: 8px; color: var(--muted); }
 
 /* mirrors #log's own [!!] styling -- same alert color/weight, just the highest-severity
