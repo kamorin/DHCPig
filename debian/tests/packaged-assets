@@ -1,0 +1,80 @@
+#!/bin/sh
+# The runtime data that ships inside the Python package is actually present and
+# loadable from the installed location.
+#
+# This is not redundant with python-import. Both the fingerprint loader and the
+# web server degrade quietly when their data is missing - dhcpig.core.fingerprint
+# catches FileNotFoundError and returns an empty database - so a package that
+# shipped no data files would still import, still answer --help, and only fail
+# in front of a user mid-run. The assertions below are therefore on content, not
+# on importability.
+#
+# Entirely offline: the fingerprint database is a static dict lookup and the web
+# assets are read straight off disk. No socket is created and no server started.
+set -e
+
+cd "$AUTOPKGTEST_TMP"
+
+for py in $(py3versions -s 2>/dev/null || echo python3); do
+echo "########## $py ##########"
+"$py" - <<'EOF'
+import json
+import sys
+from importlib import resources
+
+failures = []
+
+# --- bundled DHCP fingerprint database -----------------------------------
+from dhcpig.core import fingerprint
+
+db = fingerprint._db()
+prints = db.get("fingerprints", {})
+if not prints:
+    failures.append(
+        "fingerprint database is empty or missing: "
+        "dhcpig/data/packetfence_dhcp_fingerprints.json did not ship"
+    )
+else:
+    print(f"fingerprint database: {len(prints)} entries")
+
+# the raw file must also be readable through importlib.resources, which is how
+# the engine reaches it at runtime
+try:
+    raw = resources.files("dhcpig.data").joinpath(
+        "satori_dhcp_fingerprints.json"
+    ).read_text(encoding="utf-8")
+    json.loads(raw)
+    print(f"fingerprint json readable via importlib.resources: {len(raw)} bytes")
+except Exception as exc:  # noqa: BLE001
+    failures.append(f"cannot read fingerprint json via importlib.resources: {exc!r}")
+
+# a real lookup, exercising the exact option-55 match path
+sig = fingerprint.Signature(mac="00:0c:29:00:00:01", ip="192.0.2.10",
+                            prl=[1, 15, 3, 6, 44, 46, 47, 31, 33, 121, 249, 43])
+res = fingerprint.resolve(sig)
+print(f"sample resolve() -> device={res.device!r} confidence={res.confidence}")
+
+# --- web UI static assets -------------------------------------------------
+from dhcpig.web import server as web_server
+
+static = web_server.STATIC
+for name in ("index.html", "app.js", "styles.css", "icon.svg"):
+    path = static / name
+    if not path.is_file():
+        failures.append(f"web asset missing: {path}")
+        continue
+    size = path.stat().st_size
+    if size == 0:
+        failures.append(f"web asset is empty: {path}")
+        continue
+    print(f"web asset {name}: {size} bytes")
+
+if failures:
+    print("\nFAILURES:", file=sys.stderr)
+    for f in failures:
+        print(f"  - {f}", file=sys.stderr)
+    sys.exit(1)
+
+print("\nOK: packaged web and fingerprint assets load")
+EOF
+done

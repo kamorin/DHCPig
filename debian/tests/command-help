@@ -1,0 +1,30 @@
+#!/bin/sh
+# Both console scripts answer --help and exit 0.
+#
+# Nothing here touches the network: --help is argparse-only, and no subcommand
+# is ever run. The 1.6-era version of this test grepped the --help output for a
+# project URL; 2.x does not print one, so identity is checked against the
+# subcommand list instead.
+set -e
+
+out="$AUTOPKGTEST_TMP/help.txt"
+
+dhcpig --help > "$out"
+for want in exhaust scan active-scan release release-previous restore; do
+    if ! grep -q -- "$want" "$out"; then
+        echo "ERROR: 'dhcpig --help' does not mention the $want subcommand:"
+        cat "$out"
+        exit 1
+    fi
+done
+
+dhcpig-web --help > "$AUTOPKGTEST_TMP/help-web.txt"
+for want in --bind --port; do
+    if ! grep -q -- "$want" "$AUTOPKGTEST_TMP/help-web.txt"; then
+        echo "ERROR: 'dhcpig-web --help' does not document $want:"
+        cat "$AUTOPKGTEST_TMP/help-web.txt"
+        exit 1
+    fi
+done
+
+echo "OK: dhcpig --help and dhcpig-web --help both work"

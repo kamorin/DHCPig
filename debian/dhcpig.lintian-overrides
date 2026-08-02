@@ -1,0 +1,13 @@
+# The desktop entry launches the web UI through pkexec, because dhcpig-web needs
+# raw sockets. pkexec belongs to its own package rather than this one, hence the
+# Suggests: pkexec in debian/control; shipping a copy here would be wrong.
+dhcpig: desktop-command-not-in-package pkexec [usr/share/applications/dhcpig-web.desktop]
+
+# index.html is not documentation, it is the web UI itself, served from the
+# package directory by dhcpig-web. It has to sit beside the css/js it loads.
+dhcpig: package-contains-documentation-outside-usr-share-doc [usr/lib/python3/dist-packages/dhcpig/web/static/index.html]
+
+# DATA_ATTRIBUTION.md documents the licensing and provenance of the fingerprint
+# database in the same directory, and the bundled satori-merge.py points at it.
+# It describes the contents of the directory it is in, so it stays there.
+dhcpig: package-contains-documentation-outside-usr-share-doc [usr/lib/python3/dist-packages/dhcpig/data/DATA_ATTRIBUTION.md]

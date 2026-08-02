@@ -1,0 +1,19 @@
+Description: use registered freedesktop categories in the desktop entry
+ The entry listed "09-sniffing-spoofing", which is a Kali menu category and not
+ one of the registered main or additional categories in the freedesktop menu
+ specification, so desktop-file-validate and lintian both reject it. Keep the
+ intent by moving it to an X- vendor extension, which the specification allows,
+ and add the registered Network and Security categories so the entry lands
+ somewhere sensible on a plain Debian desktop too.
+Author: Kevin Amorin <kamorin@gmail.com>
+Forwarded: not-needed
+Last-Update: 2026-08-01
+--- a/packaging/dhcpig-web.desktop
++++ b/packaging/dhcpig-web.desktop
+@@ -6,5 +6,5 @@
+ Exec=pkexec dhcpig-web --open
+ Icon=dhcpig
+ Terminal=true
+-Categories=09-sniffing-spoofing;Network;Security;
++Categories=Network;Security;X-Kali-09-sniffing-spoofing;
+ Keywords=dhcp;pentest;exhaustion;scapy;arp;fingerprint;

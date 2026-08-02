@@ -4,5 +4,4 @@ Template: GitHub
 Owner: kamorin
 Project: DHCPig
 Dversionmangle: s/@DEB_EXT@//
-Repacksuffix: +dfsg
 Uversionmangle: s/(\d)[_\.\-\+]?((RC|rc|pre|dev|beta|alpha|a|b)\d*)$/$1~$2/

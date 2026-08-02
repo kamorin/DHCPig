@@ -1,15 +1,34 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: DHCPig
+Upstream-Contact: Kevin Amorin <kamorin@gmail.com>
 Source: https://github.com/kamorin/DHCPig
 
 Files: *
-Copyright: 2012-2017 Kevin Amorin
+Copyright: 2012-2026 Kevin Amorin
 License: GPL-2+
+
+Files: src/dhcpig/data/satori_dhcp_fingerprints.json
+Copyright: 2004-2026 Eric Kollmann and the Satori contributors
+License: GPL-2+
+Comment: A static, offline DHCP fingerprint lookup table (option 55 parameter
+ request lists, and option 60 vendor class identifiers), generated from the
+ Satori project's fingerprints/dhcp.xml by the converter bundled beside it,
+ src/dhcpig/data/satori-merge.py. It is queried by an exact dictionary lookup;
+ no network service or API key is involved. Satori is at
+ https://github.com/xnih/satori and is GPL-2.0 licensed.
+ .
+ Upstream releases before 2.7.0 instead bundled a table derived from PacketFence
+ and Fingerbank (Inverse inc.), which is ODbL-1.0 / DbCL-1.0 rather than GPL.
+ It was replaced so the whole source package is under a single license; nothing
+ derived from it remains.
 
 Files: debian/*
 Copyright: 2017-2019 Philippe Thierry <phil@reseau-libre.net>
            2023      Samuel Henrique <samueloph@debian.org>
            2023-2024 Carlos Henrique Lima Melara <charlesmelara@outlook.com>
+           2025      Nicolas C Borsari <nicborsari@usp.br>
+           2026      Alexandre Detiste <tchet@debian.org>
+           2026      Kevin Amorin <kamorin@gmail.com>
 License: GPL-2+
 
 License: GPL-2+

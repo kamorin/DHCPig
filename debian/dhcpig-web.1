@@ -1,0 +1,63 @@
+.TH DHCPIG\-WEB 1 "2026-08-01" "dhcpig 2.6.0" "User Commands"
+.SH NAME
+dhcpig\-web \- local web interface for the DHCPig network-hardening validator
+.SH SYNOPSIS
+.B dhcpig\-web
+.RI [ options ]
+.SH DESCRIPTION
+.B dhcpig\-web
+serves a local, single-page control plane for
+.BR dhcpig (1).
+It drives the same engine as the command line tool: the modes, safety
+behaviour and findings are identical, and every run is reported through a
+live event log with a session report available as JSON, CSV or HTML.
+.PP
+The server is written against the Python standard library only \- there is no
+web framework, no build step and no remote asset of any kind, and the content
+security policy forbids remote origins.
+.PP
+It is not a system service. Nothing is registered with systemd, no port is
+opened at boot, and the process listens only while it is running in the
+foreground. Raw socket access (root) is required for a run to send anything,
+so it is normally started with
+.BR sudo (8)
+or
+.BR pkexec (1).
+.SH OPTIONS
+.TP
+.BI \-\-bind " ADDRESS"
+Address to listen on. Defaults to
+.BR 127.0.0.1 ,
+the loopback address. Binding anywhere else exposes the control plane of a
+Layer-2 attack tool to the network and prints a warning; to reach the
+interface from another machine, prefer forwarding the loopback port over SSH
+.RI ( "ssh \-L 8787:127.0.0.1:8787 host" ).
+.TP
+.BI \-\-port " PORT"
+Port to listen on. Default
+.BR 8787 .
+.TP
+.B \-\-open
+Open the system browser at the tokenized URL once the server is listening.
+.TP
+.B \-h ", " \-\-help
+Show a usage summary and exit.
+.SH AUTHENTICATION
+A random token is generated at startup and printed on stdout as part of the
+URL. Every request must carry it, either as a
+.I token
+query parameter or an
+.B Authorization: Bearer
+header, and requests carrying an
+.B Origin
+header from a different host are rejected. The token is not persisted; it
+changes on every start.
+.SH SECURITY CONSIDERATIONS
+The interface can start disruptive runs. The same warnings as for
+.BR dhcpig (1)
+apply: only use it against networks you own or are explicitly authorised to
+test.
+.SH SEE ALSO
+.BR dhcpig (1)
+.SH AUTHOR
+Kevin Amorin

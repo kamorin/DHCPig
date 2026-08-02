@@ -1,3 +1,64 @@
+dhcpig (2.7.0-1) UNRELEASED; urgency=medium
+
+  * New upstream release 2.7.0.
+    Upstream 2.x is a complete rewrite of the 1.6 single-file pig.py script: an
+    installable, unit-tested package under src/dhcpig/, built with hatchling
+    through PEP 517, providing the dhcpig command and a local web interface,
+    dhcpig-web. Almost none of the 1.6 packaging still applied, so it is
+    rewritten below rather than adjusted.
+  * The bundled DHCP fingerprint database is now GPL. Releases before 2.7.0
+    shipped a table derived from PacketFence and thus from Fingerbank (Inverse
+    inc.), licensed ODbL-1.0 / DbCL-1.0. Upstream replaced it with one derived
+    from Satori (https://github.com/xnih/satori), which is GPL-2.0, so the whole
+    source package is now under a single license and d/copyright no longer has
+    to carry the ODbL and DbCL texts.
+  * The legacy "pig" command is gone. Upstream removed the getopt-to-new-CLI
+    compatibility shim in 2.6.0; it had been translating flags into a CLI that
+    had since dropped or repurposed most of them. Consequently the
+    execute_after_dh_install rename of /usr/bin/pig.py is dropped from d/rules.
+  * d/control:
+      - Build-Depends: switch from python3-setuptools to
+        pybuild-plugin-pyproject and python3-hatchling for the PEP 517 build;
+        use python3-all rather than python3 so the module is byte-compiled for
+        every supported interpreter; add python3-pytest and python3-scapy under
+        <!nocheck> to run the upstream unit suite at build time.
+      - Build-Depends: drop pkgconf, only needed by the 1.6 setup.py.
+      - Depends: require python3-scapy (>= 2.5), the floor upstream declares in
+        pyproject.toml. Deliberately not libpcap0.8: it no longer exists under
+        that name after the 64-bit time_t transition, and python3-scapy already
+        pulls in what it needs.
+      - Suggests: pkexec, used by the shipped desktop entry.
+      - Rewrite the description. The old one described behaviour the tool no
+        longer has - the standalone gratuitous-ARP denial-of-service mode was
+        retired upstream in 2.3, so it no longer "knocks all windows hosts
+        offline" - and said nothing about the read-only modes or the web
+        interface.
+  * d/rules:
+      - Drop the override_dh_auto_clean setup.py guard. It existed because the
+        python3 port was carried as a patch; there are no patches now.
+      - Run the upstream unit tests at build time via PYBUILD_TEST_PYTEST. The
+        suite is no-root - it monkeypatches scapy's sendp, so nothing reaches a
+        socket - and tests/integration, which needs CAP_NET_RAW and a veth pair,
+        is excluded.
+      - Install the desktop entry and the scalable icon from packaging/.
+  * d/dhcpig.manpages: upstream moved dhcpig.1 to packaging/dhcpig.1. Add a
+    dhcpig-web.1 written for this package; upstream ships no manual page for the
+    web interface yet.
+  * d/tests: replace test-help.sh, which grepped the --help output for a project
+    URL that 2.x does not print and so would have failed.
+      - command-help: dhcpig --help and dhcpig-web --help.
+      - python-import: import dhcpig on every supported interpreter.
+      - packaged-assets: assert the bundled fingerprint database and the web
+        static files are present and loadable from the installed location.
+        Deliberately not marked superficial: both loaders fail soft when their
+        data is missing, so a package shipping no data files would still import
+        and still answer --help.
+    No autopkgtest sends a packet or opens a listening socket.
+  * d/watch: drop Repacksuffix. There is no Files-Excluded, so nothing is
+    repacked and the suffix was inert.
+
+ -- Kevin Amorin <kamorin@gmail.com>  Sat, 01 Aug 2026 21:30:00 -0400
+
 dhcpig (1.6-3) unstable; urgency=medium
 
   * Team upload.

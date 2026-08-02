@@ -1,0 +1,16 @@
+#!/bin/sh
+# The package imports cleanly on every supported python3 version.
+#
+# Run from $AUTOPKGTEST_TMP so the source tree is never on sys.path - upstream
+# uses a src/ layout, so this really does exercise the installed package.
+set -e
+
+cd "$AUTOPKGTEST_TMP"
+
+for py in $(py3versions -s 2>/dev/null || echo python3); do
+    echo "--- $py ---"
+    $py -c "import dhcpig; print('dhcpig', dhcpig.__version__, 'from', dhcpig.__file__)"
+    $py -c "import dhcpig.core.engine, dhcpig.cli.main, dhcpig.web.server; print('submodules OK')"
+done
+
+echo "OK: import dhcpig works"

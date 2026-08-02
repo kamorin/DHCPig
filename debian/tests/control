@@ -1,2 +1,11 @@
-Tests: test-help.sh
+Tests: command-help
+Depends: @
 Restrictions: allow-stderr, superficial
+
+Tests: python-import
+Depends: @, python3-all
+Restrictions: allow-stderr, superficial
+
+Tests: packaged-assets
+Depends: @, python3-all
+Restrictions: allow-stderr

@@ -3,24 +3,42 @@ Section: net
 Maintainer: Debian Security Tools <team+pkg-security@tracker.debian.org>
 Uploaders: Carlos Henrique Lima Melara <charlesmelara@riseup.net>,
            Philippe Thierry <phil@reseau-libre.net>
-Build-Depends: debhelper-compat (= 13),
+Build-Depends: debhelper-compat (= 14),
                dh-sequence-python3,
-               pkgconf,
-               python3,
-               python3-setuptools
-Standards-Version: 4.7.3
+               dh-sequence-single-binary,
+               pybuild-plugin-pyproject,
+               python3-all,
+               python3-hatchling,
+               python3-pytest <!nocheck>,
+               python3-scapy <!nocheck>
+Standards-Version: 4.7.4
 Homepage: https://github.com/kamorin/DHCPig
 Vcs-Git: https://salsa.debian.org/pkg-security-team/dhcpig.git
 Vcs-Browser: https://salsa.debian.org/pkg-security-team/dhcpig
 
 Package: dhcpig
 Architecture: all
-Depends: python3-scapy, ${misc:Depends}, ${python3:Depends}
-Description: DHCP exhaustion script using scapy network library
- DHCPig initiates an advanced DHCP exhaustion attack. It will consume all IPs
- on the LAN, stop new users from obtaining IPs, release any IPs in use, then
- for good measure send gratuitous ARP and knock all windows hosts offline.
+Depends: python3-scapy (>= 2.5),
+         ${misc:Depends},
+         ${python3:Depends}
+Suggests: pkexec
+Description: DHCP exhaustion and network-hardening validation tool
+ DHCPig checks whether a network defends itself against DHCP-layer attacks.
+ It exhausts a DHCP pool, releases and re-acquires neighbouring clients'
+ leases by name, contests addresses it has taken with forged RFC 5227 ARP
+ conflicts, and fingerprints hosts from their DHCP options and MAC vendor.
+ Each run ends in an evidence-backed verdict describing what the network
+ allowed, so it can be used to show whether controls such as DHCP snooping,
+ port security and Dynamic ARP Inspection are effective.
  .
- It is based on the scapy library and requests admin privileges to execute.
- It has been tested on multiple Linux distributions and multiple DHCP servers
- (ISC, Windows 2k3/2k8, ...).
+ Both a command line tool (dhcpig) and a local web interface (dhcpig-web)
+ are provided; they drive the same engine. The web interface binds to the
+ loopback address, requires a token printed at startup, and runs only when
+ invoked explicitly - no daemon or system service is registered.
+ .
+ Read-only modes (scan, active-scan) and a reconnaissance mode (--dry-run)
+ are available. The disruptive modes are separate, explicitly named
+ subcommands, and leases taken can be handed back with "dhcpig restore" or,
+ once the process has exited, "dhcpig release-previous". Raw socket access
+ (root) is required. Only use this against networks you own or are
+ explicitly authorised to test.

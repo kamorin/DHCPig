@@ -1,14 +1,24 @@
 #!/usr/bin/make -f
 
-# To make debian/rules clean work even when setup.py doesn't exist
-# because our patches are not applied
-override_dh_auto_clean:
-	[ ! -e setup.py ] || dh_auto_clean
+# Upstream is a PEP 517 / hatchling project in a src/ layout since 2.0; the
+# console scripts (dhcpig, dhcpig-web) come from [project.scripts], so the
+# 1.6-era rename of pig.py to dhcpig is gone, as is the setup.py guard that
+# existed only because the python3 port was carried as a patch.
+export PYBUILD_NAME=dhcpig
 
-# using pybuild for install
-# pig.py is properly named dhcpig
-execute_after_dh_install:
-	mv $(CURDIR)/debian/dhcpig/usr/bin/pig.py $(CURDIR)/debian/dhcpig/usr/bin/dhcpig
+# The upstream unit suite is no-root: it monkeypatches scapy's sendp, so nothing
+# reaches a socket. tests/integration is excluded here as well as by the
+# "not integration" marker in pyproject.toml - it needs CAP_NET_RAW and a veth
+# pair, which a buildd does not have.
+export PYBUILD_TEST_PYTEST=1
+export PYBUILD_TEST_ARGS={dir}/tests/unit
 
 %:
 	dh $@ --buildsystem=pybuild
+
+execute_after_dh_install:
+	# Menu entry and icon for the web UI. Upstream keeps both under packaging/.
+	install -Dm644 packaging/dhcpig-web.desktop \
+		debian/dhcpig/usr/share/applications/dhcpig-web.desktop
+	install -Dm644 packaging/dhcpig.svg \
+		debian/dhcpig/usr/share/icons/hicolor/scalable/apps/dhcpig.svg
