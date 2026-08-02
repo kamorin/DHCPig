@@ -42,7 +42,7 @@ Both front ends drive the SAME `DhcpEngine` and never touch scapy directly.
 | `core/recovery.py` | `select_entries(cfg, entries, scope, pre_control)` — the one piece of `release-previous`'s logic that's genuinely decoupled from the engine (a pure filter over `cfg` + the loaded journal). `_run_release_previous`/`_release_selected`/`_release_previous_worker` stay engine methods, same coupling reasoning as eviction. |
 | `core/racing.py` | `RaceState` (the per-run race-freed attributes, `self._race` on the engine — §5g). `races` (the plain attempted-count) stays a normal engine attribute alongside its sibling counters. |
 | `core/events.py` | `EventBus` (thread-safe), event dataclasses (including `ControlDetected`, `ForeignDiscover`, `ClientEvicted`), `to_dict()` + `jsonable()` (recursively converts enums/bytes/Path so JSON never breaks). `to_dict()` also attaches `finding.summary` (via `core/findings.finding_summary_lines()`) to every `FindingRaised` payload — §5a. |
-| `core/safety.py` | `ScopeGuard`, `RateLimiter` (token bucket — still wired through `_send()` for every mode; §5c for why exhaust no longer takes `--rate`), `Cleanup` (tracks leases for restore). No authorization gate (§5). |
+| `core/safety.py` | `ScopeGuard`, `RateLimiter` (token bucket — still wired through `_send()` for every mode; §5c for why exhaust and release no longer take `--rate`), `Cleanup` (tracks leases for restore). No authorization gate (§5). |
 | `core/sniffer.py` | thin `AsyncSniffer` wrapper. BPF is `port 67 or port 68`, both directions — needed to observe foreign DISCOVERs and DHCPDECLINEs (§5f, §8). |
 | `core/fingerprint.py` | `extract_signature()` + `resolve()`: exact option-55 match against `data/packetfence_dhcp_fingerprints.json`, else `from_mac()` OUI-only. `DB_VERSION`. |
 | `core/oui.py` | MAC → hardware vendor. scapy's bundled Wireshark/IEEE `manuf` DB (~50k) only; locally-administered MACs labelled as randomised. |
@@ -74,9 +74,10 @@ the browser's `EventSource` updates the DOM. **Handlers must be cheap/non-blocki
   release eth0` will target the whole segment, and runs the full re-acquisition + eviction chain
   against it (§5f) — a bigger blast radius than the name alone suggests.** Don't re-add the gate
   without asking, and don't quietly remove what's left below either.
-- What still bounds a run: the windowed handshake pipeline for `exhaust` (§5c), `--rate` (default
-  7 pps) for every other mode, `--dry-run`/`--no-evict`, `ScopeGuard` when a scope *is* supplied,
-  and `Cleanup`/`restore()` for lease reversal.
+- What still bounds a run: the windowed handshake pipeline for `exhaust` and `release`'s
+  re-acquisition leg (§5c), `--rate` (default 7 pps) for `active-scan`/`release-previous`,
+  `--dry-run`/`--no-evict`, `ScopeGuard` when a scope *is* supplied, and `Cleanup`/`restore()`
+  for lease reversal.
 - `active-scan` is non-destructive but **requires `--scope`** (`ConfigError` if missing) — this
   is the one remaining hard requirement, so its sweep can't be unbounded. It also has a bounded
   post-INFORM listen window (`active_scan_listen`, default 20s, `--active-scan-listen`) so the
@@ -235,10 +236,11 @@ Three pieces, run in `_common_prelude()` order (shared by both `exhaust` and `re
    duplicate offers all shrink the window immediately (halve it) and wipe the accumulator
    (`_shrink_window`) instead of being pushed through. Growth is ~5000× slower than shrink, so a
    noisy run trends toward the floor of 1 rather than climbing back — that's the deliberate
-   trade-off, see `_grow_window()`'s docstring. `--rate` is **gone from exhaust** (the window
-   paces it now; `rate_limit_pps` is fixed at `EXHAUST_DEFAULT_RATE_PPS=500` so the limiter
-   doesn't bind) but unchanged on `release`/`active-scan`/`release-previous`, which have no
-   window of their own — **do not remove `RateLimiter` globally.**
+   trade-off, see `_grow_window()`'s docstring. `--rate` is **gone from exhaust and release**
+   (release's re-acquisition leg reuses this same window/backoff — `rate_limit_pps` is fixed at
+   `EXHAUST_DEFAULT_RATE_PPS=500` for both so the limiter doesn't bind) but unchanged on
+   `active-scan`/`release-previous`, which have no window of their own — **do not remove
+   `RateLimiter` globally.**
 3. **Halt-on-control** (`_trigger_halt`, `ControlDetected`, `HALTED` state). On the first of five
    signals — `nak_burst` (≥3/5s), `offer_silence` (existing), `link_down` (carrier poll in
    `_status_ticker`, `netutils.link_is_up()`), `timeout_storm` (≥5 consecutive), `duplicate_offers`
@@ -562,12 +564,13 @@ See `CONTRIBUTING.md` for the commands. Two things worth knowing at the design l
   that list as "work in progress" and a forever-thread there would stall destructive runs.
 - **OUI fallback confidence is 15 on purpose.** A NIC vendor is not an OS; keep it far below
   DHCP matches (75–98) so it can never be mistaken for one, and keep `os=None` for these.
-- **`--rate` is exhaust-specific removal, not a global one.** It's gone from the `exhaust`
-  CLI/web surface (the window paces it — §5c) but still required on `release`/`active-scan`/
-  `release-previous`, none of which have a window of their own. Don't remove
-  `RateLimiter`/`rate.acquire()` from `_send()` — it's still the only thing pacing three of the
-  five modes (`scan` sends nothing at all; `release`'s eviction sub-phase paces itself via
-  `evict_rounds`/`evict_interval`, not `--rate`).
+- **`--rate` removal covers `exhaust` and `release`, not every mode.** It's gone from both
+  CLI/web surfaces (release's re-acquisition leg reuses exhaust's window/backoff — §5c) but
+  still required on `active-scan`/`release-previous`, which have no window of their own. Don't
+  remove `RateLimiter`/`rate.acquire()` from `_send()` — it's still the only thing pacing
+  `active-scan`/`release-previous` (`scan` sends nothing at all; `release`'s eviction sub-phase
+  paces itself via `evict_rounds`/`evict_interval`, not `--rate`; `release`'s own RELEASE-send
+  loop is unwindowed but now runs at the same non-binding `rate_limit_pps` as exhaust).
 - **Halt-on-control never releases leases.** `_trigger_halt()` stops the sender but leaves
   `Cleanup` untouched; there's no auto-restore-on-exit to accidentally trigger either.
   If you're tempted to auto-release on halt, don't — the post-controls need the leases held to

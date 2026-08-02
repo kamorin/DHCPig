@@ -221,17 +221,21 @@ def test_sse_serializes_events_with_enums_and_nested_dataclasses():
 
 # ---------------------------------------------------------------- schemas
 def test_as_cli_roundtrip():
-    cfg = schemas.config_from_payload({"interface": "eth1", "mode": "release", "rate": 30})
-    assert schemas.as_cli(cfg) == "dhcpig release eth1 --rate 30"
+    cfg = schemas.config_from_payload(
+        {"interface": "eth1", "mode": "active-scan", "rate": 30, "scope_cidrs": ["10.0.0.0/24"]}
+    )
+    assert schemas.as_cli(cfg) == "dhcpig active-scan eth1 --rate 30 --scope 10.0.0.0/24"
 
 
-def test_exhaust_ignores_rate_payload_and_as_cli_omits_it():
-    """exhaust has no --rate of its own; the windowed pipeline paces it instead."""
+def test_exhaust_and_release_ignore_rate_payload_and_as_cli_omits_it():
+    """exhaust and release have no --rate of their own; release's re-acquisition leg reuses
+    exhaust's windowed pipeline, so both are paced (and back off on NAKs) the same way."""
     from dhcpig.core.models import EXHAUST_DEFAULT_RATE_PPS
 
-    cfg = schemas.config_from_payload({"interface": "eth1", "mode": "exhaust", "rate": 30})
-    assert cfg.rate_limit_pps == EXHAUST_DEFAULT_RATE_PPS
-    assert "--rate" not in schemas.as_cli(cfg)
+    for mode in ("exhaust", "release"):
+        cfg = schemas.config_from_payload({"interface": "eth1", "mode": mode, "rate": 30})
+        assert cfg.rate_limit_pps == EXHAUST_DEFAULT_RATE_PPS
+        assert "--rate" not in schemas.as_cli(cfg)
 
 
 def test_release_previous_config_from_payload_defaults():
