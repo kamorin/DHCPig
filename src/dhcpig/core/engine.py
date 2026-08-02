@@ -2667,19 +2667,13 @@ class DhcpEngine:
             return
         pre = self._control_transaction("pre", client="new")
         self._rp_pre_control = pre
-        if pre.success:
-            self._raise(
-                findings.build(
-                    "NO_RECOVERY_NEEDED",
-                    {
-                        "interface": self.cfg.interface,
-                        "journal_entries_loaded": len(all_entries),
-                        "offered_ip": pre.offered_ip,
-                    },
-                )
-            )
-            self.recovery_result = {"outcome": "not_needed", "frames_sent": 0}
-            return
+        # A successful pre-flight probe only means a new client can get *an* address right
+        # now -- it says nothing about whether every lease this tool previously took has
+        # actually been given back. Record the exhaustion status either way, but keep going:
+        # release whatever the journal still holds open so the server's bindings match what
+        # we tell the operator, instead of skipping the run whenever the pool has any spare
+        # capacity.
+        pool_was_exhausted = not pre.success
 
         selected, stats = recovery.select_entries(self.cfg, all_entries, scope, pre)
         self._rp_selected_count = stats["selected"]
@@ -2688,14 +2682,38 @@ class DhcpEngine:
             f"{stats['journal_entries_loaded']} loaded, {stats['in_cidr']} in scope, "
             f"{stats['same_server']} same-server, {stats['within_max_age']} within max-age "
             f"-> {stats['selected']} to release "
-            f"(same_server_filter_applied={stats['same_server_filter_applied']})"
+            f"(same_server_filter_applied={stats['same_server_filter_applied']}, "
+            f"pool_exhausted={pool_was_exhausted})"
         )
 
         if not selected:
-            self._raise(
-                findings.build("NO_JOURNAL_DATA", {"interface": self.cfg.interface, **stats})
-            )
-            self.recovery_result = {"outcome": "no_data", "frames_sent": 0, **stats}
+            if pre.success:
+                self._raise(
+                    findings.build(
+                        "NO_RECOVERY_NEEDED",
+                        {
+                            "interface": self.cfg.interface,
+                            "journal_entries_loaded": len(all_entries),
+                            "offered_ip": pre.offered_ip,
+                        },
+                    )
+                )
+                self.recovery_result = {
+                    "outcome": "not_needed",
+                    "frames_sent": 0,
+                    "pool_exhausted": pool_was_exhausted,
+                    **stats,
+                }
+            else:
+                self._raise(
+                    findings.build("NO_JOURNAL_DATA", {"interface": self.cfg.interface, **stats})
+                )
+                self.recovery_result = {
+                    "outcome": "no_data",
+                    "frames_sent": 0,
+                    "pool_exhausted": pool_was_exhausted,
+                    **stats,
+                }
             return
 
         if self.cfg.dry_run:
@@ -2703,7 +2721,12 @@ class DhcpEngine:
                 self._debug(
                     f"release-previous: [dry] would release {e.mac} {e.ip} via {e.server_ip}"
                 )
-            self.recovery_result = {"outcome": "dry_run", "frames_sent": 0, **stats}
+            self.recovery_result = {
+                "outcome": "dry_run",
+                "frames_sent": 0,
+                "pool_exhausted": pool_was_exhausted,
+                **stats,
+            }
             return
 
         frames_sent = 0
@@ -2715,7 +2738,12 @@ class DhcpEngine:
             self._debug(f"release-previous: pass {i + 1}/{passes} — {frames_sent} sent so far")
 
         if self._stop.is_set():
-            self.recovery_result = {"outcome": "interrupted", "frames_sent": frames_sent, **stats}
+            self.recovery_result = {
+                "outcome": "interrupted",
+                "frames_sent": frames_sent,
+                "pool_exhausted": pool_was_exhausted,
+                **stats,
+            }
             return
 
         post = self._control_transaction("post", client="new")
@@ -2733,10 +2761,12 @@ class DhcpEngine:
             "entries_still_open": len(remaining_targeted),
             "post_control_success": post.success,
             "post_control_reason": post.reason,
+            "pool_exhausted": pool_was_exhausted,
         }
         self.recovery_result = {
             "outcome": "recovered" if post.success else "failed",
             "frames_sent": frames_sent,
+            "pool_exhausted": pool_was_exhausted,
             **stats,
         }
 
