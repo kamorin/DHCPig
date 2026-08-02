@@ -37,12 +37,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out upstream source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           path: src
 
       - name: Check out the packaging branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: debian/master
           path: pkg
@@ -130,7 +130,7 @@ jobs:
 
       - name: Keep the built package for inspection
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: dhcpig-deb
           path: out/*.deb
@@ -147,7 +147,7 @@ jobs:
       contents: write
     steps:
       - name: Fetch the package built and tested above
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: dhcpig-deb
           path: out
