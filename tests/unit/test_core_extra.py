@@ -221,8 +221,8 @@ def test_neighbor_carries_fingerprint_when_dhcp_seen_before_arp(monkeypatch):
 
 def _discover_with_prl(mac: str, xid: int, prl: list[int]):
     """Like build_discover_v4, but with a caller-chosen option-55 order so a test can force a
-    known packetfence_dhcp_fingerprints.json match (build_discover_v4's PRL is macOS-style and
-    isn't in the packetfence-only DB)."""
+    known satori_dhcp_fingerprints.json match (build_discover_v4's PRL is macOS-style and isn't
+    in the bundled DB)."""
     opts = [
         ("message-type", "discover"),
         ("param_req_list", *prl),
@@ -248,8 +248,8 @@ def test_neighbor_fingerprint_backfilled_when_dhcp_seen_after_arp(monkeypatch):
     assert first.fingerprint is not None
     assert first.fingerprint.os is None  # OUI alone never claims an OS
     assert first.fingerprint.confidence <= 15
-    # 'N300 Wireless Router' -- a single, unambiguous packetfence_dhcp_fingerprints.json entry
-    prl = [1, 121, 249, 3, 6, 12, 15, 28, 33, 43]
+    # 'Windows 10' -- a single, unambiguous satori_dhcp_fingerprints.json entry
+    prl = [1, 121, 3, 6, 15, 119, 252, 95, 44, 46]
     eng._on_scan(_discover_with_prl(mac, 4, prl))  # DHCP arrives -> backfills the row
     neighbor_events = [e for e in events if isinstance(e, ev.NeighborFound)]
     assert len(neighbor_events) == 2  # initial ARP sighting + the fingerprint-triggered refresh

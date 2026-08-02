@@ -44,13 +44,13 @@ Both front ends drive the SAME `DhcpEngine` and never touch scapy directly.
 | `core/events.py` | `EventBus` (thread-safe), event dataclasses (including `ControlDetected`, `ForeignDiscover`, `ClientEvicted`), `to_dict()` + `jsonable()` (recursively converts enums/bytes/Path so JSON never breaks). `to_dict()` also attaches `finding.summary` (via `core/findings.finding_summary_lines()`) to every `FindingRaised` payload — §5a. |
 | `core/safety.py` | `ScopeGuard`, `RateLimiter` (token bucket — still wired through `_send()` for every mode; §5c for why exhaust and release no longer take `--rate`), `Cleanup` (tracks leases for restore). No authorization gate (§5). |
 | `core/sniffer.py` | thin `AsyncSniffer` wrapper. BPF is `port 67 or port 68`, both directions — needed to observe foreign DISCOVERs and DHCPDECLINEs (§5f, §8). |
-| `core/fingerprint.py` | `extract_signature()` + `resolve()`: exact option-55 match against `data/packetfence_dhcp_fingerprints.json`, else `from_mac()` OUI-only. `DB_VERSION`. |
+| `core/fingerprint.py` | `extract_signature()` + `resolve()`: exact option-55 match against `data/satori_dhcp_fingerprints.json`, then exact option-60 vendor class, else `from_mac()` OUI-only. `DB_VERSION`. |
 | `core/oui.py` | MAC → hardware vendor. scapy's bundled Wireshark/IEEE `manuf` DB (~50k) only; locally-administered MACs labelled as randomised. |
 | `core/reporting.py` | `SessionRecorder` → JSON/CSV/HTML (`render()` / `export()`, dispatching on the format the CLI's `--report` file extension or web UI's Report tab asks for). Neighbors deduped by MAC. Tracks `final_status` from `SessionEnded` to surface the pool estimate in reports. `finding_summary_lines()`/`EVIDENCE_SKIP` live in `core/findings.py`, re-exported here for `cli/render.py` and existing tests. |
 | `core/netutils.py` | iface enumeration, `iface_network_cidr()` (scope auto-fill), `default_gateway()` (release-phase/eviction target exclusion via `_release_gateway()`), `link_is_up()` (carrier poll for `link_down` halt detection — `None` fail-open, §5c), IP math, `random_mac()`. `random_mac()`/`iface_network_cidr()` are monkeypatched by source path in tests (`dhcpig.core.netutils.*`) — `engine.py` calls them as `netutils.random_mac()` etc, never `from .netutils import random_mac`, or the patch silently stops working. Same reasoning applies to `scapy.all.get_if_hwaddr`/`scapy.all.srp`, which stay function-local imports in `engine.py` for the same reason. |
 | `core/journal.py` | Lease journal for recovery (§5e): append-only JSONL, `default_path()` (XDG state dir, never `/var/lib`), `record_ack`/`record_released`, `load_open_leases()` (never raises — crash-tolerant). Powers `Mode.RELEASE_PREVIOUS`. |
 | `core/exceptions.py` | `DhcpigError`, `ConfigError`, `OutOfScope`, `SessionConflict`. |
-| `data/packetfence_dhcp_fingerprints.json` | Static PacketFence-only fingerprints (535), queryable standalone via `data/fingerprint-merge.py`. `data/DATA_ATTRIBUTION.md`. |
+| `data/satori_dhcp_fingerprints.json` | Static Satori-derived fingerprints (319 option-55, 187 vendor-class), GPL-2.0-or-later. Queryable and regenerable via `data/satori-merge.py`. `data/DATA_ATTRIBUTION.md`. |
 
 ### Web files
 `web/server.py` (`WebApp` + `Handler` + `main`), `web/api.py` (route handlers → `(status,dict)`),
@@ -546,13 +546,17 @@ See `CONTRIBUTING.md` for the commands. Two things worth knowing at the design l
 - **Server-id/client-MAC handling in `packets.py`** (server-id = opt54 else siaddr; client MAC =
   `chaddr[:6]`; REQUEST includes option-61; broadcast flag 0x8000) has regression tests. Don't
   lose them.
-- **Fingerprint DB is `data/packetfence_dhcp_fingerprints.json`** (PacketFence-only, 535
-  fingerprints; queryable standalone via `data/fingerprint-merge.py`). Matching is
-  exact/order-sensitive on option-55; a fingerprint with more than one candidate device is
-  returned at lower confidence (75 vs 90) and flagged `(ambiguous xN)` in `matched_via`. `os` is
-  intentionally left `None` for DB matches (the data doesn't cleanly separate OS from device);
-  `device` carries the candidate name(s). No builtin vendor-class/PRL fallback table — a miss
-  falls straight through to `from_mac()` OUI-only identification.
+- **Fingerprint DB is `data/satori_dhcp_fingerprints.json`** (derived from Satori, 319
+  option-55 and 187 vendor-class signatures; queryable and regenerable via
+  `data/satori-merge.py`). **It is GPL-2.0-or-later, deliberately** — it replaced a
+  PacketFence/Fingerbank-derived table that was ODbL/DbCL, so the project now ships under one
+  license end to end. A test asserts the bundled `license` field, so a relicensed reimport
+  fails loudly rather than quietly. Three rungs, and the confidence bands keep them apart:
+  exact/order-sensitive option-55 (90, or 75 with more than one candidate), then exact option-60
+  vendor class (70 / 55), then `from_mac()` OUI-only (15). A signature with more than one
+  candidate keeps them all and is flagged `(ambiguous xN)` in `matched_via`. `os` **is** now
+  populated — the Satori data separates OS from device — but only when every candidate agrees on
+  one, since "Windows 10 / iOS 12" is two guesses rather than an answer.
 - **Neighbors ↔ fingerprints are correlated by MAC** (`engine._note_neighbor` /
   `_note_fingerprint`, `_neighbors_by_mac` / `_fp_by_mac`): whichever signal arrives first (ARP
   is-at vs. a DHCP packet from that MAC), the other backfills it and re-emits `NeighborFound` so
@@ -600,10 +604,12 @@ until that changes.
 - **IPv6**: `IPVersion.V6` is a seam only; v6 packet builders/flows are NOT implemented (`start()`
   refuses rather than silently sending v4 while listening for v6). The v4 modes are the working
   ones.
-- **Fingerprint coverage**: `packetfence_dhcp_fingerprints.json` has 535 fingerprints
-  (PacketFence-only); regenerate it from a newer PacketFence export to expand coverage. `os` is
-  always `None` for DB matches by design (§8) — if the report/UI should distinguish OS from
-  device, that needs a curated taxonomy layered on top of `name`.
+- **Fingerprint coverage**: `satori_dhcp_fingerprints.json` has 319 option-55 and 187
+  vendor-class signatures; refresh it with `python3 data/satori-merge.py --convert
+  <satori>/fingerprints/dhcp.xml` against a newer Satori checkout. Satori's 131 `partial`
+  vendor-class tests are **not** imported — they are substring matches and need a different
+  matcher than the dict lookup in `core/fingerprint.py`; add them in both places together if
+  wanted.
 - **Active-scan** fingerprints the DHCP *server* via the INFORM reply; ARP-only neighbours now
   get MAC-vendor identification (`core/oui.py`), but never an OS — that needs DHCP evidence.
 - **Integration coverage** only exercises exhaust; add netns cases for release/active-scan, and
@@ -621,7 +627,7 @@ until that changes.
   if the web UI needs full parity with the CLI.
 - **Packaging** `.deb`/`.desktop`/`dhcpig.1` exist under `packaging/` but haven't been built/
   tested on a real Kali box yet. CI does build a wheel and confirm
-  `data/packetfence_dhcp_fingerprints.json` ships inside it (`.github/workflows/ci.yml`'s
+  `data/satori_dhcp_fingerprints.json` ships inside it (`.github/workflows/ci.yml`'s
   `build-check` job) — that specific packaging regression is covered; a full `.deb` build on
   real Kali is still not.
 

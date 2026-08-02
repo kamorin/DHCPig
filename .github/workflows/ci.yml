@@ -17,7 +17,7 @@ jobs:
       - run: mypy src/dhcpig/core
       - run: pytest -m "not integration" --cov=dhcpig --cov-report=term-missing
 
-  # A packaging regression that dropped data/packetfence_dhcp_fingerprints.json from the wheel
+  # A packaging regression that dropped data/satori_dhcp_fingerprints.json from the wheel
   # would not fail the job above -- `pip install -e .` is an editable install and never builds a
   # wheel, so it never exercises [tool.hatch.build.targets.wheel]'s packaging at all. Worse, a
   # missing data file is silent at runtime too: core/fingerprint.py's _db() catches
@@ -40,7 +40,9 @@ jobs:
           /tmp/wheel-venv/bin/python -c "
           import re
           from dhcpig.core.fingerprint import DB_VERSION
-          n = int(re.search(r'\((\d+) fp\)', DB_VERSION).group(1))
           print(f'DB_VERSION={DB_VERSION}')
-          assert n > 0, 'packetfence_dhcp_fingerprints.json did not ship inside the wheel'
+          m = re.search(r'\((\d+) fp, (\d+) vc\)', DB_VERSION)
+          assert m, f'unexpected DB_VERSION format: {DB_VERSION}'
+          fp, vc = int(m.group(1)), int(m.group(2))
+          assert fp > 0 and vc > 0, 'satori_dhcp_fingerprints.json did not ship inside the wheel'
           "
