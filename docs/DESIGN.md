@@ -578,7 +578,7 @@ See `CONTRIBUTING.md` for the commands. Two things worth knowing at the design l
   work (§5a) was meant to eliminate. Don't cache/round it into something that loses that context.
 
 ## 9. Current status
-**2.6.0** (`pyproject.toml` + `dhcpig.__version__`). **361 unit tests pass; ruff clean.** See
+**2.6.1** (`pyproject.toml` + `dhcpig.__version__`). **361 unit tests pass; ruff clean.** See
 `CHANGELOG.md` for the full release-by-release history (the legacy `pig.py` compatibility layer
 was removed in 2.6.0 — `dhcpig exhaust`/`dhcpig release` are the only entry points now).
 
