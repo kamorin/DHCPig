@@ -4,15 +4,14 @@ This is the design document: what the tool does, why the code is shaped the way 
 decisions are settled rather than open. It's the reference for anyone extending or reviewing this
 codebase — human or agent. For the practical "how do I add a finding / run the tests / where does
 this file go" workflow, see `CONTRIBUTING.md`; agent-session/sandbox specifics live in
-`CLAUDE.md`, not here.
+`CLAUDE.md`; release-by-release history lives in `CHANGELOG.md` — none of that is repeated here.
 
 ## 1. What this is
-A whitehat DHCP network-hardening validation tool — a full rewrite of the legacy single-file
-`pig.py` into an installable, tested package. It exhausts DHCP pools, releases neighbor leases
-and re-acquires them by name, evicts hosts off addresses via forged RFC 5227 ARP conflicts, and
-passively/actively fingerprints hosts — to prove a network defends against those (DHCP snooping,
-port security, Dynamic ARP Inspection, etc.). **Never add capability that enables host
-compromise or lateral movement; it stays an L2/L3 DHCP/ARP stress + audit tool.**
+A whitehat DHCP network-hardening validation tool. It exhausts DHCP pools, releases neighbor
+leases and re-acquires them by name, evicts hosts off addresses via forged RFC 5227 ARP
+conflicts, and passively/actively fingerprints hosts — to prove a network defends against those
+(DHCP snooping, port security, Dynamic ARP Inspection, etc.). **Never add capability that
+enables host compromise or lateral movement; it stays an L2/L3 DHCP/ARP stress + audit tool.**
 
 ## 2. Where the code lives
 See `CLAUDE.md` for local working-copy paths and any sandbox/VM specifics — that's session
@@ -35,21 +34,21 @@ Both front ends drive the SAME `DhcpEngine` and never touch scapy directly.
 ### Core files
 | File | Role |
 |------|------|
-| `core/models.py` | dataclasses/enums: `SessionConfig`, `Lease`, `ServerInfo`, `Neighbor`, `HostFingerprint`, `PoolEstimate`, `Mode`, `IPVersion`, `Timeouts`. `DESTRUCTIVE_MODES`, `SCOPE_REQUIRED_MODES`, `EXHAUST_DEFAULT_RATE_PPS`. `ControlOutcome` carries `server_mac`; `Lease` carries `server_mac`. |
-| `core/packets.py` | **pure** scapy builders/parsers (no I/O). `build_discover_v4` (takes `requested_addr` for option 50 — see §5f), `build_request_v4`, `build_release_v4` (now emits an `Ether` layer — see §5c), `build_inform_v4`, `build_garp` (op=1/2 — reused by eviction, see §5b), `server_identifier`, `client_mac_from_offer`, `parse_offer`, `is_offer`/`is_ack`/`is_nak`/`is_discover`/`is_decline`, `dhcp_option`. `build_arp_poison` was removed (2.3) — don't re-add it, see §5b. |
-| `core/engine.py` | `DhcpEngine(cfg, bus)`: `start/stop/status/restore`. One state machine, `threading.Event` stop, worker threads + sniffer. **Every outbound frame goes through `_send()`** (the single chokepoint; `probe=True` bypasses dry-run suppression only, never `offline` — see §8). Control transaction, release phase, re-acquisition, the windowed sender, halt detection, and pool estimate all live here (§5a–§5f); finding *text* lives in `core/findings.py`, eviction state in `core/eviction.py`, race state in `core/racing.py`, release-previous's entry filter in `core/recovery.py` — engine.py keeps the branching logic and calls into all four. Debug via `_debug()`. 2965 lines before the cleanup pass (see §11); ~2570 after. |
-| `core/findings.py` | The finding catalogue: every id's title/verdict/severity/recommendation in one declarative dict, plus `build(id, evidence, **overrides)`, `finding_summary_lines()` + `EVIDENCE_SKIP` (the one rule for displaying a finding, shared by the CLI renderer, the HTML report, and `events.to_dict()`'s `summary` field, which `app.js` now renders directly instead of re-deriving — see §5a), and the two-variant recommendation helpers (`starvation_not_attained_recommendation()`, `neighbor_leases_released_recommendation()`). Engine methods decide *whether* a finding fires and with what evidence; this file owns the *text*. |
-| `core/eviction.py` | `EvictionState` (the nine per-run eviction attributes, `self._evict` on the engine) and the pure outcome-rung ordering (`RUNGS`, `rung_max()`). The eviction *methods* (`_do_arp_conflict`, `_evict_phase`, `_evict_worker`, `_measure_eviction`, `_handle_evict_arp`) stay on `DhcpEngine` — they're threaded through `_send()`/the bus/`cfg`/other engine dicts closely enough that wrapping them in a class holding a back-reference to the engine would add indirection without reducing coupling. |
+| `core/models.py` | dataclasses/enums: `SessionConfig`, `Lease`, `ServerInfo`, `Neighbor`, `HostFingerprint`, `PoolEstimate`, `Mode`, `IPVersion`, `Timeouts`. `DESTRUCTIVE_MODES = {RELEASE_NEIGHBORS}`; `RUN_ONCE_MODES = DESTRUCTIVE_MODES \| {RELEASE_PREVIOUS, ACTIVE_SCAN}` (re-exported by `cli/main.py`) — the set the CLI polling loop and web reaper use to detect a worker-thread run finishing; keep it "does the worker finishing mean the run is over", not "is this mode destructive". `ControlOutcome`/`Lease` carry `server_mac`. |
+| `core/packets.py` | **pure** scapy builders/parsers (no I/O): `build_discover_v4` (takes `requested_addr` for option 50, §5f), `build_request_v4`, `build_release_v4` (carries an `Ether` layer, §5c), `build_inform_v4`, `build_garp` (op=1/2, reused by eviction, §5b), `server_identifier`, `client_mac_from_offer`, `parse_offer`, `is_offer`/`is_ack`/`is_nak`/`is_discover`/`is_decline`, `dhcp_option`. |
+| `core/engine.py` | `DhcpEngine(cfg, bus)`: `start/stop/status/restore`. One state machine, `threading.Event` stop, worker threads + sniffer. **Every outbound frame goes through `_send()`** (the single chokepoint; `probe=True` bypasses dry-run suppression only, never `offline` — §8). Control transaction, release phase, re-acquisition, the windowed sender, halt detection, and pool estimate all live here (§5a–§5f); finding *text* lives in `core/findings.py`, eviction state in `core/eviction.py`, race state in `core/racing.py`, release-previous's entry filter in `core/recovery.py` — engine.py keeps the branching logic and calls into all four. Debug via `_debug()`. ~2570 lines. |
+| `core/findings.py` | The finding catalogue: every id's title/verdict/severity/recommendation in one declarative dict, plus `build(id, evidence, **overrides)`, `finding_summary_lines()` + `EVIDENCE_SKIP` (the one rule for displaying a finding, shared by the CLI renderer, the HTML report, and `events.to_dict()`'s `summary` field, which `app.js` renders directly instead of re-deriving — §5a), and the two-variant recommendation helpers (`starvation_not_attained_recommendation()`, `neighbor_leases_released_recommendation()`). Engine methods decide *whether* a finding fires and with what evidence; this file owns the *text*. |
+| `core/eviction.py` | `EvictionState` (the per-run eviction attributes, `self._evict` on the engine) and the pure outcome-rung ordering (`RUNGS`, `rung_max()`). The eviction *methods* (`_do_arp_conflict`, `_evict_phase`, `_evict_worker`, `_measure_eviction`, `_handle_evict_arp`) stay on `DhcpEngine` — they're threaded through `_send()`/the bus/`cfg`/other engine dicts closely enough that wrapping them in a class holding a back-reference to the engine would add indirection without reducing coupling. |
 | `core/recovery.py` | `select_entries(cfg, entries, scope, pre_control)` — the one piece of `release-previous`'s logic that's genuinely decoupled from the engine (a pure filter over `cfg` + the loaded journal). `_run_release_previous`/`_release_selected`/`_release_previous_worker` stay engine methods, same coupling reasoning as eviction. |
-| `core/racing.py` | `RaceState` (the seven per-run race-freed attributes, `self._race` on the engine — see §5g). `races` (the plain attempted-count) stays a normal engine attribute alongside its sibling counters. |
-| `core/events.py` | `EventBus` (thread-safe), event dataclasses (including `ControlDetected`, `ForeignDiscover`, `ClientEvicted`), `to_dict()` + `jsonable()` (recursively converts enums/bytes/Path so JSON never breaks). `to_dict()` also attaches `finding.summary` (via `core/findings.finding_summary_lines()`) to every `FindingRaised` payload — see §5a. |
-| `core/safety.py` | `ScopeGuard`, `RateLimiter` (token bucket — still wired through `_send()` for every mode; see §5c for why exhaust no longer takes `--rate`), `Cleanup` (tracks leases for restore). No `authorize()` — the gate was removed, see §5. |
-| `core/sniffer.py` | thin `AsyncSniffer` wrapper. BPF widened (2.3) to see client→server traffic too (`port 67 or port 68`, both directions) — needed to observe foreign DISCOVERs and DHCPDECLINEs; see §5f. |
+| `core/racing.py` | `RaceState` (the per-run race-freed attributes, `self._race` on the engine — §5g). `races` (the plain attempted-count) stays a normal engine attribute alongside its sibling counters. |
+| `core/events.py` | `EventBus` (thread-safe), event dataclasses (including `ControlDetected`, `ForeignDiscover`, `ClientEvicted`), `to_dict()` + `jsonable()` (recursively converts enums/bytes/Path so JSON never breaks). `to_dict()` also attaches `finding.summary` (via `core/findings.finding_summary_lines()`) to every `FindingRaised` payload — §5a. |
+| `core/safety.py` | `ScopeGuard`, `RateLimiter` (token bucket — still wired through `_send()` for every mode; §5c for why exhaust no longer takes `--rate`), `Cleanup` (tracks leases for restore). No authorization gate (§5). |
+| `core/sniffer.py` | thin `AsyncSniffer` wrapper. BPF is `port 67 or port 68`, both directions — needed to observe foreign DISCOVERs and DHCPDECLINEs (§5f, §8). |
 | `core/fingerprint.py` | `extract_signature()` + `resolve()`: exact option-55 match against `data/packetfence_dhcp_fingerprints.json`, else `from_mac()` OUI-only. `DB_VERSION`. |
-| `core/oui.py` | MAC → hardware vendor. scapy's bundled Wireshark/IEEE `manuf` DB (~50k) only; locally-administered MACs labelled as randomised. No bundled IEEE copy needed — scapy already ships one. |
-| `core/reporting.py` | `SessionRecorder` → JSON/CSV/HTML (`render()` / `export()`). Neighbors deduped by MAC. Tracks `final_status` from `SessionEnded` to surface the pool estimate in reports. `finding_summary_lines()`/`EVIDENCE_SKIP` now live in `core/findings.py`; re-exported here for `cli/render.py` and existing tests. |
-| `core/netutils.py` | iface enumeration, `iface_network_cidr()` (scope auto-fill), `default_gateway()` (release-phase/eviction target exclusion via `_release_gateway()`), `link_is_up()` (carrier poll for `link_down` halt detection — `None` fail-open, see §5c), IP math, `random_mac()`. `random_mac()`/`iface_network_cidr()` are monkeypatched by source path in tests (`dhcpig.core.netutils.*`) — `engine.py` calls them as `netutils.random_mac()` etc, never `from .netutils import random_mac`, or the patch silently stops working. Same reasoning applies to `scapy.all.get_if_hwaddr`/`scapy.all.srp`, which stay function-local imports in `engine.py` for the same reason. |
-| `core/journal.py` | Lease journal for recovery (2.2, §5e): append-only JSONL, `default_path()` (XDG state dir, never `/var/lib`), `record_ack`/`record_released`, `load_open_leases()` (never raises — crash-tolerant). Powers `Mode.RELEASE_PREVIOUS`. |
+| `core/oui.py` | MAC → hardware vendor. scapy's bundled Wireshark/IEEE `manuf` DB (~50k) only; locally-administered MACs labelled as randomised. |
+| `core/reporting.py` | `SessionRecorder` → JSON/CSV/HTML (`render()` / `export()`, dispatching on the format the CLI's `--report` file extension or web UI's Report tab asks for). Neighbors deduped by MAC. Tracks `final_status` from `SessionEnded` to surface the pool estimate in reports. `finding_summary_lines()`/`EVIDENCE_SKIP` live in `core/findings.py`, re-exported here for `cli/render.py` and existing tests. |
+| `core/netutils.py` | iface enumeration, `iface_network_cidr()` (scope auto-fill), `default_gateway()` (release-phase/eviction target exclusion via `_release_gateway()`), `link_is_up()` (carrier poll for `link_down` halt detection — `None` fail-open, §5c), IP math, `random_mac()`. `random_mac()`/`iface_network_cidr()` are monkeypatched by source path in tests (`dhcpig.core.netutils.*`) — `engine.py` calls them as `netutils.random_mac()` etc, never `from .netutils import random_mac`, or the patch silently stops working. Same reasoning applies to `scapy.all.get_if_hwaddr`/`scapy.all.srp`, which stay function-local imports in `engine.py` for the same reason. |
+| `core/journal.py` | Lease journal for recovery (§5e): append-only JSONL, `default_path()` (XDG state dir, never `/var/lib`), `record_ack`/`record_released`, `load_open_leases()` (never raises — crash-tolerant). Powers `Mode.RELEASE_PREVIOUS`. |
 | `core/exceptions.py` | `DhcpigError`, `ConfigError`, `OutOfScope`, `SessionConflict`. |
 | `data/packetfence_dhcp_fingerprints.json` | Static PacketFence-only fingerprints (535), queryable standalone via `data/fingerprint-merge.py`. `data/DATA_ATTRIBUTION.md`. |
 
@@ -59,7 +58,7 @@ Both front ends drive the SAME `DhcpEngine` and never touch scapy directly.
 (loopback + bearer token + same-origin + security headers), `web/schemas.py` (dataclass
 validation, no pydantic; `config_from_payload`, `as_cli`), `web/static/{index.html,app.js,styles.css,icon.svg}`
 (vanilla JS SPA, no build step, hand-rolled canvas sparkline). `icon.svg` is the hacker-pig
-logo -- served unauthenticated alongside the css/js because the browser fetches it as a
+logo — served unauthenticated alongside the css/js because the browser fetches it as a
 favicon before any token exists; the same file is copied to `packaging/dhcpig.svg` for the
 `.desktop` entry and the README header.
 
@@ -69,28 +68,28 @@ web `SseSubscriber` puts `to_dict(event)` on a queue, the `/events` handler writ
 the browser's `EventSource` updates the DOM. **Handlers must be cheap/non-blocking.**
 
 ## 5. Safety model
-- **The authorization gate was deliberately removed** (2026-07). There is no
-  `--i-am-authorized`, no `authorize()`, no `Unauthorized`, no confirmation modal or prompt, and
-  `--scope` is optional for `release` — with none given it falls back to the interface's own
-  network via `_sweep_cidrs()`. **`dhcpig release eth0` will target the whole segment, and now
-  runs the full re-acquisition + eviction chain against it (§5f) — a bigger blast radius than the
-  name alone suggests.** Don't re-add the gate without asking, and don't quietly remove what's
-  left below either. (`Mode.GARP_DOS` was retired in 2.3 — see §5b.)
+- **There is no authorization gate.** No `--i-am-authorized`, no `authorize()`, no
+  `Unauthorized`, no confirmation modal or prompt, and `--scope` is optional for `release` — with
+  none given it falls back to the interface's own network via `_sweep_cidrs()`. **`dhcpig
+  release eth0` will target the whole segment, and runs the full re-acquisition + eviction chain
+  against it (§5f) — a bigger blast radius than the name alone suggests.** Don't re-add the gate
+  without asking, and don't quietly remove what's left below either.
 - What still bounds a run: the windowed handshake pipeline for `exhaust` (§5c), `--rate` (default
   7 pps) for every other mode, `--dry-run`/`--no-evict`, `ScopeGuard` when a scope *is* supplied,
   and `Cleanup`/`restore()` for lease reversal.
 - `active-scan` is non-destructive but **requires `--scope`** (`ConfigError` if missing) — this
-  is the one remaining hard requirement, so its sweep can't be unbounded.
+  is the one remaining hard requirement, so its sweep can't be unbounded. It also has a bounded
+  post-INFORM listen window (`active_scan_listen`, default 20s, `--active-scan-listen`) so the
+  worker thread always exits on its own — `active-scan` is in `RUN_ONCE_MODES` (§3).
 - **`_send()` is the chokepoint**: scope check (drops out-of-scope, emits `Skipped`), rate limit,
   `offline` (hard "never touch a socket" switch), and `dry_run` (builds + accounts, never calls
-  `sendp` — **unless** `probe=True`, see §8). Keep all sends flowing through it.
-- `restore()` releases exactly the leases in `Cleanup`. **There is no auto-restore-on-exit
-  anymore** (`restore_on_exit`/`--restore-on-exit` were removed, 2.2) — leases are always kept
-  after a run so the exhausted state can be verified; the operator cleans up explicitly via
-  `dhcpig restore <iface>` or `POST /api/session/restore` (same-process/session only — the UI's
-  Restore button was deliberately removed) or, once that process is gone,
-  `dhcpig release-previous <iface>` replaying the lease journal. Don't silently reintroduce
-  an auto-restore flag — retention followed by an explicit recovery step is deliberate.
+  `sendp` — **unless** `probe=True`, §8). Keep all sends flowing through it.
+- `restore()` releases exactly the leases in `Cleanup`. **There is no auto-restore-on-exit** —
+  leases are always kept after a run so the exhausted state can be verified; the operator cleans
+  up explicitly via `dhcpig restore <iface>` or `POST /api/session/restore` (same-process/session
+  only — there is no Restore button in the web UI) or, once that process is gone, `dhcpig
+  release-previous <iface>` replaying the lease journal. Don't silently reintroduce an
+  auto-restore flag — retention followed by an explicit recovery step is deliberate.
 
 ## 5a. Confidence model — why the tool can be believed
 The engine reports **verdicts backed by evidence**, not just counters. Several pieces work
@@ -106,21 +105,21 @@ together and should be kept together:
   defense worked; a failed `pre/new` with a good `pre/self` means L2 admission control.
   `ControlOutcome.server_mac` (learned from the OFFER's Ethernet source) is what lets the release
   phase (§5c) unicast RELEASE to the real server instead of broadcasting blind.
-- **`EXHAUSTED` means the server stopped serving — nothing else.** There is no lease cap
-  (`--max-leases` was removed precisely so nothing self-imposed could be mistaken for
-  exhaustion). Exhaustion needs offers to have flowed then stopped (`_offers_seen_any` +
-  `offer_silence`) and is only `confirmed=True` once the post control is also denied.
+- **`EXHAUSTED` means the server stopped serving — nothing else.** There is no lease cap; nothing
+  self-imposed can be mistaken for exhaustion. Exhaustion needs offers to have flowed then
+  stopped (`_offers_seen_any` + `offer_silence`) and is only `confirmed=True` once the post
+  control is also denied.
 - **`HALTED` means a defensive control fired mid-run** (§5c) — distinct from `EXHAUSTED`. Both
   route through the same `_trigger_halt()` → `_finish_in_background()` path.
 - **Runs finalize themselves.** `_finish_in_background()` spawns a finisher thread that calls
   `stop()` when a terminal condition hits. This is required, not cosmetic: `stop()` joins the
-  worker threads, so the sender cannot call it directly, and without it the web UI sat idle
+  worker threads, so the sender cannot call it directly, and without it the web UI would sit idle
   after the pool drained (senders dead, no post-control, no verdict) until Stop was pressed.
   `OffersCeased` reports the quiet-period countdown so the UI shows progress meanwhile.
 - **Findings** (`_finalize_findings`, `Finding`): id/verdict/severity/evidence/recommendation,
   emitted as `FindingRaised`, collected into `report["findings"]`. Add new findings there. The
   exhaustion verdict is `DHCP_STARVATION_ATTAINED` (FAIL) / `DHCP_STARVATION_NOT_ATTAINED` (PASS)
-  — see §5d. **`verdict` is what the UI colors off, never `id`** — keep it that way.
+  — §5d. **`verdict` is what the UI colors off, never `id`** — keep it that way.
 - **`RUN_SUMMARY` (INFO) is the one finding raised unconditionally**, first, in every mode
   including dry-run and read-only scans — it's the only finding a reader can rely on being
   present, so a report always opens with "here is what this tool did to your network" before any
@@ -129,9 +128,8 @@ together and should be kept together:
   to its own width, and JSON/CSV consumers get parseable fields). Two rules govern the content:
   - **`did` is plain English and short (≤60 chars, asserted by a test); protocol names live in
     `got`.** The audience is a security engineer who is *not* a DHCP specialist, so the left
-    column must be readable without knowing what DHCPRELEASE or option 50 are. It's terse on
-    purpose: the *why* behind these primitives is stated **once** in the recommendation, and an
-    earlier version that explained it per step ran ~290 words and read as prose, not a list.
+    column must be readable without knowing what DHCPRELEASE or option 50 are. The *why* behind
+    these primitives is stated **once**, in the recommendation — not repeated per step.
   - **Descriptive only — do not make it infer defensive posture.** "The server ignored this, so
     snooping is probably on" belongs in the verdict findings; a second differently-worded
     conclusion from the same run is worse than one. A regression test asserts the step text
@@ -142,22 +140,23 @@ together and should be kept together:
   the chain, since all of them depend on sending DHCP on another device's behalf.
 - **The neighbor roll-call has two surfaces, one source.** `_neighbor_rollcall()` does all the
   classifying and returns `(ip, mac, hostname, outcome, category)` rows (`hostname` is DHCP
-  option 12 off a foreign DISCOVER, `""` when never seen -- never inferred from anything else,
+  option 12 off a foreign DISCOVER, `""` when never seen — never inferred from anything else,
   and the column is omitted entirely when no host has one); **`NeighborSummary`** (live event,
   event log) and the **`NEIGHBORS_OBSERVED`** INFO finding (durable, reaches
   `report["findings"]` and so the JSON/HTML exports) both just render it. Never let either
   compute its own classification — they'd drift, and then a report and the log it came from
   would disagree about what happened to a host. The finding exists because `NeighborSummary` is
   an event and events don't survive into the report at all.
-- **`NeighborSummary` (2.3.3) is the event-log counterpart to `RUN_SUMMARY`**: emitted once from
+- **`NeighborSummary` is the event-log counterpart to `RUN_SUMMARY`**: emitted once from
   `stop()` (after `_evict_phase()` so outcomes are settled, before `_finalize_findings()` so the
-  log reads "who was affected" then "the verdicts about it"), built by
-  `_emit_neighbor_summary()`. It emits **one row per host and lists every discovered neighbor** -- including untouched ones,
-  so `unaffected` is visibly distinct from `not examined` -- sorted worst-first. Silent when the ARP sweep found nothing. The bucket boundaries are
-  load-bearing and are pinned by tests in both directions:
+  log reads "who was affected" then "the verdicts about it"), built by `_emit_neighbor_summary()`.
+  It emits **one row per host and lists every discovered neighbor** — including untouched ones,
+  so `unaffected` is visibly distinct from `not examined` — sorted worst-first. Silent when the
+  ARP sweep found nothing. The bucket boundaries are load-bearing and are pinned by tests in both
+  directions:
   - `offline` — `discover_unanswered`/`apipa`, **or** (any mode, but this is exhaust's whole
     point) a neighbor whose DISCOVER during the run went unanswered because the pool was
-    drained. Reading only `_evict.outcomes` reported those as `unaffected`, exactly backwards.
+    drained. Reading only `_evict.outcomes` would report those as `unaffected`, exactly backwards.
     `rediscovered` is **not** offline: it restarted and *was served*.
   - `lease_taken` — re-acquisition `granted` for that IP with no eviction reaction observed. **Do
     not merge this into either neighbouring bucket.** The host is working at the moment the
@@ -167,24 +166,19 @@ together and should be kept together:
   - An observed eviction rung always wins over the inferred `lease_taken` state for the same
     host — eviction only ever targets addresses re-acquisition granted, so every evicted host is
     also a `lease_taken` candidate, and the observed reaction is the better evidence.
-- **The event log is the only results surface (2.3.5).** There is **no findings tab** in the
-  web UI any more, and no client-side finding store — `FindingRaised` renders straight into the
-  log. Don't rebuild the tab without re-reading why it went: findings are all raised in one pass
-  at the end of a run, so a panel that fills instantly at the end was never doing anything a log
-  tail couldn't, and it duplicated content the log already printed.
-- **`findings.finding_summary_lines()` (moved from `reporting.py`) is the single rule for how a
-  finding is displayed.** `cli/render.py` and `_findings_html()` both call it directly; `events.
-  to_dict()` calls it once per `FindingRaised` and attaches the result as `finding.summary`, and
-  `web/static/app.js` renders that field instead of re-deriving its own copy in JS. This used to
-  be a hand-mirrored JS implementation ("because it can't import Python") — it silently drifted
-  from the Python rule (list evidence collapsed to `key=length` in JS instead of one line per
-  item) before the mirroring was replaced with actually sharing the computed value. **If you
-  change the rule, there is now exactly one place to change it** — the failure mode this fixed
-  was three surfaces describing one run three different ways. The rule: numbers line (nested
-  dicts flattened, zero/empty and `EVIDENCE_SKIP` keys dropped), list evidence one item per
-  line, then the **first sentence** of the recommendation. `EVIDENCE_SKIP` holds run context
-  already in the header, config echoes, and `still_using_address_arp` — which `_finish_release()`
-  itself documents as not being evidence either way.
+- **The event log is the only results surface.** There is **no findings tab** in the web UI, and
+  no client-side finding store — `FindingRaised` renders straight into the log. Findings are all
+  raised in one pass at the end of a run, so a panel that fills instantly at the end was never
+  doing anything a log tail couldn't, and it duplicated content the log already printed.
+- **`findings.finding_summary_lines()` is the single rule for how a finding is displayed.**
+  `cli/render.py` and `_findings_html()` both call it directly; `events.to_dict()` calls it once
+  per `FindingRaised` and attaches the result as `finding.summary`, and `web/static/app.js`
+  renders that field instead of re-deriving its own copy in JS. **There is exactly one place to
+  change the rule** — the rule: numbers line (nested dicts flattened, zero/empty and
+  `EVIDENCE_SKIP` keys dropped), list evidence one item per line, then the **first sentence** of
+  the recommendation. `EVIDENCE_SKIP` holds run context already in the header, config echoes, and
+  `still_using_address_arp` — which `_finish_release()` itself documents as not being evidence
+  either way.
 - **The JSON export stays the complete record.** Summarising happens at render time; `Finding`
   keeps `verdict`, `severity`, full `evidence` and the full multi-sentence `recommendation`, and
   all of it still reaches `report["findings"]`. If someone asks for more detail, the answer is
@@ -199,65 +193,52 @@ together and should be kept together:
   on the operator's network when the log's job is to say what happened. The run's conclusion is
   the `OUTCOME` roll-up (§5h).
 
-## 5b. ARP-conflict eviction — why `_do_arp_conflict()` is shaped the way it is (2.3)
-`Mode.GARP_DOS` (standalone sustained ARP-cache poisoning, no exhaustion phase) was **retired**
-in 2.3 — `build_arp_poison()`, `_garp_worker()`, `_on_garp_arp()` and both `ARP_FORGERIES_*`
-findings are gone from `src/`. Its frame-building core survives, rewritten and repurposed:
-`_do_garp()` → **`_do_arp_conflict()`**, no longer a standalone mode, now the mechanism eviction
-(§5f) uses to force a host off an address it's *already lost the DHCP binding for* (re-acquired
-in §5f's re-acquisition step) — not a general-purpose connectivity-denial tool anymore.
+## 5b. ARP-conflict eviction — why `_do_arp_conflict()` is shaped the way it is
+`_do_arp_conflict()` is the mechanism eviction (§5f) uses to force a host off an address it's
+*already lost the DHCP binding for* (re-acquired in §5f's re-acquisition step) — not a
+general-purpose connectivity-denial tool.
 
 Per target per round: a broadcast ARP **request** + **reply** (`build_garp`, stacks honour
-different forms — kept from the old implementation), claiming the target's own IP at a fresh
-`random_mac()`. **The old third frame — a unicast ARP reply putting the default gateway at an
-unused MAC (`build_arp_poison()`) — is gone and is not coming back.** It crossed from
-denial-of-service into traffic-interception-adjacent territory (it targeted the *gateway*
-mapping, not the victim's own address) and added nothing eviction needs: RFC 5227 §2.4 address
-conflict detection is what does the work now (§5f), not a severed default route.
+different forms), claiming the target's own IP at a fresh `random_mac()`. There is no third
+frame targeting the default gateway's mapping — that would cross from denial-of-service into
+traffic-interception-adjacent territory and adds nothing eviction needs: RFC 5227 §2.4 address
+conflict detection is what does the work (§5f), not a severed default route.
 
 The forged MAC is always bogus, recorded in `_evict.bogus_macs` so the ARP observer
 (`_handle_evict_arp()`) can tell forged frames apart from the real owner's. **Never point it at
 our own MAC** — blackhole is address-conflict detection (in scope); redirecting traffic through
-us would be interception (out of scope, see §1).
+us would be interception (out of scope, §1).
 
-## 5c. Release phase, windowed sender, halt-on-control (2.1; shared prelude 2.3 §5f)
-This is the direct fix for a real run that stalled at 56/~1000 addresses on a `/22`. The capture
-showed the server re-offering the same address to two of our MACs, then NAKing, then going
-silent — **pending-offer table saturation from flooding faster than handshakes could complete,
-not real pool exhaustion.** Three pieces address this, in `_common_prelude()` order (extracted
-from `_exhaust_prelude()` in 2.3 so `release` mode shares it too — see §5f):
+## 5c. Release phase, windowed sender, halt-on-control
+Three pieces, run in `_common_prelude()` order (shared by both `exhaust` and `release`, §5f):
 
 1. **Release phase** (`_release_phase()`, runs after `ctl-pre-new` for exhaust / after `ctl-pre-
    self` for release, before senders/re-acquisition). Sources the server identity from
-   `_prelude_pre_control()` — **never** guess or fall back to `0.0.0.0` (that was Bug 1:
-   `_discover_neighbors()` is ARP-only and never learns a DHCP server, so every RELEASE used to
-   go to `0.0.0.0` and get dropped). Excludes the gateway and the DHCP server from targets,
-   feeds the freed list into re-acquisition (§5f) which is what actually confirms whether the
-   RELEASE took (`_reprobe_released` is colour only — see its docstring for why an ARP re-probe
-   structurally reads 0 even on full success). **No opt-out**: `cfg.release_neighbors` /
-   `--no-release` were removed in 2.3.4 along with `cfg.arp_sweep` / `--no-arp-scan`. Every later
-   phase reads what those two produce — release targets, re-acquisition, eviction, the
-   `NeighborSummary` roll-call — so turning either off silently hollowed out the rest of the run
-   rather than just making it quicker. The release phase still self-skips with a Debug when no
-   server identity is confirmed; that's a precondition, not an option. Tests assert both
-   `SessionConfig` fields and both CLI flags are gone. `packets.build_release_v4()` also gained the
-   `Ether` layer it was missing (Bug 2: it built an L3-only packet despite being sent via L2
-   `sendp()` — every RELEASE this tool ever sent before this fix was malformed on the wire, not
-   just the exhaust-embedded ones).
+   `_prelude_pre_control()` — **never** guess or fall back to `0.0.0.0`; `_discover_neighbors()`
+   is ARP-only and never learns a DHCP server, so RELEASE must get the server identity from the
+   control transaction. Excludes the gateway and the DHCP server from targets, feeds the freed
+   list into re-acquisition (§5f) which is what actually confirms whether the RELEASE took
+   (`_reprobe_released` is colour only — see its docstring for why an ARP re-probe structurally
+   reads 0 even on full success). **No opt-out**: there is no `--no-release` or `--no-arp-scan`.
+   Every later phase reads what the release phase and ARP sweep produce — release targets,
+   re-acquisition, eviction, the `NeighborSummary` roll-call — so turning either off would
+   silently hollow out the rest of the run rather than just make it quicker. The release phase
+   still self-skips with a Debug when no server identity is confirmed; that's a precondition, not
+   an option. `packets.build_release_v4()` carries an `Ether` layer since it's sent via L2
+   `sendp()` — an L3-only packet would be malformed on the wire.
 2. **Windowed sender** (`_exhaust_sender`, `_inflight`, `self._window`; also reused by
-   re-acquisition's bounded batch, §5f). Replaces the open-loop DISCOVER flood with a bounded
-   pipeline: at most `self._window` (starts at `cfg.window_initial=8`) DISCOVER/REQUEST
-   transactions in flight at once. **Only an ACK counts as a held address** (`_grow_window`) —
-   growth is deliberately slow (2.3, Phase 7): `self._window_growth_accum` banks
-   `cfg.window_growth_per_ack` (default **0.01**) per clean ACK, so **100** clean ACKs widen the
-   window by one — NAKs, timeouts, and duplicate offers all shrink the window immediately (halve
-   it) and wipe the accumulator (`_shrink_window`) instead of being pushed through. Growth is now
-   ~5000× slower than shrink, so a noisy run trends toward the floor of 1 rather than climbing
-   back — that's the deliberate trade-off, see `_grow_window()`'s docstring. `--rate` is **gone
-   from exhaust** (the window paces it now; `rate_limit_pps` is fixed at
-   `EXHAUST_DEFAULT_RATE_PPS=500` so the limiter doesn't bind) but unchanged on
-   `release`/`active-scan`/`release-previous`, which have no window of their own — **do not
-   remove `RateLimiter` globally.**
+   re-acquisition's bounded batch, §5f). A bounded pipeline: at most `self._window` (starts at
+   `cfg.window_initial=8`) DISCOVER/REQUEST transactions in flight at once, rather than an
+   open-loop DISCOVER flood. **Only an ACK counts as a held address** (`_grow_window`) — growth is
+   deliberately slow: `self._window_growth_accum` banks `cfg.window_growth_per_ack` (default
+   **0.01**) per clean ACK, so **100** clean ACKs widen the window by one — NAKs, timeouts, and
+   duplicate offers all shrink the window immediately (halve it) and wipe the accumulator
+   (`_shrink_window`) instead of being pushed through. Growth is ~5000× slower than shrink, so a
+   noisy run trends toward the floor of 1 rather than climbing back — that's the deliberate
+   trade-off, see `_grow_window()`'s docstring. `--rate` is **gone from exhaust** (the window
+   paces it now; `rate_limit_pps` is fixed at `EXHAUST_DEFAULT_RATE_PPS=500` so the limiter
+   doesn't bind) but unchanged on `release`/`active-scan`/`release-previous`, which have no
+   window of their own — **do not remove `RateLimiter` globally.**
 3. **Halt-on-control** (`_trigger_halt`, `ControlDetected`, `HALTED` state). On the first of five
    signals — `nak_burst` (≥3/5s), `offer_silence` (existing), `link_down` (carrier poll in
    `_status_ticker`, `netutils.link_is_up()`), `timeout_storm` (≥5 consecutive), `duplicate_offers`
@@ -266,9 +247,7 @@ from `_exhaust_prelude()` in 2.3 so `release` mode shares it too — see §5f):
    signal wins (`self._halt_signal` is set once). Don't make halt release leases or skip the
    post-control — that would break the verdict (§5d).
 
-## 5d. Verdict: DHCP_STARVATION_ATTAINED / _NOT_ATTAINED (2.1)
-Replaces four retired findings (`DHCP_STARVATION_POSSIBLE`, `DHCP_STARVATION_BLOCKED`,
-`POOL_EXHAUSTED_CONFIRMED`, `POOL_NOT_EXHAUSTED` — must never reappear in `src/`) with two:
+## 5d. Verdict: DHCP_STARVATION_ATTAINED / _NOT_ATTAINED
 - **`DHCP_STARVATION_ATTAINED`** (`FAIL`): `acks > 0` **and** the post-run **new-MAC** control
   was denied **and** its own pre baseline succeeded. This is a failure of the network, not a
   success of the run.
@@ -276,9 +255,9 @@ Replaces four retired findings (`DHCP_STARVATION_POSSIBLE`, `DHCP_STARVATION_BLO
   of `control_fired` (+ `signal`/`leases_at_halt` from `self._halt_signal`), `pool_headroom_remaining`
   (+ `headroom`/`pool_size` from `_pool_headroom()`), `blocked_at_baseline`, or
   `inconclusive_baseline`. **Because halt-on-control (§5c) stops the run on the first signal,
-  `ATTAINED` is now rare by construction on a defended network** — `NOT_ATTAINED +
-  control_fired` naming the control and the lease count it fired at is the expected, actionable
-  result, not a consolation prize.
+  `ATTAINED` is rare by construction on a defended network** — `NOT_ATTAINED + control_fired`
+  naming the control and the lease count it fired at is the expected, actionable result, not a
+  consolation prize.
 - **Pool estimate / headroom** (`PoolEstimate`, `_estimate_pool()`, `_pool_headroom()`): resolved
   from an explicit `--scope` (deterministic host count) or, failing that, the first OFFER's
   subnet (option 1) via `_note_offer_for_pool_estimate()`. `size=None` when neither is known —
@@ -286,10 +265,10 @@ Replaces four retired findings (`DHCP_STARVATION_POSSIBLE`, `DHCP_STARVATION_BLO
   report) must show `source`/`detail` alongside the number. `POOL_HEADROOM_LOW` is a separate,
   independent finding raised when the *pre-test* ARP baseline already shows ≥80% utilization.
 
-## 5e. Lease journal + `release-previous` (2.2)
+## 5e. Lease journal + `release-previous`
 `restore()` only releases leases the *currently running* engine object acquired, from memory —
 useless once the process is killed, the box reboots, or you're back days later on a different
-machine. 2.2 adds a recovery path for that:
+machine. The lease journal is the recovery path for that:
 
 - **`core/journal.py`** — append-only JSONL, two record kinds (`ack` opens a lease, `released`
   closes it), folded at read time. `load_open_leases()` **never raises** on a bad file — a
@@ -298,15 +277,15 @@ machine. 2.2 adds a recovery path for that:
   `$XDG_STATE_HOME` (or `~/.local/state`, via the effective user's passwd entry, not `$HOME` —
   `sudo` doesn't always reset it) — **never `/var/lib` or another system-owned path**; this is
   per-engagement data, not system state, and is deleted by the operator at engagement end.
-  `SessionConfig.journal` (default
-  `True`) / `--no-journal` opts out. `_handle_ack()` writes an `ack`; `restore()` and
-  `_release_bindings()` write a `released`. Writes are best-effort (`OSError` → `ev.Debug`,
-  never kills the run); `dry_run` suppresses journal writes the same as it suppresses packets.
+  `SessionConfig.journal` (default `True`) / `--no-journal` opts out. `_handle_ack()` writes an
+  `ack`; `restore()` and `_release_bindings()` write a `released`. Writes are best-effort
+  (`OSError` → `ev.Debug`, never kills the run); `dry_run` suppresses journal writes the same as
+  it suppresses packets.
 - **`Mode.RELEASE_PREVIOUS`** (`_run_release_previous`/`_release_previous_worker` in
   `engine.py`) replays the journal for the *current* network: filters by interface, current
   CIDR (`--scope`, else the interface network — **refuses to run** if neither resolves; an
   unbounded sweep is exactly what this prevents), same-server (only evaluable when the
-  pre-flight control actually learned a server identity — **it usually won't** on a genuinely
+  pre-flight control actually learned a server identity — it usually won't on a genuinely
   exhausted pool, since no OFFER means no `server_id`; falls back to CIDR-only rather than
   silently excluding everything), then age (`--max-age`, default 7d — an optimisation, not a
   safety measure: a stale entry's MAC simply won't match the server's current binding per RFC
@@ -327,20 +306,19 @@ machine. 2.2 adds a recovery path for that:
   (re-folding the journal post-release), never just frames sent, same discipline as
   `_reprobe_released()`.
 - **Not in `DESTRUCTIVE_MODES`** — it only releases leases the journal proves this tool took, so
-  it adds no capability beyond what `exhaust` already used. It *is* in `cli/main.py`'s
-  `_RUN_ONCE_MODES` (`DESTRUCTIVE_MODES | {RELEASE_PREVIOUS}`), which is what the CLI's polling
-  loop uses to detect a worker-thread run finishing — don't confuse the two sets.
-- Default `--rate` is **50**, not 7 — see the inline comment in `cli/main.py`; this is the one
-  mode where a faster default is the right call (unicast to one server, run during an active
-  outage).
+  it adds no capability beyond what `exhaust` already used. It *is* in `RUN_ONCE_MODES` (§3),
+  which is what the CLI's polling loop and web reaper use to detect a worker-thread run
+  finishing — don't confuse the two sets.
+- Default `--rate` is **50**, not 7 (see the inline comment in `cli/main.py`) — the one mode
+  where a faster default is the right call (unicast to one server, run during an active outage).
 - Strategies considered and deliberately narrowed away from, so don't re-propose them without
   a reason: **leasequery** (needs server cooperation this tool can't assume), **blind sweeps**
   (unbounded, and the whole point of the journal is to be bounded), and **ARP-derived targets**
   (an ARP-visible address says nothing about who holds its lease — §5f's `_reprobe_released()`
   note is the same trap). The journal is the only source that *proves* we took an address.
 
-## 5f. Targeted re-acquisition + ARP-conflict eviction + shared `release` chain (2.3)
-Ties §5b/§5c together into the actual attack chain both `exhaust` and `release` now run via
+## 5f. Targeted re-acquisition + ARP-conflict eviction + shared `release` chain
+Ties §5b/§5c together into the actual attack chain both `exhaust` and `release` run via
 `_common_prelude()`: ARP inventory → control/self [→ control/new, exhaust only] → release →
 **re-acquisition** → **eviction**.
 
@@ -350,11 +328,15 @@ Ties §5b/§5c together into the actual attack chain both `exhaust` and `release
   (no parallel sender). `_handle_ack()`/`_handle_nak()`/`_reap_timeouts()` classify each into
   `granted` (offer matched the request) / `offered_different` (server ignored option 50) /
   `naked` (REQUEST refused) / `no_response`, tracked in `_reacquire_targets`
-  (xid→ip)/`_reacquire_outcomes` (xid→outcome). **This fixed a real unsoundness**:
-  `NEIGHBOR_LEASES_RELEASED`'s evidence used to be `_reprobe_released()` (an ARP re-probe), which
-  structurally reads 0 even on a fully successful RELEASE — a released victim keeps using its
-  old address until its own lease's T1, with no way to know it was released, so "stopped == 0"
-  never meant "the server ignored RELEASE". Evidence is now the re-acquisition `granted` count.
+  (xid→ip)/`_reacquire_outcomes` (xid→outcome). `NEIGHBOR_LEASES_RELEASED`'s evidence is the
+  re-acquisition `granted` count, not an ARP re-probe — a released victim keeps using its old
+  address until its own lease's T1, with no observable way to tell "stopped == 0" apart from
+  "the server ignored RELEASE", so an ARP-based measurement would structurally read 0 even on a
+  fully successful RELEASE. Under `exhaust`, re-acquisition runs **after** the pool has been
+  drained by the sender, not in the prelude: while the pool has headroom, RFC 2131 §4.3.1 lets
+  the server prefer a fresh address over honouring option 50, so `granted=0` would say nothing
+  either way until the free list is actually empty. `release` re-acquires inline (it never drains
+  anything, so the ordering doesn't apply) and its finding says the evidence is weaker.
 - **ARP-conflict eviction** (`_evict_phase()`/`_evict_worker()`/`_measure_eviction()`, `_do_arp_
   conflict()` — see §5b for the frame shape). Targets **only** addresses this run actually
   re-acquired (`granted`, from re-acquisition above) — conflicting with an address still bound to
@@ -366,9 +348,7 @@ Ties §5b/§5c together into the actual attack chain both `exhaust` and `release
   inside that window; spaced 10s+ apart, each round looks like a fresh independently-defensible
   conflict and the host never gives up the address). `SessionConfig.__post_init__` raises
   `ConfigError` naming RFC 5227 if either constraint is violated. After the last round, sleeps
-  `evict_settle` (default 16.0s, bumped from 8.0s after a live run showed a DECLINE could be
-  measured before its follow-up DISCOVER arrived, understating the outcome by one rung) before
-  measuring — gives a DECLINE/restart/APIPA time to land.
+  `evict_settle` (default 16.0s) before measuring — gives a DECLINE/restart/APIPA time to land.
   **Outcome ladder** (causal/temporal order, not evidence-strength — a host that reaches a later
   rung passed through the earlier ones, whether or not we directly observed them):
   `no_reaction` < `defended` (ARP announcement from the real owner MAC — our frame was delivered,
@@ -392,12 +372,10 @@ Ties §5b/§5c together into the actual attack chain both `exhaust` and `release
   block is gated on `not cfg.dry_run`; `DRY_RUN_SUMMARY` covers that case (`would_evict` count).
   **No PASS verdict exists here on purpose** — "nobody reacted" can't be told apart from "the
   frames never arrived" from this vantage point.
-- **`release` now shares `_common_prelude()`** rather than its own ARP-only, sniffer-less path.
-  This fixed a second real bug: the old `_release_worker()` ran `_control_transaction()` to learn
-  the server identity but never started a sniffer, so the OFFER/ACK reply could never physically
-  arrive and the control always failed with "no OFFER within timeout" — `_run_release()` now
-  starts one exactly like `_run_exhaust()` does (skipped under `offline`). `release`'s own
-  pre/self control outcome goes into **`self._rel_pre_control`**, never `self.control_pre` — same
+- **`release` shares `_common_prelude()`**, not its own ARP-only, sniffer-less path — the sniffer
+  must be up for the control transaction's OFFER/ACK to arrive at all, so `_run_release()` starts
+  one exactly like `_run_exhaust()` does (skipped under `offline`). `release`'s own pre/self
+  control outcome goes into **`self._rel_pre_control`**, never `self.control_pre` — same
   precedent as `_rp_pre_control` (§5e) — so `_finalize_findings()`'s `DHCP_STARVATION_*`/
   `CONTROL_BASELINE_FAILED`/`NEW_CLIENT_BLOCKED_AT_BASELINE` derivations (which read
   `control_pre`/`control_pre_new`) stay a no-op for a release run without an explicit mode gate.
@@ -409,19 +387,18 @@ Ties §5b/§5c together into the actual attack chain both `exhaust` and `release
   like exhaust — because the sniffer needs to still be up to observe eviction's rounds+settle,
   and for `release` that means staying inside the worker thread `stop()` is about to `join()`.
 
-## 5g. Race-freed addresses — grab a freed address ahead of the untargeted flood (2.3.1)
-Answers a gap §5f's re-acquisition doesn't cover:
-re-acquisition only reacts to addresses **we** just freed via our own RELEASE phase; any address
-that becomes free *some other way* mid-run (a NAK'd renewal, a DECLINE, a rediscovering neighbor)
-previously only got picked up if the untargeted exhaust flood happened to land on it. `exhaust`
-only — `release` has no concurrent flood for "racing ahead of" to mean anything against.
+## 5g. Race-freed addresses — grab a freed address ahead of the untargeted flood
+Answers a gap §5f's re-acquisition doesn't cover: re-acquisition only reacts to addresses **we**
+just freed via our own RELEASE phase; any address that becomes free *some other way* mid-run (a
+NAK'd renewal, a DECLINE, a rediscovering neighbor) previously only got picked up if the
+untargeted exhaust flood happened to land on it. `exhaust` only — `release` has no concurrent
+flood for "racing ahead of" to mean anything against.
 
 - **Triggers, ranked by how strongly they imply the *server* now considers the binding free**
   (not just that the client stopped using it — the server can hold a binding to lease expiry
   regardless of what the client does), all broadcast/observable. **DHCPRELEASE is deliberately
   never a trigger** — it's unicast to the server (`build_release_v4`'s `Ether(dst=server_mac or
-  broadcast)`), invisible on a switched segment; the first draft of this plan got this wrong,
-  see the plan doc's "Read this before implementing" section if you're tempted to add it back.
+  broadcast)`), invisible on a switched segment.
   1. **Foreign NAK** (strongest) — `_handle_nak()`'s foreign branch resolves the address via
      `_foreign_requests` (populated by `_handle_foreign_request()` off any foreign REQUEST) and
      calls `_maybe_race(ip, "nak")`.
@@ -452,21 +429,19 @@ only — `release` has no concurrent flood for "racing ahead of" to mean anythin
   **deliberately not gated on window/inflight room** (`self._window - len(self._inflight)`): a
   race is a single, bounded, time-sensitive send, not a sustained load pattern, so it takes a
   reserve of slots *above* the window rather than waiting a turn. This is a bounded overtake, not
-  a window bypass — §5c's window exists because a real `/22` run stalled at 56 addresses from
-  pending-offer-table saturation; don't widen the reserve into a general bypass. Every race send
-  still goes through `_send()`'s rate limiter, but that limiter is **not** a meaningful backstop
-  in exhaust (`rate_limit_pps` pinned at `EXHAUST_DEFAULT_RATE_PPS=500`, deliberately
-  non-binding) — the reserve is the only real bound.
+  a window bypass — §5c's window exists to avoid stalling on pending-offer-table saturation;
+  don't widen the reserve into a general bypass. Every race send still goes through `_send()`'s
+  rate limiter, but that limiter is **not** a meaningful backstop in exhaust (`rate_limit_pps`
+  pinned at `EXHAUST_DEFAULT_RATE_PPS=500`, deliberately non-binding) — the reserve is the only
+  real bound.
 - **`_classify_targeted(xid, outcome, overwrite=True)`** is the outcome classifier shared by
   re-acquisition and racing — `granted`/`offered_different` (from `_handle_ack()`), `naked`
   (from `_handle_nak()`'s owned branch), `no_response` (from `_reap_timeouts()`, `overwrite=
   False` so a later NAK/ACK for a xid that already timed out doesn't get silently discarded).
   Whichever of `_reacquire_targets`/`_race.targets` owns the xid is where the outcome lands;
   decrements `_race.inflight` exactly once, only for a race-owned xid.
-- **Counters land in all four required surfaces** (`engine._counters()`/`.status()`,
-  `cli/render.py`'s `status_summary()`, `web/static/app.js`'s `StatusTick` handler) — see §6's
-  `garps`→`arp_conflicts` rename precedent for why this list is enumerated explicitly rather
-  than trusted to memory.
+- **Counters land in all four required surfaces**: `engine._counters()`/`.status()`,
+  `cli/render.py`'s `status_summary()`, `web/static/app.js`'s `StatusTick` handler.
 - **`RACED_FREED_ADDRESSES` (INFO)**, raised only when `self.races > 0` **and** `not
   cfg.dry_run` — under dry-run every race send is suppressed at `_send()`'s chokepoint so every
   outcome would misleadingly read `no_response`; `DRY_RUN_SUMMARY` carries a `would_race` count
@@ -479,25 +454,17 @@ only — `release` has no concurrent flood for "racing ahead of" to mean anythin
   out), `race_on_rediscover` (default `False`, `--race-on-rediscover` to opt in),
   `race_max_inflight` (default 4) — all exhaust-only; the flags don't exist on `release`'s
   argparse subcommand rather than existing and silently doing nothing.
-- **Related pre-existing bugs found and fixed while building this** (independent of racing
-  itself, but the ownership-check pattern this feature needed exposed both):
-  - `_handle_nak()` used to count **every** NAK on the segment as ours — including ones
-    addressed to other clients — shrinking our send window and feeding the `nak_burst` halt
-    signal off traffic we had nothing to do with. Fixed by checking `xid in self._inflight`
-    before touching `self.naks`/`_shrink_window()`/`_note_nak_for_burst_detection()`; the foreign
-    branch is debug-logged only (and now also feeds the race trigger above).
-  - **More severe**: `_handle_offer()` and `_handle_ack()` had no ownership check at all —
-    `_handle_offer()` would build and send a REQUEST impersonating whichever MAC *any* observed
-    OFFER's `chaddr` belonged to (potentially a real third-party client's), and `_handle_ack()`
-    would unconditionally `cleanup.register()`/journal/count **any** ACK witnessed on the
-    segment, meaning `restore()`/`release-previous` could later send DHCPRELEASE for a real,
-    uninvolved client's active lease. Both now check `xid in self._inflight` first and return
-    early (debug-logged) if the xid isn't ours; `_handle_offer()` still passively marks a
-    tracked foreign DISCOVER as answered and still learns server identity/fingerprint from
-    foreign traffic (both read-only, not the send-side bug). Ten existing tests were unknowingly
-    relying on the old always-act behavior and had to be corrected, not just re-asserted.
+- **Ownership checks this feature depends on** — any new handler for OFFER/ACK/NAK/DECLINE must
+  check xid ownership (`xid in self._inflight`) before acting on it, same as §8's gotcha:
+  `_handle_nak()` counts only NAKs addressed to our own xids toward `self.naks`/window-shrink/
+  `nak_burst`, with the foreign branch feeding the race trigger instead; `_handle_offer()` and
+  `_handle_ack()` likewise only build a REQUEST or register/journal/count a lease for a xid we
+  actually own — an unowned ACK being journaled would let `restore()`/`release-previous` later
+  DHCPRELEASE a genuine third party's active lease. Both still passively learn from foreign
+  traffic where safe (server identity, fingerprints, marking a tracked foreign DISCOVER as
+  answered); only the send/mutate side requires ownership.
 
-## 5h. What a run ends with, on the log (2.3.3–2.3.5)
+## 5h. What a run ends with, on the log
 In order, after the sender/eviction finish: the findings (worst severity first, §5a), then
 `NeighborSummary` — one row per **every** discovered host (`ip  mac  [hostname]  outcome`,
 worst first) — then an `OUTCOME` roll-up grouping those rows into "N host(s) did X".
@@ -518,15 +485,13 @@ worst first) — then an `OUTCOME` roll-up grouping those rows into "N host(s) d
 
 ## 6. Modes (`Mode` enum)
 `EXHAUST` (default; runs the shared prelude — ARP inventory, control, release, re-acquisition —
-then its windowed sender, then eviction in `stop()` — see §5c/§5f), `SCAN` (passive, read-only),
-`ACTIVE_SCAN` (ARP sweep + one DHCP INFORM; non-destructive, scope required),
-`RELEASE_NEIGHBORS` (destructive; runs the *same* shared prelude as exhaust minus the windowed
-sender, then eviction inline — see §5f; web UI label "DHCP Release Active Clients"),
-`RELEASE_PREVIOUS` (recovery; replays the lease journal — see §5e; not destructive). **`GARP_DOS`
-was retired in 2.3** — don't re-add it to this enum; see §5b for where its frame-building logic
-went. The web dropdown (`web/static/index.html`) doesn't offer `SCAN` as an option anymore
-(Phase 6) but the CLI subcommand and `config_from_payload()` still accept it — don't remove
-either.
+then its windowed sender, then eviction in `stop()` — §5c/§5f), `SCAN` (passive, read-only),
+`ACTIVE_SCAN` (ARP sweep + one DHCP INFORM; non-destructive, scope required, bounded
+post-INFORM listen — §5), `RELEASE_NEIGHBORS` (destructive; runs the *same* shared prelude as
+exhaust minus the windowed sender, then eviction inline — §5f; web UI label "DHCP Release Active
+Clients"), `RELEASE_PREVIOUS` (recovery; replays the lease journal — §5e; not destructive). The
+web dropdown (`web/static/index.html`) doesn't offer `SCAN` as an option but the CLI subcommand
+and `config_from_payload()` still accept it — don't remove either.
 
 ## 7. How to run tests / lint
 See `CONTRIBUTING.md` for the commands. Two things worth knowing at the design level:
@@ -539,55 +504,49 @@ See `CONTRIBUTING.md` for the commands. Two things worth knowing at the design l
   `pyproject.toml`). Run it with `make integration` on a real Linux box.
 
 ## 8. Gotchas / decisions already made (don't re-litigate)
-- **`dry_run` and `offline` are genuinely different concerns now (2.3) — this replaces the old
-  "dry-run is fully offline" property, which is no longer true and must not be reinstated.**
-  `offline` is the hard "never touch a socket" switch (no sniffer, no `sendp`, no `srp()`) — it's
-  what makes web/CLI tests and a no-root preview possible. `dry_run` alone now runs every
-  non-destructive phase **for real**: the ARP sweep, and the control transaction's own
-  DISCOVER/REQUEST/RELEASE — it's a genuine reconnaissance pass, not a shape-only preview, and it
-  needs a raw-capable interface + root. It only suppresses **mutating** sends: release,
-  re-acquisition, the windowed exhaust sender, eviction. The mechanism is `_send(pkt,
-  probe=False)`'s `probe` parameter — `probe=True` marks traffic a legitimate client on this
-  segment would send anyway and that self-cleans (bypasses dry-run suppression, never bypasses
-  `offline`); it appears at exactly two call sites: the ARP sweep (`_discover_neighbors`'s
-  `srp()` doesn't go through `_send()` at all, so it's gated on `offline` directly) and the
-  control transaction (`_control_transaction()`'s three `_send(..., probe=True)` calls). Don't
-  add a third `probe=True` site without re-reading why only these two exist.
-- **The sniffer BPF was widened (2.3)** from server→client only (`src port 67 and dst port 68`)
-  to both directions (`port 67 or port 68`) — needed to see our own echoed sends and, more
-  importantly, foreign DISCOVERs/DHCPDECLINEs, which are client→server and were invisible before.
-  This means `_on_dhcp()` now also receives our *own* outbound traffic reflected back; the
-  self-filter (`_is_own_traffic()`) drops it before it reaches foreign-DISCOVER handling, keyed
-  on Ethernet src being one of `_our_macs` or xid membership in `_inflight`/`_control_xid`.
-  **Only apply the self-filter to message types we actually send ourselves** (DISCOVER/REQUEST/
-  RELEASE) — never to OFFER/ACK/NAK/DECLINE, none of which we ever originate (DECLINE included:
-  we never send one); `_on_dhcp()`'s dispatch checks those never-self-originated types first, for
-  exactly this reason.
+- **`dry_run` and `offline` are genuinely different concerns.** `offline` is the hard "never
+  touch a socket" switch (no sniffer, no `sendp`, no `srp()`) — it's what makes web/CLI tests and
+  a no-root preview possible. `dry_run` alone runs every non-destructive phase **for real**: the
+  ARP sweep, and the control transaction's own DISCOVER/REQUEST/RELEASE — it's a genuine
+  reconnaissance pass, not a shape-only preview, and it needs a raw-capable interface + root. It
+  only suppresses **mutating** sends: release, re-acquisition, the windowed exhaust sender,
+  eviction. The mechanism is `_send(pkt, probe=False)`'s `probe` parameter — `probe=True` marks
+  traffic a legitimate client on this segment would send anyway and that self-cleans (bypasses
+  dry-run suppression, never bypasses `offline`); it appears at exactly two call sites: the ARP
+  sweep (`_discover_neighbors`'s `srp()` doesn't go through `_send()` at all, so it's gated on
+  `offline` directly) and the control transaction (`_control_transaction()`'s three
+  `_send(..., probe=True)` calls). Don't add a third `probe=True` site without re-reading why
+  only these two exist.
+- **The sniffer BPF is `port 67 or port 68`**, both directions — needed to see our own echoed
+  sends and, more importantly, foreign DISCOVERs/DHCPDECLINEs, which are client→server. This
+  means `_on_dhcp()` also receives our *own* outbound traffic reflected back; the self-filter
+  (`_is_own_traffic()`) drops it before it reaches foreign-DISCOVER handling, keyed on Ethernet
+  src being one of `_our_macs` or xid membership in `_inflight`/`_control_xid`. **Only apply the
+  self-filter to message types we actually send ourselves** (DISCOVER/REQUEST/RELEASE) — never to
+  OFFER/ACK/NAK/DECLINE, none of which we ever originate (DECLINE included: we never send one);
+  `_on_dhcp()`'s dispatch checks those never-self-originated types first, for exactly this reason.
 - **For OFFER/ACK/NAK/DECLINE, `xid in self._inflight` is the ownership test — not
   `_is_own_traffic()`.** Since we never originate these, the self-filter above doesn't apply to
   them, but that means a naive handler processes *every* such packet on the segment as if it were
-  ours (2.3.1's §5g found this had actually happened in `_handle_nak()`/`_handle_offer()`/
-  `_handle_ack()` — the last two had real blast radius: an unowned ACK being journaled meant
-  `restore()`/`release-previous` could later RELEASE a genuine third party's active lease). Any
-  new handler for these four message types must check xid ownership before acting, and should
-  still passively learn from foreign traffic where safe (server identity, fingerprints, marking a
-  tracked foreign DISCOVER as answered) — the bug was in the *send/mutate* side, not observation.
-- **JSON serialization**: always route event/report dicts through `jsonable()` — a live run once
-  crashed because an `IPVersion` enum hit `json.dumps`. Regression test exists.
+  ours. Any new handler for these four message types must check xid ownership before acting, and
+  should still passively learn from foreign traffic where safe (server identity, fingerprints,
+  marking a tracked foreign DISCOVER as answered) — the risk is on the *send/mutate* side, not
+  observation. See §5g's closing bullet for the two real bugs this pattern was written to prevent.
+- **JSON serialization**: always route event/report dicts through `jsonable()` — a raw `IPVersion`
+  enum will crash `json.dumps`. Regression test exists.
 - **Ethernet source MAC** defaults to the per-client random MAC (`spoof_ethernet_src=True`) so
   each simulated client is distinct at L2 (exercises port-security/snooping). `--no-spoof-eth-src`
   for Wi-Fi, where the AP will drop frames from a MAC it hasn't associated.
-- **PR #27/#28 fixes** live in `packets.py` (server-id = opt54 else siaddr; client MAC =
-  `chaddr[:6]`; REQUEST includes option-61; broadcast flag 0x8000) with regression tests. Don't lose them.
+- **Server-id/client-MAC handling in `packets.py`** (server-id = opt54 else siaddr; client MAC =
+  `chaddr[:6]`; REQUEST includes option-61; broadcast flag 0x8000) has regression tests. Don't
+  lose them.
 - **Fingerprint DB is `data/packetfence_dhcp_fingerprints.json`** (PacketFence-only, 535
-  fingerprints; queryable standalone via `data/fingerprint-merge.py`), replacing the earlier
-  bundled FingerBank `.conf`. Matching is exact/order-sensitive on option-55; a fingerprint with
-  more than one candidate device is returned at lower confidence (75 vs 90) and flagged
-  `(ambiguous xN)` in `matched_via`. `os` is intentionally left `None` for DB matches (the data
-  doesn't cleanly separate OS from device); `device` carries the candidate name(s). No builtin
-  vendor-class/PRL fallback table anymore — a miss falls straight through to `from_mac()`
-  OUI-only identification. There's no `--fingerbank-api-key` anymore — that stub was removed
-  (never implemented, never used).
+  fingerprints; queryable standalone via `data/fingerprint-merge.py`). Matching is
+  exact/order-sensitive on option-55; a fingerprint with more than one candidate device is
+  returned at lower confidence (75 vs 90) and flagged `(ambiguous xN)` in `matched_via`. `os` is
+  intentionally left `None` for DB matches (the data doesn't cleanly separate OS from device);
+  `device` carries the candidate name(s). No builtin vendor-class/PRL fallback table — a miss
+  falls straight through to `from_mac()` OUI-only identification.
 - **Neighbors ↔ fingerprints are correlated by MAC** (`engine._note_neighbor` /
   `_note_fingerprint`, `_neighbors_by_mac` / `_fp_by_mac`): whichever signal arrives first (ARP
   is-at vs. a DHCP packet from that MAC), the other backfills it and re-emits `NeighborFound` so
@@ -610,7 +569,7 @@ See `CONTRIBUTING.md` for the commands. Two things worth knowing at the design l
   five modes (`scan` sends nothing at all; `release`'s eviction sub-phase paces itself via
   `evict_rounds`/`evict_interval`, not `--rate`).
 - **Halt-on-control never releases leases.** `_trigger_halt()` stops the sender but leaves
-  `Cleanup` untouched; there's no auto-restore-on-exit to accidentally trigger either (§5, 2.2).
+  `Cleanup` untouched; there's no auto-restore-on-exit to accidentally trigger either.
   If you're tempted to auto-release on halt, don't — the post-controls need the leases held to
   be meaningful.
 - **Pool-size estimates must never be presented as authoritative.** `PoolEstimate.size` is either
@@ -619,65 +578,32 @@ See `CONTRIBUTING.md` for the commands. Two things worth knowing at the design l
   work (§5a) was meant to eliminate. Don't cache/round it into something that loses that context.
 
 ## 9. Current status
-**Released as 2.5.0** (`pyproject.toml` + `dhcpig.__version__`; the package had sat at 2.0.0
-through every 2.1–2.3.5 changelog block, none of which was ever tagged). **361 unit tests pass;
-ruff clean.** (352 at the 2.5.0 release; the difference is new coverage added during the
-simplification pass below, not a version bump — nothing in this pass changed behaviour.)
-
-**Simplification pass (post-2.5.0, not yet tagged)** — a cleanup round, no behaviour changes;
-every step verified byte-identical against the pre-pass test suite. `docs/SIMPLIFICATION.md` (if
-still present) has the full item-by-item record. Highlights: `engine.py` 2965 → ~2570 lines via
-extracting `core/findings.py` (the finding catalogue — every id's text in one place instead of
-interleaved through a 510-line method), `core/eviction.py` (`EvictionState`), `core/racing.py`
-(`RaceState`), and `core/recovery.py` (`release-previous`'s pure entry-filter); a real bug fix
-(`--ipv6` now refuses at `start()` instead of silently flooding v4 while listening for v6); the
-CLI/web finding-summary drift fixed by computing `summary` once server-side (§5a); dead config
-fields removed (`--fuzz`, `v6_rapid_commit`, `Timeouts.thread_spawn`/`dos`); and the former
-`AGENT_HANDOFF.md` split three ways into this file, `CONTRIBUTING.md`, and `CLAUDE.md`.
-
-What the 2.5.0 release itself contains, oldest first:
-- **V1.0 / V1.1 / V2.0** — CLI, web Exhaust, then all modes + packaging. Plus fingerprinting off
-  the bundled PacketFence DB, distinct-MAC default, debug logging + verbosity, `active-scan`,
-  neighbor↔fingerprint correlation by MAC, MAC-vendor fallback, pre-run ARP inventory.
-- **2.1** (§5c/§5d) — release-first exhaust, windowed/adaptive sender, halt-on-control,
-  headroom, the `DHCP_STARVATION_ATTAINED`/`_NOT_ATTAINED` verdict rename.
-- **2.2** (§5e) — lease journal + `release-previous` recovery.
-- **2.3** (§5b/§5f) — `dry_run`/`offline` split into separate concerns, sniffer BPF widened plus
-  a self-filter to see foreign DISCOVER/DECLINE, `Mode.GARP_DOS` retired in favour of targeted
-  re-acquisition (option 50) + RFC 5227 §2.4 eviction shared by `exhaust` and a restructured
-  `release`, mode-aware eviction findings, window-growth ratchet 0.5 → 0.01 per clean ACK.
-- **2.3.1** (§5g) — race-to-grab-freed addresses, **and the two ownership-check bugs it
-  surfaced**: foreign NAKs polluting our window/halt state, and `_handle_offer()`/`_handle_ack()`
-  acting on traffic that wasn't ours. The second had real blast radius — an unowned ACK being
-  journaled meant `restore()`/`release-previous` could later DHCPRELEASE a genuine third party's
-  active lease. See §8's ownership-check gotcha.
-- **2.3.2–2.3.5** (§5a/§5h) — the reporting rework: always-raised `RUN_SUMMARY`, the per-host
-  `NeighborSummary` roll-call + `OUTCOME` roll-up, findings moved out of a deleted findings tab
-  and into the event log in severity order, and one shared `finding_summary_lines()` so CLI, web
-  log and HTML report describe a run identically.
+**2.6.0** (`pyproject.toml` + `dhcpig.__version__`). **361 unit tests pass; ruff clean.** See
+`CHANGELOG.md` for the full release-by-release history (the legacy `pig.py` compatibility layer
+was removed in 2.6.0 — `dhcpig exhaust`/`dhcpig release` are the only entry points now).
 
 **Validation status — read this before trusting a result.** One real exhaust run against a live
-`/22` on a Kali VM (pcap reviewed) is the *only* hardware validation this codebase
-has. That run is what exposed the pending-offer saturation bug §5c fixes and the
-renewal-vs-fresh-allocation control bug §5a fixes. **2.1, 2.2, 2.3, 2.3.1 and the 2.3.x reporting
-work have never been exercised against real hardware** — re-acquisition, eviction, the
-restructured `release` chain, racing and `release-previous` have passing unit tests and zero
-live-network confirmation. Treat their findings as unproven until that changes.
+`/22` on a Kali VM (pcap reviewed) is the *only* hardware validation this codebase has. That run
+exposed the pending-offer saturation bug §5c fixes and the renewal-vs-fresh-allocation control
+bug §5a fixes. **Re-acquisition, eviction, the `release` chain, racing, and `release-previous`
+have passing unit tests and zero live-network confirmation.** Treat their findings as unproven
+until that changes.
 
 ## 10. Open follow-ups (not yet done)
-- **IPv6**: `IPVersion.V6` is a seam only; v6 packet builders/flows are NOT implemented. The v4
-  modes are the working ones.
+- **IPv6**: `IPVersion.V6` is a seam only; v6 packet builders/flows are NOT implemented (`start()`
+  refuses rather than silently sending v4 while listening for v6). The v4 modes are the working
+  ones.
 - **Fingerprint coverage**: `packetfence_dhcp_fingerprints.json` has 535 fingerprints
   (PacketFence-only); regenerate it from a newer PacketFence export to expand coverage. `os` is
-  always `None` for DB matches by design (see §8) — if the report/UI should distinguish OS from
+  always `None` for DB matches by design (§8) — if the report/UI should distinguish OS from
   device, that needs a curated taxonomy layered on top of `name`.
 - **Active-scan** fingerprints the DHCP *server* via the INFORM reply; ARP-only neighbours now
   get MAC-vendor identification (`core/oui.py`), but never an OS — that needs DHCP evidence.
 - **Integration coverage** only exercises exhaust; add netns cases for release/active-scan, and
-  ideally one that actually exercises re-acquisition + eviction end to end (2.3 has none — see
-  §9). `release-previous` also needs one, but it requires rewriting the `FakeDhcpServer` fixture
-  in `tests/integration/test_exhaust_live.py` first — it currently has an unbounded address pool
-  and never NAKs, so it can't simulate an exhausted-then-recovered pool at all. Give it a bounded
+  ideally one that actually exercises re-acquisition + eviction end to end. `release-previous`
+  also needs one, but it requires rewriting the `FakeDhcpServer` fixture in
+  `tests/integration/test_exhaust_live.py` first — it currently has an unbounded address pool and
+  never NAKs, so it can't simulate an exhausted-then-recovered pool at all. Give it a bounded
   pool, NAK-when-full behavior, and RELEASE handling that actually frees a binding, then: exhaust
   to drain it, destroy the engine object (simulating a killed process), run `release-previous
   --journal <path>` on a fresh engine, assert a new MAC gets an address afterward.
@@ -686,11 +612,11 @@ live-network confirmation. Treat their findings as unproven until that changes.
   round-trip already supports them — see `web/schemas.py` — just no HTML inputs). Add a config
   sub-panel following the `#ratecfg`/`#destcfg` show/hide pattern in `app.js`'s `onModeChange()`
   if the web UI needs full parity with the CLI.
-- **Packaging** `.deb`/`.desktop`/`dhcpig.1` (man page added in the simplification pass) exist
-  under `packaging/` but haven't been built/tested on a real Kali box yet. CI does now build a
-  wheel and confirm `data/packetfence_dhcp_fingerprints.json` ships inside it
-  (`.github/workflows/ci.yml`'s `build-check` job) — that specific packaging regression is
-  covered; a full `.deb` build on real Kali is still not.
+- **Packaging** `.deb`/`.desktop`/`dhcpig.1` exist under `packaging/` but haven't been built/
+  tested on a real Kali box yet. CI does build a wheel and confirm
+  `data/packetfence_dhcp_fingerprints.json` ships inside it (`.github/workflows/ci.yml`'s
+  `build-check` job) — that specific packaging regression is covered; a full `.deb` build on
+  real Kali is still not.
 
 ## 11. Conventions
 Ruff (line length 100) + format; type hints throughout `core`; dataclasses over dicts; no
