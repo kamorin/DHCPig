@@ -282,7 +282,12 @@ function drawSpark() {
   const { arpSeries: as, discoverSeries: ds, releaseSeries: rs, renewSeries: ns } = rate;
   ctx.clearRect(0, 0, w, h);
   if (as.length < 2 && ds.length < 2 && rs.length < 2 && ns.length < 2) return;
-  const max = Math.max(1, ...as, ...ds, ...rs, ...ns);
+  // Scale to the max of the recent window rather than the whole 120-sample history -- otherwise
+  // a single early burst (e.g. the one-shot ARP sweep release-previous fires before it starts
+  // releasing) pins the shared y-scale near zero for the rest of the run, hiding every other line.
+  const WINDOW = 30;
+  const recent = (s) => s.slice(-WINDOW);
+  const max = Math.max(1, ...recent(as), ...recent(ds), ...recent(rs), ...recent(ns));
   drawLine(ctx, as, w, h, max, "#6ab0ff");
   drawLine(ctx, ds, w, h, max, "#4ec9b0");
   drawLine(ctx, rs, w, h, max, "#e0679a");
@@ -479,15 +484,21 @@ function handleEvent(e) {
       for (const line of f.summary || []) logLine("notice", `        ${line}`, 1);
       break;
     }
-    case "SessionEnded": $("state").textContent = "DONE"; setRunning(false); break;
+    case "SessionEnded":
+      $("state").textContent = "DONE";
+      // One last unconditional poll before the `running` gate shuts pollStatus() off -- a short
+      // run can finish its real traffic burst inside the final ~1s poll window, and if this
+      // SSE event beats that tick, the run's last (often largest) delta never gets sampled.
+      pollStatus(true).finally(() => setRunning(false));
+      break;
     case "ErrorEvent": logLine("alert", "[XX] " + e.message, 0); break;
     case "Debug": logLine("dbg", "[DBG] " + e.message, 3); break;
   }
 }
 
 // ---- status polling -------------------------------------------------------
-async function pollStatus() {
-  if (!running) return;
+async function pollStatus(force) {
+  if (!running && !force) return;
   try {
     const { status } = await api("/api/session/status");
     const mode = $("mode").value;
