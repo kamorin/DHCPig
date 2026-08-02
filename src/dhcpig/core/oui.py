@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-LOCALLY_ADMINISTERED = "locally administered (randomised/spoofed)"
+LOCALLY_ADMINISTERED = "randomised/spoofed"
 
 
 def _normalize(mac: str) -> str:

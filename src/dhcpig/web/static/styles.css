@@ -37,7 +37,7 @@ button:disabled { opacity: .4; cursor: default; }
 
 /* config | neighbors-hosts tables | dashboard -- tables sit in the middle and take the wider
    share, since the host roll-call is what an operator reads during a run */
-main { display: grid; grid-template-columns: 260px 1.2fr 0.8fr; gap: 12px; padding: 12px; }
+main { display: grid; grid-template-columns: 208px 1.36fr 0.64fr; gap: 12px; padding: 12px; }
 .panel { background: var(--panel); border: 1px solid var(--edge); border-radius: 10px; padding: 12px; }
 .config label { display: block; margin: 8px 0; color: var(--muted); }
 .config input[type=number], .config input[type=text] { width: 100%; }
@@ -52,10 +52,9 @@ main { display: grid; grid-template-columns: 260px 1.2fr 0.8fr; gap: 12px; paddi
 .modenote.harm { color: var(--warn); }
 
 /* set once any [!!] line reaches the log (pool exhaustion, a control firing, a denied host,
-   ...) -- the dashboard's counters/state are the at-a-glance surface, so the highest-severity
-   tag should be visible there too, not only buried in the scrolling log below it */
-.dashboard.alert-flag { border-color: var(--bad); box-shadow: 0 0 0 1px var(--bad); }
-.dashboard.alert-flag .state { color: var(--bad); font-weight: 700; }
+   ...) -- the neighbors/hosts table is what an operator is actually looking at, so the
+   highest-severity tag should be visible there too, not only buried in the scrolling log below */
+.tables.alert-flag { border-color: var(--bad); box-shadow: 0 0 0 1px var(--bad); }
 
 .counters { display: flex; flex-wrap: wrap; gap: 12px 16px; margin-bottom: 8px; }
 .counter { text-align: center; }

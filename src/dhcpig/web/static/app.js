@@ -156,13 +156,13 @@ function logLine(cls, text, level = 2) {
   el.appendChild(span);
   el.scrollTop = el.scrollHeight;
   // A [!!] line is the log's highest-severity tag (pool exhaustion, a defensive control
-  // firing, a denied host, ...) -- flag the Dashboard panel too, since its counters/state are
-  // what an operator glances at, not the scrolling log underneath it.
-  if (text.startsWith("[!!]")) flagDashboard();
+  // firing, a denied host, ...) -- flag the center tables panel too, since the neighbors/hosts
+  // roll-call is what an operator is looking at, not the scrolling log underneath it.
+  if (text.startsWith("[!!]")) flagAlert();
 }
 
-function flagDashboard() {
-  $("dashboard").classList.add("alert-flag");
+function flagAlert() {
+  $("tables").classList.add("alert-flag");
 }
 
 function applyVerbosityFilter() {
@@ -487,7 +487,7 @@ async function doStart() {
     rate.last = 0; rate.series = []; leases.length = 0;
     servers.clear(); neighbors.clear();
     renderServers(); renderNeighbors(); renderLeases();
-    $("dashboard").classList.remove("alert-flag");
+    $("tables").classList.remove("alert-flag");
     setRunning(true);
   } catch (err) { logLine("alert", "[XX] " + err.message); }
 }

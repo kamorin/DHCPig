@@ -743,7 +743,11 @@ class DhcpEngine:
                         "whether the server acted on it is unknown from here"
                     )
             else:
-                category, outcome = "unaffected", "unaffected"
+                # "unaffected" overclaims: a passive scan never attempted anything against
+                # anyone, so every host reading that way isn't a survivor of an attempt --
+                # the category stays "unaffected" (it's the stable classification key used
+                # throughout, tests included), but the displayed text says only what's true.
+                category, outcome = "unaffected", "observed only"
             prefixes = []
             if category not in ("unaffected", "released_unconfirmed") and n.ip in released_ips:
                 prefixes.append("RELEASE sent")
