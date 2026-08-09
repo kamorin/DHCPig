@@ -4,18 +4,16 @@ contributor workflow (tests, lint, how to add a finding/mode) lives in `CONTRIBU
 is only what differs about doing that work from inside an agent session or a sandboxed environment.
 
 ## Where the code lives / how paths work
-- **Canonical working copy:** `/Users/kamorin/Documents/code/DHCPig` on the user's Mac. Edit here
-  whenever your tool's file-edit operations can reach it directly.
-- **Some agent tools run shell commands in a separate sandbox/container from the one their file-edit
-  tools see**, and that sandbox may mount this repo at a different path than the canonical one above
-  (e.g. under a session-scoped directory). If a `bash`-style tool and a `read`/`write`-style tool
-  disagree about where the repo lives, trust the path each tool itself reports rather than assuming
-  they match — don't hardcode one path across both. Also watch for a stale duplicate checkout under
-  a session's `outputs/`-style directory if your sandbox provisions one; the canonical copy above
-  (or whatever your `read`/`write` tools resolve to) is the one to trust.
-- The user also runs this on a **Kali VM** where the Mac folder is mounted at
-  `/mnt/hgfs/code/DHCPig` (VMware shared folder) — so edits made through the canonical path appear
-  on the VM immediately; the user just restarts the process there to pick them up.
+- **Some agent tools run shell commands in a separate sandbox/container from the one their
+  file-edit tools see**, and that sandbox may mount this repo at a different path than the one
+  your file-edit tool resolves. If a `bash`-style tool and a `read`/`write`-style tool disagree
+  about where the repo lives, trust the path each tool itself reports rather than assuming they
+  match — don't hardcode one path across both. Also watch for a stale duplicate checkout under a
+  session-scoped scratch directory if your sandbox provisions one; whatever your `read`/`write`
+  tools resolve to is the one to trust.
+- If this repo is also synced or mounted onto another machine/VM outside your session, edits made
+  through your file-edit tool's path should appear there too — the process running it usually just
+  needs restarting to pick the change up.
 - Git worktrees: if you're working from a checkout under `.git/worktrees` or similar (some tools
   create one per session/branch), treat it as the working copy for that session — it's a real
   checkout, not a sandbox mount, so ordinary git and file operations behave normally there.
@@ -35,8 +33,8 @@ proper environment to resolve imports cleanly; prefer running it via the venv se
 than against a bare source tree. See `CONTRIBUTING.md` for what each command actually checks and
 the full command set (`mypy src/dhcpig/core`, `make lint`/`make test`).
 
-- After a test run, clean up caches if they land somewhere synced/shared (e.g. a VMware share, where
-  the coverage plugin can't always remove its own files):
+- After a test run, clean up caches if they land somewhere synced/shared (a network share or VM
+  mount can leave the coverage plugin unable to remove its own files):
   `rm -rf .pytest_cache .ruff_cache .coverage*; find . -name __pycache__ -exec rm -rf {} +`.
   Prefer `pytest -q` (no `--cov`) on a shared filesystem to avoid a coverage-cleanup
   `PermissionError` (test results are still correct even if that error prints).
@@ -45,8 +43,8 @@ the full command set (`mypy src/dhcpig/core`, `make lint`/`make test`).
   full `.venv/bin/...` path rather than relying on an activated venv).
 - The one integration test (`tests/integration/test_exhaust_live.py`, `make integration`) needs
   root + Linux (a veth pair + fake DHCP server) and is deselected by default (`-m "not integration"`
-  in `pyproject.toml`) — it's not runnable in most sandboxes; verify it on the Kali VM or an
-  equivalent real Linux box instead.
+  in `pyproject.toml`) — it's not runnable in most sandboxes; verify it on a real, root-accessible
+  Linux box instead.
 - CI (`.github/workflows/ci.yml`) runs `ruff check`, `ruff format --check`, `mypy`, and `pytest`
   across Python 3.11–3.13 on every push and pull request, plus a `build-check` job that builds a
   real wheel and confirms the fingerprint data file shipped inside it. Opening a PR against `master`
