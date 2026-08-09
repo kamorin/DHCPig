@@ -6,41 +6,40 @@ from conftest import build_engine
 
 from dhcpig.cli.render import Renderer, status_summary
 from dhcpig.core import events as ev
-from dhcpig.core import oui
-from dhcpig.core.fingerprint import from_mac
+from dhcpig.core.fingerprint import LOCALLY_ADMINISTERED, from_mac, oui_lookup
 
 
 # ---------------------------------------------------------------- OUI lookup
 def test_ieee_oui_resolved_from_scapy_db():
-    assert "VMware" in (oui.lookup("00:0c:29:da:53:f9") or "")
-    assert "Apple" in (oui.lookup("f0:18:98:11:22:33") or "")
+    assert "VMware" in (oui_lookup("00:0c:29:da:53:f9") or "")
+    assert "Apple" in (oui_lookup("f0:18:98:11:22:33") or "")
 
 
 def test_lookup_is_separator_and_case_insensitive():
-    want = oui.lookup("00:0c:29:da:53:f9")
+    want = oui_lookup("00:0c:29:da:53:f9")
     for form in ("00-0C-29-DA-53-F9", "000c29da53f9", "00:0C:29:da:53:f9"):
-        assert oui.lookup(form) == want
+        assert oui_lookup(form) == want
 
 
 def test_ieee_registered_prefix_resolved_without_supplement():
     # 00:00:0c is Cisco in the IEEE db -- resolved straight from scapy, no local supplement
-    assert "Cisco" in (oui.lookup("00:00:0c:11:22:33") or "")
+    assert "Cisco" in (oui_lookup("00:00:0c:11:22:33") or "")
 
 
 def test_qemu_prefix_unknown_to_scapy_falls_back_to_locally_administered():
     # QEMU's 52:54:00 prefix isn't in the IEEE registry; its locally-administered bit is set,
     # so we still label it rather than leaving it blank
-    assert oui.lookup("52:54:00:12:34:56") == oui.LOCALLY_ADMINISTERED
+    assert oui_lookup("52:54:00:12:34:56") == LOCALLY_ADMINISTERED
 
 
 def test_locally_administered_mac_is_labelled_not_blank():
     # DHCPig's own spoofed clients use a locally administered prefix
-    assert oui.lookup("de:ad:00:00:00:01") == oui.LOCALLY_ADMINISTERED
+    assert oui_lookup("de:ad:00:00:00:01") == LOCALLY_ADMINISTERED
 
 
 def test_lookup_handles_junk():
-    assert oui.lookup("") is None
-    assert oui.lookup("xx") is None
+    assert oui_lookup("") is None
+    assert oui_lookup("xx") is None
 
 
 def test_from_mac_fills_os_device_column_without_claiming_an_os():
@@ -115,10 +114,10 @@ def test_status_summary_shows_totals_deltas_and_rates():
             "window": 5.0,
             "leases": 142,
             "d_leases": 38,
-            "lease_pps": 7.6,
+            "lease_ppm": 7.6,
             "discovers": 520,
             "d_discovers": 150,
-            "discover_pps": 30.0,
+            "discover_ppm": 30.0,
             "offers": 145,
             "d_offers": 40,
             "naks": 0,
@@ -128,8 +127,8 @@ def test_status_summary_shows_totals_deltas_and_rates():
         }
     )
     assert "t=15s" in line and "RUNNING" in line
-    assert "leases 142 (+38 in 5s, 7.6/s)" in line
-    assert "discovers 520 (+150 in 5s, 30.0/s)" in line
+    assert "leases 142 (+38 in 5s, 7.6/min)" in line
+    assert "discovers 520 (+150 in 5s, 30.0/min)" in line
     assert "servers 1" in line
     assert "naks" not in line  # zero-valued counters are omitted
 

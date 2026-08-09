@@ -103,6 +103,44 @@ def test_destructive_discovery_is_not_widened_by_the_sweep_fallback(monkeypatch)
     assert all(t.startswith("10.9.9.") for t in seen["targets"])
 
 
+# ---------------------------------------------------------------- ARP sweep truncation (2.7.3)
+def test_sweep_targets_caps_per_cidr_and_reports_what_it_skipped():
+    """Pure, root-free: a /16 is capped at `cap` targets, and `skipped` says how many usable
+    addresses were left unprobed -- computed from num_addresses, not by materializing them."""
+    from dhcpig.core.engine import _sweep_targets
+
+    targets, skipped = _sweep_targets(["10.0.0.0/16"], cap=1024)
+    assert len(targets) == 1024
+    assert skipped == 65534 - 1024
+
+
+def test_sweep_targets_reports_no_skip_when_the_cidr_fits_under_the_cap():
+    from dhcpig.core.engine import _sweep_targets
+
+    targets, skipped = _sweep_targets(["10.0.0.0/24"], cap=1024)
+    assert len(targets) == 254
+    assert skipped == 0
+
+
+def test_sweep_targets_sums_skipped_across_multiple_cidrs():
+    from dhcpig.core.engine import _sweep_targets
+
+    targets, skipped = _sweep_targets(["10.0.0.0/24", "10.0.1.0/24"], cap=100)
+    assert len(targets) == 200  # 100 from each
+    assert skipped == (254 - 100) * 2
+
+
+def test_baseline_arp_scan_surfaces_truncation_in_the_run_summary(monkeypatch):
+    """A wide scope must not silently present a partial host list as the whole segment."""
+    eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST, scope_cidrs=["10.0.0.0/16"], dry_run=True)
+    monkeypatch.setattr("scapy.all.srp", lambda pkt, **kw: ([], []))
+    eng._baseline_arp_scan()
+    assert eng._sweep_skipped == 65534 - 1024
+    steps = eng._run_summary_steps()
+    arp_step = next(s for s in steps if s["did"] == "ARP inventory")
+    assert "not probed" in arp_step["got"]
+
+
 # ---------------------------------------------------------------- release phase (exhaust)
 def test_release_phase_skipped_without_a_known_server(monkeypatch):
     """BUG FIX (2.1): must never fall back to server_id=0.0.0.0 — skip instead."""

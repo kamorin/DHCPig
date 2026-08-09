@@ -70,7 +70,13 @@ def build_parser() -> argparse.ArgumentParser:
             help="periodic status line with running stats (default 5s; 0 disables)",
         )
 
-    ex = sub.add_parser("exhaust", help="consume the DHCP pool (non-destructive)")
+    ex = sub.add_parser(
+        "exhaust",
+        help=(
+            "drain the DHCP pool; releases and re-takes neighbours' leases, then "
+            "ARP-evicts (DESTRUCTIVE)"
+        ),
+    )
     common(ex)
     ex.add_argument("--request-option", default=None, help="e.g. 12,14-19,23")
     ex.add_argument("--client-mac", action="append", dest="client_macs")
@@ -140,6 +146,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="CIDR",
         help="network(s) to sweep; defaults to the interface's own network",
     )
+    asc.add_argument("--request-option", default=None, help="e.g. 12,14-19,23")
     asc.add_argument("--rate", type=int, default=7)
     asc.add_argument("--dry-run", action="store_true")
     asc.add_argument(
@@ -225,7 +232,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def build_config(args) -> SessionConfig:
     mode = _MODE_BY_CMD[args.command]
-    req_opts = list(range(80))
+    # None means "use the built-in macOS-order profile" (packets._MACOS_PRL) -- see
+    # SessionConfig.request_options.
+    req_opts = None
     if getattr(args, "request_option", None):
         req_opts = parse_request_options(args.request_option)
     scope = getattr(args, "scope_cidrs", None)

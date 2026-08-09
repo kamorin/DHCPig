@@ -165,6 +165,96 @@ def test_engine_offer_then_ack_flow(monkeypatch):
     assert any(isinstance(e, ev.RequestSent) for e in events)
 
 
+def test_foreign_offer_does_not_pollute_exhaustion_measurement(monkeypatch):
+    """A foreign OFFER (xid we never sent) must not move offers/_offers_seen_any/_last_offer_ts
+    -- those drive the offer_silence halt signal, and a promiscuous BPF sees every client's DHCP
+    churn (2.7.3 bug fix: this used to be incremented before the ownership check)."""
+    eng, events, _ = _engine(monkeypatch)
+    offer = _dhcp("offer", chaddr=mac2str("de:ad:00:00:00:09") + b"\x00" * 10)  # xid 0x99, not ours
+    eng._on_dhcp(offer)
+    assert eng.offers == 0
+    assert eng._offers_seen_any is False
+    assert eng._last_offer_ts == 0.0
+
+
+def test_foreign_offer_still_registers_the_server_and_pool_estimate(monkeypatch):
+    """The passive half of _handle_offer runs for anyone's OFFER: server identity and the
+    pool-size estimate are facts about the network, not about our own run."""
+    eng, events, _ = _engine(monkeypatch)
+    offer = _dhcp("offer", chaddr=mac2str("de:ad:00:00:00:09") + b"\x00" * 10)  # not ours
+    eng._on_dhcp(offer)
+    assert len(eng.servers) == 1
+    assert any(isinstance(e, ev.ServerDiscovered) for e in events)
+    assert eng._first_offer_ip == "172.20.0.83"
+    assert eng._first_offer_subnet == "255.255.255.0"
+
+
+def test_leases_expired_counts_only_unreleased_leases_past_their_lease_time(monkeypatch):
+    import time as _t
+
+    eng, _, _ = _engine(monkeypatch)
+    now = _t.time()
+    eng.cleanup.register(
+        Lease(
+            "de:ad:00:00:00:01",
+            "10.0.0.1",
+            "10.0.0.254",
+            1,
+            IPVersion.V4,
+            lease_time=600,
+            acquired_at=now - 700,
+        )  # expired 100s ago
+    )
+    eng.cleanup.register(
+        Lease(
+            "de:ad:00:00:00:02",
+            "10.0.0.2",
+            "10.0.0.254",
+            2,
+            IPVersion.V4,
+            lease_time=600,
+            acquired_at=now - 100,
+        )  # still well within its lease
+    )
+    released = Lease(
+        "de:ad:00:00:00:03",
+        "10.0.0.3",
+        "10.0.0.254",
+        3,
+        IPVersion.V4,
+        lease_time=600,
+        acquired_at=now - 700,
+        released=True,
+    )
+    eng.cleanup.register(released)
+    no_lease_time = Lease(
+        "de:ad:00:00:00:04", "10.0.0.4", "10.0.0.254", 4, IPVersion.V4, acquired_at=now - 700
+    )  # lease_time unknown -- never counted
+    eng.cleanup.register(no_lease_time)
+    assert eng._leases_expired(now=now) == 1
+
+
+def test_push_discover_carries_cfg_request_options(monkeypatch):
+    """cfg.request_options reaches the flood's DISCOVER (2.7.3) -- it used to be accepted by
+    SessionConfig and never actually wired into any DISCOVER this tool sent."""
+    eng, _, sent = _engine(monkeypatch, dry_run=False, request_options=[12, 15])
+    eng._push_discover("de:ad:00:00:00:20")
+    assert len(sent) == 1
+    assert packets.dhcp_option(sent[0][DHCP].options, "param_req_list") == (12, 15)
+
+
+def test_control_transaction_ignores_cfg_request_options(monkeypatch):
+    """The control leg must stay a vanilla client regardless of cfg.request_options -- it's the
+    baseline the verdict is measured against, not part of the flood's fingerprint profile."""
+    eng, _, sent = _engine(monkeypatch, dry_run=False, request_options=[12, 15])
+    monkeypatch.setattr("scapy.all.get_if_hwaddr", lambda _i: "00:11:22:33:44:55")
+    eng.cfg.timeouts.control = 0.05  # nobody answers -- only the DISCOVER shape matters here
+    eng.cfg.control_attempts = 1
+    eng._control_transaction("pre")
+    assert len(sent) == 1
+    assert packets.dhcp_option(sent[0][DHCP].options, "param_req_list") == packets._MACOS_PRL
+
+
 def test_exhaust_sender_stops_when_offers_cease(monkeypatch):
     """The only self-terminating condition is the *server* going quiet — there is no lease cap."""
     import time as _t

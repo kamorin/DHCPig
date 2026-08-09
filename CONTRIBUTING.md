@@ -3,8 +3,8 @@
 Practical workflow for working on this codebase. For *why* things are shaped the way they are —
 the safety model, the confidence/evidence model behind a verdict, the eviction outcome ladder,
 and every settled decision not to re-litigate — see `docs/DESIGN.md`. If you're an agent working
-from a sandboxed checkout, `CLAUDE.md` has the session-specific bits (paths, sandbox Python
-version).
+from a sandboxed checkout, `AGENTS.md` has the session-specific bits (paths, sandbox Python
+version) — it applies regardless of which agent tool you are.
 
 ## Layer rules
 

@@ -19,11 +19,12 @@ async function api(path, method = "GET", body) {
 }
 
 let running = false;
-// Four independent per-second series, all counting frames this tool actually transmits (never
+// Four independent per-minute series, all counting frames this tool actually transmits (never
 // replies received) -- discover/release/arp are self-explanatory; "renew" is the REQUEST this
 // tool sends after every OFFER, which the control transaction's own docstring treats as a
 // renewal probe (see _control_transaction() in engine.py) even though it's never a true
-// unicast RFC 2131 renewal. pps (the dashboard tile) is just their sum.
+// unicast RFC 2131 renewal. ppm (the dashboard tile) is just their sum. Each sample is taken
+// once a second and extrapolated to a per-minute rate (delta * 60), not a trailing 60s total.
 const rate = {
   discoverLast: 0, discoverSeries: [],
   releaseLast: 0, releaseSeries: [],
@@ -57,8 +58,8 @@ const MODE_NOTES = {
   },
   "release-previous": {
     harm: false,
-    text: "Recovery. Hands back every address this tool took on this network. " +
-      "Sends nothing if the pool isn't exhausted.",
+    text: "Recovery. Hands back every address this tool took on this network, whether or " +
+      "not the pool is currently exhausted -- it always records the exhaustion status.",
   },
   "active-scan": {
     harm: false,
@@ -126,7 +127,7 @@ function onModeChange() {
   if (mode === "release-previous" && +$("rate").value === 7) $("rate").value = 50;
   else if (mode !== "release-previous" && +$("rate").value === 50) $("rate").value = 7;
   autofillScope();
-  // Only the first two counters vary by mode -- the third slot is always "pps" now (a global,
+  // Only the first two counters vary by mode -- the third slot is always "ppm" now (a global,
   // mode-independent sum of every transmit-side rate the graph tracks; see pollStatus()), not a
   // per-mode label/value like it used to be.
   const labels = {
@@ -282,7 +283,12 @@ function drawSpark() {
   const { arpSeries: as, discoverSeries: ds, releaseSeries: rs, renewSeries: ns } = rate;
   ctx.clearRect(0, 0, w, h);
   if (as.length < 2 && ds.length < 2 && rs.length < 2 && ns.length < 2) return;
-  const max = Math.max(1, ...as, ...ds, ...rs, ...ns);
+  // Scale to the max of the recent window rather than the whole 120-sample history -- otherwise
+  // a single early burst (e.g. the one-shot ARP sweep release-previous fires before it starts
+  // releasing) pins the shared y-scale near zero for the rest of the run, hiding every other line.
+  const WINDOW = 30;
+  const recent = (s) => s.slice(-WINDOW);
+  const max = Math.max(1, ...recent(as), ...recent(ds), ...recent(rs), ...recent(ns));
   drawLine(ctx, as, w, h, max, "#6ab0ff");
   drawLine(ctx, ds, w, h, max, "#4ec9b0");
   drawLine(ctx, rs, w, h, max, "#e0679a");
@@ -408,11 +414,11 @@ function handleEvent(e) {
       const col = (label, key, rateKey) => {
         const total = s[key] || 0, d = s["d_" + key] || 0;
         if (!total && !d) return;
-        const rate = rateKey && s[rateKey] != null ? `, ${s[rateKey]}/s` : "";
+        const rate = rateKey && s[rateKey] != null ? `, ${s[rateKey]}/min` : "";
         bits.push(`${label} ${total} (+${d} in ${w}s${rate})`);
       };
-      col("leases", "leases", "lease_pps");
-      col("discovers", "discovers", "discover_pps");
+      col("leases", "leases", "lease_ppm");
+      col("discovers", "discovers", "discover_ppm");
       col("offers", "offers"); col("naks", "naks");
       col("releases", "releases"); col("arp_conflicts", "arp_conflicts");
       col("foreign_discovers", "foreign_discovers");
@@ -479,15 +485,21 @@ function handleEvent(e) {
       for (const line of f.summary || []) logLine("notice", `        ${line}`, 1);
       break;
     }
-    case "SessionEnded": $("state").textContent = "DONE"; setRunning(false); break;
+    case "SessionEnded":
+      $("state").textContent = "DONE";
+      // One last unconditional poll before the `running` gate shuts pollStatus() off -- a short
+      // run can finish its real traffic burst inside the final ~1s poll window, and if this
+      // SSE event beats that tick, the run's last (often largest) delta never gets sampled.
+      pollStatus(true).finally(() => setRunning(false));
+      break;
     case "ErrorEvent": logLine("alert", "[XX] " + e.message, 0); break;
     case "Debug": logLine("dbg", "[DBG] " + e.message, 3); break;
   }
 }
 
 // ---- status polling -------------------------------------------------------
-async function pollStatus() {
-  if (!running) return;
+async function pollStatus(force) {
+  if (!running && !force) return;
   try {
     const { status } = await api("/api/session/status");
     const mode = $("mode").value;
@@ -495,20 +507,21 @@ async function pollStatus() {
       "active-scan": neighbors.size, release: status.releases,
       "release-previous": status.releases }[mode] ?? 0;
     // Every rate is transmit-side (frames this tool actually sent), never a reply received --
-    // see the `rate` object's own comment. "pps" is their sum: total wire activity, not just
-    // whichever single counter happens to be the current mode's primary metric.
-    const discoverPps = Math.max(0, (status.discovers ?? 0) - rate.discoverLast);
+    // see the `rate` object's own comment. "ppm" is their sum: total wire activity, not just
+    // whichever single counter happens to be the current mode's primary metric. Polled once a
+    // second and extrapolated to a per-minute rate (delta * 60).
+    const discoverPpm = Math.max(0, (status.discovers ?? 0) - rate.discoverLast) * 60;
     rate.discoverLast = status.discovers ?? 0;
-    const releasePps = Math.max(0, (status.releases ?? 0) - rate.releaseLast);
+    const releasePpm = Math.max(0, (status.releases ?? 0) - rate.releaseLast) * 60;
     rate.releaseLast = status.releases ?? 0;
-    const arpPps = Math.max(0, (status.arp_sent ?? 0) - rate.arpLast);
+    const arpPpm = Math.max(0, (status.arp_sent ?? 0) - rate.arpLast) * 60;
     rate.arpLast = status.arp_sent ?? 0;
-    const renewPps = Math.max(0, (status.requests_sent ?? 0) - rate.renewLast);
+    const renewPpm = Math.max(0, (status.requests_sent ?? 0) - rate.renewLast) * 60;
     rate.renewLast = status.requests_sent ?? 0;
-    const pps = discoverPps + releasePps + arpPps + renewPps;
+    const ppm = discoverPpm + releasePpm + arpPpm + renewPpm;
     $("c-a").textContent = primary;
     $("c-b").textContent = status.servers ?? 0;
-    $("c-c").textContent = pps;
+    $("c-c").textContent = ppm;
     $("c-d").textContent = (status.elapsed ?? 0) + "s";
     $("state").textContent = status.state ?? "";
     if (mode === "exhaust" && status.pool_size != null) {
@@ -533,10 +546,10 @@ async function pollStatus() {
       $("l-e").textContent = "headroom (unknown)";
       $("headroomcell").classList.add("dim");
     }
-    pushSeries(rate.discoverSeries, discoverPps);
-    pushSeries(rate.releaseSeries, releasePps);
-    pushSeries(rate.arpSeries, arpPps);
-    pushSeries(rate.renewSeries, renewPps);
+    pushSeries(rate.discoverSeries, discoverPpm);
+    pushSeries(rate.releaseSeries, releasePpm);
+    pushSeries(rate.arpSeries, arpPpm);
+    pushSeries(rate.renewSeries, renewPpm);
     drawSpark();
   } catch (_) {}
 }

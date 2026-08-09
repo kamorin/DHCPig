@@ -63,6 +63,11 @@ IDLE, RUNNING, HALTED, EXHAUSTED, STOPPING, DONE = (
     "DONE",
 )
 
+# Per-CIDR cap on how many hosts one ARP sweep probes (§5, blast-radius note). Beyond a /22 this
+# silently truncates the inventory -- see _sweep_targets()'s `skipped` return value, surfaced via
+# _baseline_arp_scan()'s Debug and the RUN_SUMMARY "ARP inventory" step, for how that's reported.
+ARP_SWEEP_MAX_TARGETS = 1024
+
 
 class DhcpEngine:
     def __init__(self, cfg: SessionConfig, bus: EventBus) -> None:
@@ -142,7 +147,10 @@ class DhcpEngine:
         self._inflight: dict[int, dict] = {}
         self._inflight_lock = threading.Lock()
         self.timeouts_seen = 0
-        self._consecutive_timeouts = 0
+        # reap cycles in a row that expired something while offers were still flowing -- see
+        # _reap_timeouts()'s docstring for why this is reap cycles, not expired xids, and why it
+        # doesn't accumulate once offers have already ceased.
+        self._stalled_reaps = 0
         self._nak_timestamps: list[float] = []
         self._offered_ip_macs: dict[str, set[str]] = {}
         self._duplicate_offer_ips: set[str] = set()
@@ -161,7 +169,18 @@ class DhcpEngine:
         # confused with the live _neighbors_by_mac count, which the estimate/headroom uses.
         self._first_offer_ip: str | None = None
         self._first_offer_subnet: str | None = None
+        # observed lower bound on the pool (2.7.3): min/max of every address offered inside the
+        # first-known subnet, folded in by _note_offer_for_pool_estimate(). A real scope is
+        # usually a slice of the subnet (e.g. .100-.200 in a /24), so the subnet-mask estimate
+        # above overestimates -- this is direct evidence instead of a guess. See _estimate_pool().
+        self._pool_lo: int | None = None
+        self._pool_hi: int | None = None
+        self._pool_seen = 0
         self._baseline_neighbor_count = 0
+        # how many addresses the pre-run ARP sweep left unprobed past ARP_SWEEP_MAX_TARGETS --
+        # surfaced in RUN_SUMMARY's "ARP inventory" step so a wide scope doesn't silently report
+        # a partial host list as if it were the whole segment (§5, §7).
+        self._sweep_skipped = 0
         # dry-run only: neighbor count the release phase would have released, for DRY_RUN_SUMMARY
         self._dry_run_would_release = 0
         # exhaust only: (mac, ip) freed by the release phase, held until the sender has
@@ -333,8 +352,8 @@ class DhcpEngine:
                 "neighbors": len(self._neighbors_by_mac),
                 **cur,
                 **{f"d_{k}": cur[k] - prev[k] for k in cur},
-                "discover_pps": round((cur["discovers"] - prev["discovers"]) / window, 1),
-                "lease_pps": round((cur["leases"] - prev["leases"]) / window, 1),
+                "discover_ppm": round((cur["discovers"] - prev["discovers"]) / window * 60, 1),
+                "lease_ppm": round((cur["leases"] - prev["leases"]) / window * 60, 1),
                 "since_last_offer": (
                     round(now - self._last_offer_ts, 1) if self._offers_seen_any else None
                 ),
@@ -507,8 +526,62 @@ class DhcpEngine:
         """
         return "02:" + ":".join(f"{random.randint(0, 255):02x}" for _ in range(5))
 
+    def _control_attempt(self, phase: str, client: str, mac: str, xid: int) -> ControlOutcome:
+        """One DISCOVER -> OFFER -> REQUEST -> ACK -> RELEASE cycle, released immediately.
+
+        One retransmission attempt of the logical transaction `_control_transaction()` manages.
+        Same `mac`/`xid` across attempts -- this is one transaction being retransmitted, per RFC
+        2131, not a new one each time, so a reply to an earlier attempt that arrives late during
+        a later one is still correctly consumed by `_consume_control()`.
+        """
+        out = ControlOutcome(phase=phase, client=client, mac=mac, attempted=True)
+        with self._control_lock:
+            self._control_offer = None
+            self._control_ack = None
+            self._control_nak = False
+        self._control_offer_evt.clear()
+        self._control_ack_evt.clear()
+        # No request_options here, deliberately: the control leg must stay a vanilla, unmodified
+        # client, since it's the baseline the verdict (§5a/§5d) is measured against -- customize
+        # the flood's profile via cfg.request_options, never this one.
+        self._send(packets.build_discover_v4(mac, xid, mac), probe=True)
+        who = "real NIC MAC" if client == "self" else "fresh unseen MAC"
+        self._debug(f"CONTROL[{phase}/{client}] DISCOVER xid=0x{xid:08x} chaddr={mac} ({who})")
+        if not self._control_offer_evt.wait(self.cfg.timeouts.control):
+            out.reason = "no OFFER within timeout"
+            return out
+        if self._control_nak:
+            out.reason = "server replied NAK"
+            return out
+        offer = self._control_offer
+        sid, server_mac, offered_ip, subnet = packets.parse_offer(offer)
+        out.offered_ip, out.server_id, out.subnet = offered_ip, sid, subnet
+        out.server_mac = server_mac or None
+        self._note_offer_for_pool_estimate(offered_ip, subnet)
+        lt = packets.dhcp_option(offer[DHCP].options, "lease_time")
+        out.lease_time = int(lt) if isinstance(lt, int) else None
+        self._debug(f"CONTROL[{phase}/{client}] OFFER {offered_ip} from {sid} subnet={subnet}")
+        self._send(packets.build_request_v4(offer, mac), probe=True)
+        self.requests_sent += 1
+        if not self._control_ack_evt.wait(self.cfg.timeouts.control):
+            out.reason = f"OFFER {offered_ip} but no ACK within timeout"
+            return out
+        if self._control_nak:
+            out.reason = f"OFFER {offered_ip} then NAK"
+            return out
+        out.success = True
+        self._debug(f"CONTROL[{phase}/{client}] ACK {offered_ip} — this client can obtain a lease")
+        # give the address straight back; the control must not consume pool capacity
+        self._send(
+            packets.build_release_v4(mac, offered_ip, sid, xid, server_mac=server_mac),
+            probe=True,
+        )
+        self._debug(f"CONTROL[{phase}/{client}] RELEASE {offered_ip}")
+        return out
+
     def _control_transaction(self, phase: str, client: str = "self") -> ControlOutcome:
-        """One legitimate DHCP cycle (DISCOVER/OFFER/REQUEST/ACK/RELEASE), released immediately.
+        """One legitimate DHCP cycle, retried up to `cfg.control_attempts` times, released
+        immediately on success.
 
         Two client identities, because they answer different questions:
           * `self` — this machine's real NIC MAC. The server most likely already has a binding
@@ -516,10 +589,16 @@ class DhcpEngine:
             the right VLAN, but it can succeed even when the free pool is completely drained.
           * `new` — a MAC the server has never seen, which must come off the free list. This is
             the only leg that can show whether a *new* client can still obtain an address.
+
+        The verdict (§5a/§5d) is derived from a single control leg's outcome, so one lost UDP
+        packet used to be able to flip it: a dropped post/new OFFER read as a false
+        DHCP_STARVATION_ATTAINED, a dropped pre/new OFFER read as a false
+        NEW_CLIENT_BLOCKED_AT_BASELINE. Retransmission (2.7.3) is what makes a single exchange
+        trustworthy enough to hang a verdict on -- only retried on "nothing came back" (no OFFER,
+        no ACK); a NAK is a definite answer and stops immediately, same as success does.
         """
-        out = ControlOutcome(phase=phase, client=client)
         if self.cfg.offline:
-            out.reason = "skipped (offline)"
+            out = ControlOutcome(phase=phase, client=client, reason="skipped (offline)")
             self.bus.emit(ev.ControlFinished(outcome=out))
             return out
         try:
@@ -530,59 +609,36 @@ class DhcpEngine:
 
                 mac = get_if_hwaddr(self.cfg.interface)
         except Exception as exc:
-            out.reason = f"skipped (no hardware MAC: {exc!r})"
+            out = ControlOutcome(
+                phase=phase, client=client, reason=f"skipped (no hardware MAC: {exc!r})"
+            )
             self.bus.emit(ev.ControlFinished(outcome=out))
             return out
 
-        out.attempted = True
-        out.mac = mac
         self._our_macs.add(mac)
         self.bus.emit(ev.ControlStarted(phase=phase))
         started = time.time()
         xid = _rand_xid()
         with self._control_lock:
             self._control_xid = xid
-            self._control_offer = None
-            self._control_ack = None
-            self._control_nak = False
-        self._control_offer_evt.clear()
-        self._control_ack_evt.clear()
+        max_attempts = max(1, self.cfg.control_attempts)
+        out = ControlOutcome(phase=phase, client=client, mac=mac)
         try:
-            self._send(packets.build_discover_v4(mac, xid, mac), probe=True)
-            who = "real NIC MAC" if client == "self" else "fresh unseen MAC"
-            self._debug(f"CONTROL[{phase}/{client}] DISCOVER xid=0x{xid:08x} chaddr={mac} ({who})")
-            if not self._control_offer_evt.wait(self.cfg.timeouts.control):
-                out.reason = "no OFFER within timeout"
-                return out
-            if self._control_nak:
-                out.reason = "server replied NAK"
-                return out
-            offer = self._control_offer
-            sid, server_mac, offered_ip, subnet = packets.parse_offer(offer)
-            out.offered_ip, out.server_id, out.subnet = offered_ip, sid, subnet
-            out.server_mac = server_mac or None
-            self._note_offer_for_pool_estimate(offered_ip, subnet)
-            lt = packets.dhcp_option(offer[DHCP].options, "lease_time")
-            out.lease_time = int(lt) if isinstance(lt, int) else None
-            self._debug(f"CONTROL[{phase}/{client}] OFFER {offered_ip} from {sid} subnet={subnet}")
-            self._send(packets.build_request_v4(offer, mac), probe=True)
-            self.requests_sent += 1
-            if not self._control_ack_evt.wait(self.cfg.timeouts.control):
-                out.reason = f"OFFER {offered_ip} but no ACK within timeout"
-                return out
-            if self._control_nak:
-                out.reason = f"OFFER {offered_ip} then NAK"
-                return out
-            out.success = True
-            self._debug(
-                f"CONTROL[{phase}/{client}] ACK {offered_ip} — this client can obtain a lease"
-            )
-            # give the address straight back; the control must not consume pool capacity
-            self._send(
-                packets.build_release_v4(mac, offered_ip, sid, xid, server_mac=server_mac),
-                probe=True,
-            )
-            self._debug(f"CONTROL[{phase}/{client}] RELEASE {offered_ip}")
+            for attempt in range(1, max_attempts + 1):
+                out = self._control_attempt(phase, client, mac, xid)
+                out.attempts = attempt
+                if out.success or self._control_nak:
+                    break  # a definite answer -- nothing to retry
+                if attempt < max_attempts:
+                    self._debug(
+                        f"CONTROL[{phase}/{client}] attempt {attempt}/{max_attempts} failed "
+                        f"({out.reason}); retrying"
+                    )
+                    if self._stop.wait(1.0):
+                        break
+            if not out.success and out.attempts:
+                plural = "" if out.attempts == 1 else "s"
+                out.reason = f"{out.reason} ({out.attempts} attempt{plural})"
         except Exception as exc:  # a broken control must never kill the run
             out.reason = f"error: {exc!r}"
         finally:
@@ -626,6 +682,24 @@ class DhcpEngine:
             for xid, ip in self._reacquire_targets.items()
             if self._reacquire_outcomes.get(xid) == "granted"
         }
+
+    def _leases_expired(self, now: float | None = None) -> int:
+        """Leases we took whose server-granted lease time ran out before the run ended.
+
+        Not a failure of the run and not evidence of anything about the network -- it is the
+        reason a post-run control can succeed against a pool this run genuinely drained. On a
+        short-lease network (a guest SSID's 10-minute lease is a real example) a long-running
+        exhaust can lose its own early leases mid-run without anything else in the report saying
+        so, which makes `post_new.success` look like unexplained headroom instead of what it
+        actually is. Counted only, never renewed -- see docs/DESIGN.md §5d for why renewal is
+        out of scope here.
+        """
+        now = time.time() if now is None else now
+        return sum(
+            1
+            for ln in self.cleanup.all()
+            if not ln.released and ln.lease_time and now > ln.acquired_at + ln.lease_time
+        )
 
     def _renewal_suffix(self, ip: str) -> str:
         """`" (~12h)"` when the pool's lease duration is known, `""` when it isn't.
@@ -858,7 +932,10 @@ class DhcpEngine:
             )
             return steps
 
-        step("ARP inventory", f"{self._baseline_neighbor_count} devices")
+        sweep_note = (
+            f" ({self._sweep_skipped} address(es) not probed)" if self._sweep_skipped else ""
+        )
+        step("ARP inventory", f"{self._baseline_neighbor_count} devices{sweep_note}")
         if mode is Mode.ACTIVE_SCAN:
             step("DHCPINFORM to identify servers", f"{len(self.servers)} found")
             return steps
@@ -913,6 +990,9 @@ class DhcpEngine:
                     tail = "server stopped answering"
                 else:
                     tail = "stopped by the operator"
+                expired = self._leases_expired()
+                if expired:
+                    tail += f"; {expired} expired before the retest"
                 step(
                     f"Drained the pool{dry}",
                     f"{self.acks} held of {self.discovers}; {tail}",
@@ -1003,6 +1083,7 @@ class DhcpEngine:
                     {
                         "total": len(rollcall),
                         "by_category": by_category,
+                        "addresses_not_probed": self._sweep_skipped,
                         # pre-formatted one line per host: both renderers print list evidence
                         # one item per line, and every surface is monospace, so the columns line
                         # up without either front end knowing the shape of a host row.
@@ -1057,7 +1138,11 @@ class DhcpEngine:
             )
         if self.cfg.mode is Mode.EXHAUST and self._baseline_neighbor_count:
             est, _ = self._pool_headroom()
-            if est.size:
+            # observed_span is a lower bound, not the real denominator -- utilization against it
+            # runs artificially high (a handful of hosts can make a tight span look "full"), so
+            # it must not drive this finding. Only scope (deterministic) or observed (a whole
+            # subnet, therefore never smaller than the real scope) are honest denominators here.
+            if est.size and est.source in ("scope", "observed"):
                 utilization = self._baseline_neighbor_count / est.size
                 if utilization >= 0.8:
                     self._raise(
@@ -1102,11 +1187,18 @@ class DhcpEngine:
                                 "renewal_still_worked": bool(post and post.success),
                                 "elapsed_sec": elapsed,
                                 "servers": list(self.servers),
+                                "post_new_attempts": post_new.attempts,
+                                "leases_expired_during_run": self._leases_expired(),
                             },
                         )
                     )
                 else:
-                    evidence: dict = {"reason": reason, "leases_held": self.acks}
+                    evidence: dict = {
+                        "reason": reason,
+                        "leases_held": self.acks,
+                        "post_new_attempts": post_new.attempts,
+                        "leases_expired_during_run": self._leases_expired(),
+                    }
                     signal = detail = leases_at_halt = headroom = None
                     if reason == "control_fired" and self._halt_signal is not None:
                         signal, detail, leases_at_halt = self._halt_signal
@@ -1129,21 +1221,6 @@ class DhcpEngine:
                                 leases_at_halt=leases_at_halt,
                                 headroom=headroom,
                             ),
-                        )
-                    )
-
-                # offers stopped, yet a brand-new client is still served: that is the server
-                # refusing our traffic specifically, not running out of addresses
-                if post_new.success and self.state == EXHAUSTED:
-                    self._raise(
-                        findings.build(
-                            "SERVER_STOPPED_SERVING_TEST_CLIENTS",
-                            {
-                                "leases_before_offers_ceased": self.acks,
-                                "discovers": self.discovers,
-                                "naks": self.naks,
-                                "new_client_ip": post_new.offered_ip,
-                            },
                         )
                     )
 
@@ -1686,22 +1763,46 @@ class DhcpEngine:
 
     # ---------------------------------------------------------------- pool estimate / headroom
     def _note_offer_for_pool_estimate(self, offered_ip: str, subnet: str | None) -> None:
-        """Remember the first OFFER's address+subnet, in case --scope was never given.
+        """Remember the first OFFER's address+subnet, in case --scope was never given, and fold
+        every in-subnet OFFER into a measured lower-bound span (2.7.3, `observed_span` in
+        `_estimate_pool()`).
 
-        Called from both the real sender path and the control transaction, so the estimate
-        becomes available as soon as *any* OFFER is seen — usually the control/self leg, well
-        before the exhaust sender sends its first packet.
+        Called from both the real sender path and the control transaction -- and, since
+        `_handle_offer()`'s passive half calls it before the ownership check, from *anyone's*
+        OFFER on the segment, not just ours. That is deliberate here: an address a stranger was
+        offered is still direct evidence of what the scope contains, unlike the exhaustion
+        counters this must stay separate from (§8).
         """
         if self._first_offer_ip is None and subnet:
             self._first_offer_ip, self._first_offer_subnet = offered_ip, subnet
+        if not self._first_offer_subnet:
+            return
+        try:
+            prefixlen = netutils.cidr_from_mask(self._first_offer_subnet)
+            net = ipaddress.ip_network(f"{self._first_offer_ip}/{prefixlen}", strict=False)
+            addr = ipaddress.ip_address(offered_ip)
+        except (ValueError, OSError):
+            return
+        if addr not in net:
+            return  # a second scope on the segment -- don't let it skew the first scope's span
+        value = int(addr)
+        self._pool_lo = value if self._pool_lo is None else min(self._pool_lo, value)
+        self._pool_hi = value if self._pool_hi is None else max(self._pool_hi, value)
+        self._pool_seen += 1
+
+    # a real DHCP scope is usually a slice of its subnet (e.g. .100-.200 in a /24), so the
+    # subnet-mask estimate below overestimates -- observed_span needs enough samples that a
+    # two-offer run can't be mistaken for a tiny pool.
+    _POOL_SPAN_MIN_SAMPLES = 8
 
     def _estimate_pool(self) -> PoolEstimate:
         """Best-effort pool size. Never fabricated — `size=None` when nothing is known yet.
 
-        Resolution order: an explicit --scope (deterministic host count) beats inferring the
-        subnet from an OFFER (option 1), which is itself only as good as what the server told
-        us — reservations, exclusions, and additional scopes on the same segment are invisible
-        from here.
+        Resolution order: an explicit --scope (deterministic host count) beats an observed
+        address span (a measured *lower* bound — every address seen offered inside the subnet is
+        direct proof the scope contains it, unlike the subnet-mask guess below it), which beats
+        inferring the subnet from an OFFER (option 1) wholesale (§10's overestimate — reservations,
+        exclusions, and additional scopes on the same segment are all invisible from here).
         """
         if self.cfg.scope_cidrs:
             try:
@@ -1717,6 +1818,21 @@ class DhcpEngine:
                 )
             except ValueError:
                 pass
+        if (
+            self._pool_seen >= self._POOL_SPAN_MIN_SAMPLES
+            and self._pool_lo is not None
+            and self._pool_hi is not None
+        ):
+            lo_ip, hi_ip = netutils.int_to_ip(self._pool_lo), netutils.int_to_ip(self._pool_hi)
+            return PoolEstimate(
+                size=self._pool_hi - self._pool_lo + 1,
+                source="observed_span",
+                is_estimate=True,
+                detail=(
+                    f"lower bound: {self._pool_seen} address(es) observed between "
+                    f"{lo_ip} and {hi_ip}"
+                ),
+            )
         if self._first_offer_ip and self._first_offer_subnet:
             try:
                 prefixlen = netutils.cidr_from_mask(self._first_offer_subnet)
@@ -1788,7 +1904,16 @@ class DhcpEngine:
     def _reap_timeouts(self) -> None:
         """Free in-flight slots that never got a reply. A timeout shrinks the window exactly
         like a NAK does — a half-open allocation that never completes is the same signal that
-        the server (or the network) can't keep up, whichever end caused it."""
+        the server (or the network) can't keep up, whichever end caused it.
+
+        `_stalled_reaps` counts *reap cycles that expired something*, not expired xids — with
+        `window_initial=8` and a clean run, the pool draining expires up to a whole window's
+        worth of in-flight handshakes in one reap, and that single burst is not "N consecutive
+        timeouts" in any meaningful sense. It also does not accumulate once offers have ceased
+        altogether: at that point timeouts are the expected symptom of a drained pool, which
+        `offer_silence` (§5c) already owns — without this guard `timeout_storm` reliably wins
+        the race against it (5 reaps happen well inside `offer_silence`'s 10s window), so a
+        clean drain gets reported as a defensive control firing instead of exhaustion."""
         now = time.time()
         limit = self.cfg.timeouts.dhcp_request
         with self._inflight_lock:
@@ -1800,15 +1925,20 @@ class DhcpEngine:
         for xid in expired:
             self._classify_targeted(xid, "no_response", overwrite=False)
         self.timeouts_seen += len(expired)
-        self._consecutive_timeouts += len(expired)
         self._shrink_window("timeout")
+        offers_ceased = self._offers_seen_any and (now - self._last_offer_ts) > limit
+        if not offers_ceased:
+            self._stalled_reaps += 1
+        ceased_note = " (offers already ceased -- not counted toward timeout_storm)"
         self._debug(
             f"{len(expired)} handshake(s) timed out (no reply within {limit}s); "
-            f"{self._consecutive_timeouts} consecutive"
+            f"{self._stalled_reaps} consecutive stalled reap(s)"
+            + (ceased_note if offers_ceased else "")
         )
-        if self._consecutive_timeouts >= 5:
+        if self._stalled_reaps >= 5:
             self._trigger_halt(
-                "timeout_storm", f"{self._consecutive_timeouts} consecutive handshake timeouts"
+                "timeout_storm",
+                f"{self._stalled_reaps} consecutive reap cycles with no completed handshake",
             )
 
     def _note_nak_for_burst_detection(self) -> None:
@@ -2026,7 +2156,13 @@ class DhcpEngine:
         xid = _rand_xid()
         src = self._src_mac(client_mac)
         self._our_macs.add(src)
-        pkt = packets.build_discover_v4(client_mac, xid, src, requested_addr=requested_addr)
+        pkt = packets.build_discover_v4(
+            client_mac,
+            xid,
+            src,
+            requested_addr=requested_addr,
+            request_options=self.cfg.request_options,
+        )
         self._send(pkt)
         with self._inflight_lock:
             self._inflight[xid] = {
@@ -2140,9 +2276,11 @@ class DhcpEngine:
             self._debug("arp sweep skipped: could not determine a network range for the interface")
             return
         self._debug(f"arp sweep starting over {', '.join(cidrs)} (pre-run inventory)")
-        found, _ = self._discover_neighbors(cidrs)
+        found, skipped = self._discover_neighbors(cidrs)
         self._baseline_neighbor_count = len(found)
-        self._debug(f"arp sweep: {len(found)} host(s) present before exhausting")
+        self._sweep_skipped = skipped
+        skip_note = f"; {skipped} address(es) not probed (past the per-CIDR cap)" if skipped else ""
+        self._debug(f"arp sweep: {len(found)} host(s) present before exhausting{skip_note}")
 
     def _sweep_cidrs(self) -> list[str]:
         """Range for the *non-destructive* baseline sweep: explicit scope, else the iface network.
@@ -2341,12 +2479,11 @@ class DhcpEngine:
         except Exception as exc:
             self.bus.emit(ev.ErrorEvent(message=f"foreign discover parse error: {exc!r}"))
 
-    def _handle_offer(self, pkt) -> None:
-        self.offers += 1
-        self._offers_seen_any = True
-        self._last_offer_ts = time.time()
-        self._silence_noticed = False  # offers resumed; re-arm the quiet-period notice
-        server_id, server_mac, offered_ip, subnet = packets.parse_offer(pkt)
+    def _register_server(
+        self, pkt, server_id: str, server_mac: str, subnet: str | None
+    ) -> ServerInfo:
+        """First-sighting bookkeeping for a DHCP server observed in an OFFER -- passive, safe to
+        run for any OFFER on the segment regardless of whose transaction it answers."""
         server = self.servers.get(server_id)
         if server is None:
             server = ServerInfo(server_id, server_mac, subnet, self.cfg.ip_version)
@@ -2356,30 +2493,51 @@ class DhcpEngine:
             self.servers[server_id] = server
             self.bus.emit(ev.ServerDiscovered(server=server))
         server.offers_seen += 1
+        return server
+
+    def _handle_offer(self, pkt) -> None:
+        """Split into a passive half (true regardless of whose transaction this OFFER answers --
+        server identity, the pool-size estimate, marking a tracked foreign DISCOVER answered) and
+        an owned half (our exhaustion measurement and the REQUEST leg), gated by xid ownership.
+
+        BUG FIX (2.3, found while designing race-freed): this used to build and send a REQUEST
+        for *every* OFFER seen on the wire, with no check that the xid was ours -- an offer meant
+        for another real client made us impersonate their MAC and try to steal their address.
+        BUG FIX (2.7.3): the exhaustion-measurement counters (`self.offers`, `_offers_seen_any`,
+        `_last_offer_ts`) were incremented *before* that same ownership check, so any foreign
+        OFFER on a promiscuous BPF (another client's churn, a second scope) kept resetting the
+        exhaustion clock and inflating the offers counter -- `offer_silence` could never fire on
+        a busy segment. `xid in self._inflight` is the same ownership check `_handle_nak()` uses:
+        populated for every DISCOVER we actually sent (exhaust flood, re-acquisition, racing).
+        """
+        server_id, server_mac, offered_ip, subnet = packets.parse_offer(pkt)
         xid = pkt[BOOTP].xid
-        # BUG FIX (2.3, found while designing race-freed): this used to build and send a REQUEST
-        # for *every* OFFER seen on the wire, with no check that the xid was ours. Since
-        # client_mac_from_offer() reads chaddr straight off the OFFER, an offer meant for some
-        # other real client on the segment made us send a REQUEST impersonating *their* MAC,
-        # trying to steal their own offered address out from under them -- not scoped to
-        # anything we deliberately targeted, just every offer the sniffer happened to see.
-        # `xid in self._inflight` is the same ownership check `_handle_nak()` uses: populated
-        # for every DISCOVER we actually sent (exhaust flood, re-acquisition, racing).
+
+        # --- passive: true regardless of whose transaction this is ---
+        server = self._register_server(pkt, server_id, server_mac, subnet)
+        self._note_offer_for_pool_estimate(offered_ip, subnet)
+        foreign = self._foreign_discovers.get(xid)
+        if foreign is not None:
+            foreign["answered"] = True  # legitimate to record either way -- we're not acting on it
+
         with self._inflight_lock:
             info = self._inflight.get(xid)
             ours = info is not None
             if info is not None:
                 info["state"] = "REQUEST_SENT"
                 info["sent_at"] = time.time()  # restart the timeout clock for the ACK leg
-        foreign = self._foreign_discovers.get(xid)
-        if foreign is not None:
-            foreign["answered"] = True  # legitimate to record either way -- we're not acting on it
         if not ours:
             self._debug(
                 f"foreign OFFER xid=0x{xid:08x} yiaddr={offered_ip} server_id={server_id} "
                 "(not ours, not requesting)"
             )
             return
+
+        # --- owned: drives the exhaustion measurement and sends the REQUEST leg ---
+        self.offers += 1
+        self._offers_seen_any = True
+        self._last_offer_ts = time.time()
+        self._silence_noticed = False  # offers resumed; re-arm the quiet-period notice
         lease = Lease(
             packets.client_mac_from_offer(pkt),
             offered_ip,
@@ -2388,7 +2546,6 @@ class DhcpEngine:
             self.cfg.ip_version,
         )
         self._note_offer_for_duplicate_detection(offered_ip, lease.mac)
-        self._note_offer_for_pool_estimate(offered_ip, subnet)
         self.bus.emit(ev.OfferReceived(lease=lease, server=server))
         self._debug(
             f"OFFER xid=0x{pkt[BOOTP].xid:08x} yiaddr={offered_ip} server_id={server_id} "
@@ -2475,7 +2632,7 @@ class DhcpEngine:
         if requested is not None:
             outcome = "granted" if ip == requested else "offered_different"
             self._classify_targeted(xid, outcome)
-        self._consecutive_timeouts = 0  # a clean handshake resets the timeout-storm counter
+        self._stalled_reaps = 0  # a clean handshake resets the timeout-storm counter
         self._grow_window()
         self.bus.emit(ev.AckReceived(lease=lease))
         self._debug(
@@ -2667,19 +2824,13 @@ class DhcpEngine:
             return
         pre = self._control_transaction("pre", client="new")
         self._rp_pre_control = pre
-        if pre.success:
-            self._raise(
-                findings.build(
-                    "NO_RECOVERY_NEEDED",
-                    {
-                        "interface": self.cfg.interface,
-                        "journal_entries_loaded": len(all_entries),
-                        "offered_ip": pre.offered_ip,
-                    },
-                )
-            )
-            self.recovery_result = {"outcome": "not_needed", "frames_sent": 0}
-            return
+        # A successful pre-flight probe only means a new client can get *an* address right
+        # now -- it says nothing about whether every lease this tool previously took has
+        # actually been given back. Record the exhaustion status either way, but keep going:
+        # release whatever the journal still holds open so the server's bindings match what
+        # we tell the operator, instead of skipping the run whenever the pool has any spare
+        # capacity.
+        pool_was_exhausted = not pre.success
 
         selected, stats = recovery.select_entries(self.cfg, all_entries, scope, pre)
         self._rp_selected_count = stats["selected"]
@@ -2688,14 +2839,38 @@ class DhcpEngine:
             f"{stats['journal_entries_loaded']} loaded, {stats['in_cidr']} in scope, "
             f"{stats['same_server']} same-server, {stats['within_max_age']} within max-age "
             f"-> {stats['selected']} to release "
-            f"(same_server_filter_applied={stats['same_server_filter_applied']})"
+            f"(same_server_filter_applied={stats['same_server_filter_applied']}, "
+            f"pool_exhausted={pool_was_exhausted})"
         )
 
         if not selected:
-            self._raise(
-                findings.build("NO_JOURNAL_DATA", {"interface": self.cfg.interface, **stats})
-            )
-            self.recovery_result = {"outcome": "no_data", "frames_sent": 0, **stats}
+            if pre.success:
+                self._raise(
+                    findings.build(
+                        "NO_RECOVERY_NEEDED",
+                        {
+                            "interface": self.cfg.interface,
+                            "journal_entries_loaded": len(all_entries),
+                            "offered_ip": pre.offered_ip,
+                        },
+                    )
+                )
+                self.recovery_result = {
+                    "outcome": "not_needed",
+                    "frames_sent": 0,
+                    "pool_exhausted": pool_was_exhausted,
+                    **stats,
+                }
+            else:
+                self._raise(
+                    findings.build("NO_JOURNAL_DATA", {"interface": self.cfg.interface, **stats})
+                )
+                self.recovery_result = {
+                    "outcome": "no_data",
+                    "frames_sent": 0,
+                    "pool_exhausted": pool_was_exhausted,
+                    **stats,
+                }
             return
 
         if self.cfg.dry_run:
@@ -2703,7 +2878,12 @@ class DhcpEngine:
                 self._debug(
                     f"release-previous: [dry] would release {e.mac} {e.ip} via {e.server_ip}"
                 )
-            self.recovery_result = {"outcome": "dry_run", "frames_sent": 0, **stats}
+            self.recovery_result = {
+                "outcome": "dry_run",
+                "frames_sent": 0,
+                "pool_exhausted": pool_was_exhausted,
+                **stats,
+            }
             return
 
         frames_sent = 0
@@ -2715,7 +2895,12 @@ class DhcpEngine:
             self._debug(f"release-previous: pass {i + 1}/{passes} — {frames_sent} sent so far")
 
         if self._stop.is_set():
-            self.recovery_result = {"outcome": "interrupted", "frames_sent": frames_sent, **stats}
+            self.recovery_result = {
+                "outcome": "interrupted",
+                "frames_sent": frames_sent,
+                "pool_exhausted": pool_was_exhausted,
+                **stats,
+            }
             return
 
         post = self._control_transaction("post", client="new")
@@ -2733,10 +2918,12 @@ class DhcpEngine:
             "entries_still_open": len(remaining_targeted),
             "post_control_success": post.success,
             "post_control_reason": post.reason,
+            "pool_exhausted": pool_was_exhausted,
         }
         self.recovery_result = {
             "outcome": "recovered" if post.success else "failed",
             "frames_sent": frames_sent,
+            "pool_exhausted": pool_was_exhausted,
             **stats,
         }
 
@@ -2747,28 +2934,22 @@ class DhcpEngine:
         else:
             self._raise(findings.build("POOL_RECOVERY_FAILED", evidence))
 
-    def _discover_neighbors(
-        self, cidrs: list[str] | None = None
-    ) -> tuple[list[Neighbor], str | None]:
+    def _discover_neighbors(self, cidrs: list[str] | None = None) -> tuple[list[Neighbor], int]:
         """ARP-sweep for live neighbors (best effort; needs a real iface).
 
         `cidrs` defaults to cfg.scope_cidrs. Destructive callers MUST leave it unset so their
-        targets stay pinned to the authorised scope.
+        targets stay pinned to the authorised scope. Returns `(neighbors, skipped)` --
+        `skipped` is how many addresses `_sweep_targets()` left unprobed past its per-CIDR cap
+        (§5); callers that care surface it, callers that don't discard it as `_`.
         """
         from scapy.all import srp  # monkeypatched -- see top of file
 
         found: dict[str, Neighbor] = {}
         src_ip = netutils.get_if_ip(self.cfg.interface) or "0.0.0.0"
-        targets: list[str] = []
-        for cidr in (cidrs if cidrs is not None else self.cfg.scope_cidrs) or []:
-            net = ipaddress.ip_network(cidr, strict=False)
-            # BUG FIX (2.3): `list(net.hosts())[:1024]` materialized every host in the network
-            # before slicing -- a /8 (as "lo" auto-detects to) means ~16M IPv4Address objects
-            # built just to keep the first 1024, several real seconds of dead time before the
-            # sweep even sends a packet. islice caps the work at 1024 regardless of network size.
-            targets += [str(h) for h in itertools.islice(net.hosts(), 1024)]
+        sweep_cidrs = cidrs if cidrs is not None else (self.cfg.scope_cidrs or [])
+        targets, skipped = _sweep_targets(sweep_cidrs)
         if not targets or self.cfg.offline:
-            return list(found.values()), None
+            return list(found.values()), skipped
         try:
             self.arp_requests_sent += len(targets)
             ans, _ = srp(
@@ -2781,7 +2962,28 @@ class DhcpEngine:
                 found[r.psrc] = self._note_neighbor(r.hwsrc, r.psrc)
         except Exception as exc:
             self.bus.emit(ev.ErrorEvent(message=f"arp sweep error: {exc!r}"))
-        return list(found.values()), None
+        return list(found.values()), skipped
+
+
+def _sweep_targets(cidrs: list[str], cap: int = ARP_SWEEP_MAX_TARGETS) -> tuple[list[str], int]:
+    """(targets, skipped) — the first `cap` hosts of each CIDR, and how many were left unprobed.
+
+    Pure and root-free, so it's unit-testable on its own. `skipped` is computed as
+    `usable_hosts - len(targets)` per CIDR (O(1) via `num_addresses`) rather than by counting
+    `net.hosts()` -- materializing a /8's ~16M host objects just to count them is exactly the
+    dead-time bug `itertools.islice` below already exists to avoid.
+    """
+    targets: list[str] = []
+    skipped = 0
+    for cidr in cidrs:
+        net = ipaddress.ip_network(cidr, strict=False)
+        usable = max(0, net.num_addresses - 2)
+        # islice caps the work at `cap` regardless of network size -- see the module-level
+        # ARP_SWEEP_MAX_TARGETS comment for why this cap exists and how it's surfaced.
+        cidr_targets = [str(h) for h in itertools.islice(net.hosts(), cap)]
+        targets += cidr_targets
+        skipped += max(0, usable - len(cidr_targets))
+    return targets, skipped
 
 
 def _rand_xid() -> int:
