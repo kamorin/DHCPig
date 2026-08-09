@@ -4,7 +4,7 @@ This is the design document: what the tool does, why the code is shaped the way 
 decisions are settled rather than open. It's the reference for anyone extending or reviewing this
 codebase — human or agent. For the practical "how do I add a finding / run the tests / where does
 this file go" workflow, see `CONTRIBUTING.md`; agent-session/sandbox specifics live in
-`CLAUDE.md`; release-by-release history lives in `CHANGELOG.md` — none of that is repeated here.
+`AGENTS.md`; release-by-release history lives in `CHANGELOG.md` — none of that is repeated here.
 
 ## 1. What this is
 A whitehat DHCP network-hardening validation tool. It exhausts DHCP pools, releases neighbor
@@ -14,7 +14,7 @@ conflicts, and passively/actively fingerprints hosts — to prove a network defe
 enables host compromise or lateral movement; it stays an L2/L3 DHCP/ARP stress + audit tool.**
 
 ## 2. Where the code lives
-See `CLAUDE.md` for local working-copy paths and any sandbox/VM specifics — that's session
+See `AGENTS.md` for local working-copy paths and any sandbox/VM specifics — that's session
 workflow, not design. From the repo root: `src/dhcpig/` is the package (§3 covers its layout),
 `tests/` mirrors it, `docs/` holds this file, `packaging/` the `.deb`/`.desktop`/man-page
 sources.
