@@ -151,20 +151,48 @@ def test_foreign_naks_do_not_trigger_halt(monkeypatch):
     assert not any(isinstance(e, ev.ControlDetected) for e in events)
 
 
-def test_timeout_storm_triggers_halt(monkeypatch):
+def test_timeout_storm_needs_five_stalled_reap_cycles_not_five_expired_xids(monkeypatch):
+    """_stalled_reaps counts reap *cycles* that expired something, not expired xids -- a window
+    of 8 in-flight handshakes expiring together in one reap is one stalled cycle, not eight."""
     eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
     eng.cfg.timeouts.dhcp_request = 0.01
-    for i in range(5):
+    for cycle in range(4):
         with eng._inflight_lock:
-            eng._inflight[i] = {
-                "mac": "de:ad:00:00:00:01",
-                "sent_at": 0.0,
-                "state": "DISCOVER_SENT",
-            }
+            for i in range(8):
+                eng._inflight[cycle * 8 + i] = {
+                    "mac": "de:ad:00:00:00:01",
+                    "sent_at": 0.0,
+                    "state": "DISCOVER_SENT",
+                }
+        time.sleep(0.02)
+        eng._reap_timeouts()
+        assert eng._halt_signal is None, f"halted after only {cycle + 1} stalled reap(s)"
+    with eng._inflight_lock:
+        eng._inflight[999] = {"mac": "de:ad:00:00:00:01", "sent_at": 0.0, "state": "DISCOVER_SENT"}
     time.sleep(0.02)
     eng._reap_timeouts()
     assert eng._halt_signal is not None
     assert eng._halt_signal[0] == "timeout_storm"
+
+
+def test_timeouts_do_not_accumulate_toward_timeout_storm_once_offers_have_ceased(monkeypatch):
+    """Once offers have already stopped, expiring handshakes is the expected symptom of a
+    drained pool -- offer_silence (§5c) owns that conclusion, not timeout_storm."""
+    eng, _, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
+    eng.cfg.timeouts.dhcp_request = 0.01
+    eng._offers_seen_any = True
+    eng._last_offer_ts = time.time() - 5.0  # quiet well past dhcp_request
+    for cycle in range(6):
+        with eng._inflight_lock:
+            eng._inflight[cycle] = {
+                "mac": "de:ad:00:00:00:01",
+                "sent_at": 0.0,
+                "state": "DISCOVER_SENT",
+            }
+        time.sleep(0.02)
+        eng._reap_timeouts()
+    assert eng._halt_signal is None
+    assert eng._stalled_reaps == 0
 
 
 def _mark_ours(eng, xid: int, mac: str) -> None:

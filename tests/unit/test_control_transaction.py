@@ -90,6 +90,7 @@ def test_control_still_probes_under_dry_run(monkeypatch):
     eng, _, sent = _engine(monkeypatch, dry_run=True)
     monkeypatch.setattr("scapy.all.get_if_hwaddr", lambda _i: "00:11:22:33:44:55")
     eng.cfg.timeouts.control = 0.15  # nobody answers -- we only care that it actually sent
+    eng.cfg.control_attempts = 1  # single attempt: this test only cares about the first DISCOVER
     out = eng._control_transaction("pre")
     assert out.attempted is True
     assert "dry-run" not in out.reason
@@ -134,9 +135,87 @@ def test_control_reports_failure_when_no_offer(monkeypatch):
     eng, _, _ = _engine(monkeypatch)
     monkeypatch.setattr("scapy.all.get_if_hwaddr", lambda _i: "00:11:22:33:44:55")
     eng.cfg.timeouts.control = 0.15  # nobody answers
+    eng.cfg.control_attempts = 1  # single attempt: this test is about the failure shape, not retry
     out = eng._control_transaction("pre")
     assert out.attempted and not out.success
     assert "no OFFER" in out.reason
+    assert out.attempts == 1
+    assert "1 attempt" in out.reason
+
+
+def test_control_retries_and_succeeds_when_the_first_offer_is_lost(monkeypatch):
+    """A lost OFFER on attempt 1 must not fail the whole transaction (2.7.3) -- the verdict is
+    derived from this leg's success/failure, so one dropped packet used to be able to flip it."""
+    eng, _, sent = _engine(monkeypatch)
+    monkeypatch.setattr(engine_mod, "sendp", lambda pkt, **kw: sent.append(pkt))
+    monkeypatch.setattr("scapy.all.get_if_hwaddr", lambda _i: "00:11:22:33:44:55")
+    eng.cfg.timeouts.control = 0.2
+    eng.cfg.control_attempts = 3
+
+    def responder():
+        for _ in range(200):
+            with eng._control_lock:
+                xid = eng._control_xid
+            if xid:
+                break
+            time.sleep(0.01)
+        time.sleep(1.3)  # let attempt 1 (0.2s) and the 1.0s retry gap elapse; land inside attempt 2
+        eng._on_dhcp(_reply("offer", xid, "00:11:22:33:44:55"))
+        eng._control_offer_evt.wait(1)
+        eng._on_dhcp(_reply("ack", xid, "00:11:22:33:44:55"))
+
+    t = threading.Thread(target=responder, daemon=True)
+    t.start()
+    out = eng._control_transaction("pre")
+    t.join(timeout=3)
+
+    assert out.success, out.reason
+    assert out.attempts == 2
+    # DISCOVER x2, REQUEST, RELEASE -- the lost-OFFER attempt only ever sent a DISCOVER
+    assert len(sent) == 4
+    assert packets.message_type(sent[0]) == packets.DISCOVER
+    assert packets.message_type(sent[1]) == packets.DISCOVER
+
+
+def test_control_nak_stops_retrying_immediately(monkeypatch):
+    """A NAK is a definite answer, not a lost packet -- retrying after one would just ask the
+    same question again and waste the run's time budget for no new information."""
+    eng, _, sent = _engine(monkeypatch)
+    monkeypatch.setattr(engine_mod, "sendp", lambda pkt, **kw: sent.append(pkt))
+    monkeypatch.setattr("scapy.all.get_if_hwaddr", lambda _i: "00:11:22:33:44:55")
+    eng.cfg.timeouts.control = 2.0
+    eng.cfg.control_attempts = 3
+
+    def responder():
+        for _ in range(200):
+            with eng._control_lock:
+                xid = eng._control_xid
+            if xid:
+                break
+            time.sleep(0.01)
+        eng._on_dhcp(_reply("nak", xid, "00:11:22:33:44:55"))
+
+    t = threading.Thread(target=responder, daemon=True)
+    t.start()
+    started = time.time()
+    out = eng._control_transaction("pre")
+    t.join(timeout=3)
+
+    assert not out.success
+    assert out.attempts == 1
+    assert "NAK" in out.reason
+    assert time.time() - started < 1.0  # no 1.0s retry gap, no second 2.0s timeout wait
+
+
+def test_control_reports_failure_after_exhausting_all_attempts(monkeypatch):
+    eng, _, _ = _engine(monkeypatch)
+    monkeypatch.setattr("scapy.all.get_if_hwaddr", lambda _i: "00:11:22:33:44:55")
+    eng.cfg.timeouts.control = 0.05  # nobody ever answers
+    eng.cfg.control_attempts = 3
+    out = eng._control_transaction("pre")
+    assert not out.success
+    assert out.attempts == 3
+    assert "3 attempts" in out.reason
 
 
 def test_control_replies_do_not_pollute_run_counters(monkeypatch):
@@ -262,6 +341,44 @@ def test_new_client_served_means_not_attained(monkeypatch):
     assert fs["DHCP_STARVATION_NOT_ATTAINED"].verdict == PASS
     assert fs["DHCP_STARVATION_NOT_ATTAINED"].evidence["reason"] == "pool_headroom_remaining"
     assert "DHCP_STARVATION_ATTAINED" not in fs
+    # zero-valued keys (no leases expired here) are dropped from the rendered summary
+    from dataclasses import asdict
+
+    from dhcpig.core.findings import finding_summary_lines
+
+    summary = "\n".join(finding_summary_lines(asdict(fs["DHCP_STARVATION_NOT_ATTAINED"])))
+    assert "leases_expired_during_run" not in summary
+
+
+def test_not_attained_evidence_carries_attempts_and_expired_lease_count(monkeypatch):
+    """A FAIL or a NOT_ATTAINED PASS must be auditable: how hard the post/new control tried, and
+    whether some of our own leases had already lapsed by the time it ran (2.7.3)."""
+    from dhcpig.core.models import IPVersion
+
+    eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
+    eng._started = time.time()
+    eng.control_pre = ControlOutcome(phase="pre", client="self", attempted=True, success=True)
+    eng.control_pre_new = ControlOutcome(phase="pre", client="new", attempted=True, success=True)
+    eng.control_post_new = ControlOutcome(
+        phase="post", client="new", attempted=True, success=True, offered_ip="10.0.0.9", attempts=2
+    )
+    eng.acks = 5
+    eng.cleanup.register(
+        Lease(
+            "de:ad:00:00:00:01",
+            "10.0.0.5",
+            "10.0.0.254",
+            1,
+            IPVersion.V4,
+            lease_time=60,
+            acquired_at=time.time() - 120,  # expired well before the retest
+        )
+    )
+    eng._finalize_findings()
+    fs = {e.finding.id: e.finding for e in events if isinstance(e, ev.FindingRaised)}
+    ev_ = fs["DHCP_STARVATION_NOT_ATTAINED"].evidence
+    assert ev_["post_new_attempts"] == 2
+    assert ev_["leases_expired_during_run"] == 1
 
 
 def test_control_fired_is_the_reason_when_a_halt_signal_preceded_the_post_control(monkeypatch):
@@ -280,27 +397,6 @@ def test_control_fired_is_the_reason_when_a_halt_signal_preceded_the_post_contro
     assert ev_["reason"] == "control_fired"
     assert ev_["signal"] == "nak_burst"
     assert ev_["leases_at_halt"] == 40
-
-
-def test_offers_ceasing_while_new_client_served_is_a_throttle_not_exhaustion(monkeypatch):
-    """The real-network case: offers stop, but a brand-new client is still served."""
-    from dhcpig.core.engine import EXHAUSTED
-
-    eng, events, _ = _engine(monkeypatch, mode=Mode.EXHAUST)
-    eng._started = time.time()
-    eng.state = EXHAUSTED  # senders saw offers cease
-    eng.control_pre = ControlOutcome(phase="pre", client="self", attempted=True, success=True)
-    eng.control_pre_new = ControlOutcome(phase="pre", client="new", attempted=True, success=True)
-    eng.control_post_new = ControlOutcome(
-        phase="post", client="new", attempted=True, success=True, offered_ip="192.168.4.35"
-    )
-    eng.acks = 56
-    eng.naks = 8
-    eng._finalize_findings()
-    fs = {e.finding.id: e.finding for e in events if isinstance(e, ev.FindingRaised)}
-    assert "DHCP_STARVATION_ATTAINED" not in fs
-    assert "SERVER_STOPPED_SERVING_TEST_CLIENTS" in fs
-    assert fs["SERVER_STOPPED_SERVING_TEST_CLIENTS"].evidence["naks"] == 8
 
 
 def test_new_client_blocked_at_baseline_is_a_pass(monkeypatch):

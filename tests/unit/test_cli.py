@@ -17,6 +17,15 @@ def test_build_config_exhaust_defaults():
     assert cfg.mode is Mode.EXHAUST
     assert cfg.ip_version is IPVersion.V4
     assert cfg.spoof_ethernet_src is True  # distinct L2 MACs by default
+    # None means "use the built-in macOS-order profile" -- see SessionConfig.request_options
+    assert cfg.request_options is None
+
+
+def test_request_option_reaches_the_config_on_exhaust_and_active_scan():
+    for cmd in ("exhaust", "active-scan"):
+        args = cli.build_parser().parse_args([cmd, "eth1", "--request-option", "12,14-16,23"])
+        cfg = cli.build_config(args)
+        assert cfg.request_options == [12, 14, 15, 16, 23]
 
 
 def test_exhaust_has_no_no_control_flag():

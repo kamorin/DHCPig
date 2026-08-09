@@ -1,5 +1,59 @@
 # Changelog
 
+## 2.7.3 — 2026-08-09
+
+Nine fixes to the exhaustion verdict path, from a penetration-testing review of `exhaust`. Each
+one either stopped the tool from reporting a wrong verdict or removed something that misled the
+operator.
+
+- **Deleted `SERVER_STOPPED_SERVING_TEST_CLIENTS`, a finding that could never fire.** Its
+  condition required `self.state == EXHAUSTED` while `post_new.success` was true, but `state`
+  only ever becomes `EXHAUSTED` when `post_new` is *denied* — the condition was unsatisfiable
+  outside its own test, which faked the state by hand. The distinction it was reaching for is
+  already carried by `DHCP_STARVATION_NOT_ATTAINED` with `reason="control_fired"`.
+- **The control transaction now retransmits (`SessionConfig.control_attempts`, default 3).** The
+  exhaustion verdict was previously derived from a single DISCOVER/OFFER/REQUEST/ACK exchange
+  with no retry — one lost UDP packet could flip a clean network to a false
+  `DHCP_STARVATION_ATTAINED`, or flip a genuinely exhausted one to a false
+  `NEW_CLIENT_BLOCKED_AT_BASELINE`. Retried only on "nothing came back"; a NAK is a definite
+  answer and stops immediately. `ControlOutcome.attempts` and `post_new_attempts` evidence make
+  the retry count auditable in the report.
+- **Fixed `timeout_storm` firing on a successful pool drain.** It used to count every expired
+  in-flight handshake rather than reap *cycles*, so a full window (up to 64) expiring together
+  the moment the pool emptied read as "N consecutive timeouts" and halted in ~2s — well before
+  `offer_silence`'s 10s could report the drain correctly. It no longer accumulates once offers
+  have already ceased, which is `offer_silence`'s job.
+- **A foreign OFFER no longer resets the exhaustion clock.** `_handle_offer()`'s counters
+  (`offers`, `_offers_seen_any`, `_last_offer_ts` — what `offer_silence` reads) were incremented
+  before the ownership check, so any other client's routine DHCP churn on the promiscuous BPF
+  kept `offer_silence` from ever firing on a busy segment. Split into a passive half (server
+  registry, pool estimate — safe from anyone's packet) and an owned half (the exhaustion
+  counters, the REQUEST leg), gated by ownership between them.
+- **Pool-size estimate no longer trusts the subnet mask alone.** A real DHCP scope is usually a
+  slice of its subnet; the mask-based estimate overestimated it, which made
+  `pool_headroom_remaining` the reflexive explanation for any non-result. Added
+  `source="observed_span"`: a measured lower bound from the min/max address actually seen
+  offered (≥8 samples), preferred over the mask guess and explicitly excluded from
+  `POOL_HEADROOM_LOW`'s utilization check (a lower bound would read artificially high there).
+- **Runs now report leases that expired mid-run.** On a short-lease network a long exhaust could
+  lose its own early leases without anything in the report saying so, making a later successful
+  control read as unexplained headroom. New `_leases_expired()` / `leases_expired_during_run`
+  evidence on both `DHCP_STARVATION_*` findings and the RUN_SUMMARY drain step.
+- **The pre-run ARP sweep no longer silently truncates past 1024 hosts per CIDR.** Wider than a
+  /22 used to report a partial host list as if it were the whole segment with no indication.
+  `_sweep_targets()` now returns how many addresses it skipped; surfaced in the "ARP inventory"
+  step and `NEIGHBORS_OBSERVED`'s evidence.
+- **`--request-option` now actually changes the DHCP option-55 content sent.** It was accepted by
+  both `exhaust` and (via `SessionConfig.request_options`) `active-scan`'s INFORM builder, but
+  neither packet builder read the value — every DISCOVER/INFORM always sent the built-in
+  macOS-order list regardless of the flag. Also added to `active-scan`'s CLI, the mode that was
+  already plumbed to receive it. The control transaction's own DISCOVER is deliberately exempt —
+  it must stay a vanilla client, since it's the baseline the verdict is measured against.
+- **Fixed:** the CLI described `exhaust` as `(non-destructive)`. It is the most destructive mode
+  in the tool — it releases every ARP-discovered neighbour's lease, floods the pool, and
+  ARP-evicts hosts off addresses it took. The README and design doc already said so correctly;
+  only `--help` was wrong.
+
 ## 2.7.2 — 2026-08-02
 
 - **Fixed `debian-package`'s `publish` job, which had never actually published anything.**

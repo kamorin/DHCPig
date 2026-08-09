@@ -303,11 +303,21 @@ Three pieces, run in `_common_prelude()` order (shared by both `exhaust` and `re
    `RateLimiter` globally.**
 3. **Halt-on-control** (`_trigger_halt`, `ControlDetected`, `HALTED` state). On the first of five
    signals — `nak_burst` (≥3/5s), `offer_silence` (existing), `link_down` (carrier poll in
-   `_status_ticker`, `netutils.link_is_up()`), `timeout_storm` (≥5 consecutive), `duplicate_offers`
-   (≥3 addresses offered to two of our MACs) — sending stops immediately but **leases already
-   held are kept**, and `stop()` still runs both post-controls so the report is complete. First
-   signal wins (`self._halt_signal` is set once). Don't make halt release leases or skip the
-   post-control — that would break the verdict (§5d).
+   `_status_ticker`, `netutils.link_is_up()`), `timeout_storm` (≥5 stalled reap cycles),
+   `duplicate_offers` (≥3 addresses offered to two of our MACs) — sending stops immediately but
+   **leases already held are kept**, and `stop()` still runs both post-controls so the report is
+   complete. First signal wins (`self._halt_signal` is set once). Don't make halt release leases
+   or skip the post-control — that would break the verdict (§5d).
+   **`timeout_storm` means "handshakes are not completing while the server is still answering
+   someone" — not "the pool just drained."** `_reap_timeouts()`'s `_stalled_reaps` counts *reap
+   cycles that expired something* (2.7.3; was expired-xid count, which let one window's worth of
+   in-flight handshakes — up to `window_max` — expiring together in a single reap read as "N
+   consecutive timeouts" and halt in ~2s), and it does **not** accumulate once
+   `_offers_seen_any` is true and the silence already exceeds `timeouts.dhcp_request` — at that
+   point `offer_silence` (10s by default) is the signal that owns "the pool is drained", and
+   without the guard `timeout_storm` wins that race on every clean drain, so a successful
+   exhaustion gets reported as a defensive control firing instead. Don't let `timeout_storm`
+   accumulate through an already-quiet period again.
 
 ## 5d. Verdict: DHCP_STARVATION_ATTAINED / _NOT_ATTAINED
 - **`DHCP_STARVATION_ATTAINED`** (`FAIL`): `acks > 0` **and** the post-run **new-MAC** control
@@ -320,12 +330,31 @@ Three pieces, run in `_common_prelude()` order (shared by both `exhaust` and `re
   `ATTAINED` is rare by construction on a defended network** — `NOT_ATTAINED + control_fired`
   naming the control and the lease count it fired at is the expected, actionable result, not a
   consolation prize.
+- **There is no separate "server throttled our test clients" finding.** One existed
+  (`SERVER_STOPPED_SERVING_TEST_CLIENTS`, removed 2.7.3) but its condition — `post_new.success`
+  while `self.state == EXHAUSTED` — could never be true: `state` only becomes `EXHAUSTED` in
+  `stop()` when `post_new` is *denied* (§3), so the finding never fired outside its own test,
+  which faked the state by hand. The distinction it was reaching for — "the server stopped
+  answering *our* test clients while a real client is still served" — is already carried by
+  `DHCP_STARVATION_NOT_ATTAINED` with `reason="control_fired"` plus the named halt signal (§5c).
+  Don't re-add a variant of it without wiring it through an actually-reachable state.
 - **Pool estimate / headroom** (`PoolEstimate`, `_estimate_pool()`, `_pool_headroom()`): resolved
-  from an explicit `--scope` (deterministic host count) or, failing that, the first OFFER's
-  subnet (option 1) via `_note_offer_for_pool_estimate()`. `size=None` when neither is known —
+  in order — an explicit `--scope` (deterministic host count); else an **observed span**
+  (`source="observed_span"`, 2.7.3): the min/max of every address seen offered inside the
+  first-known subnet, folded in by `_note_offer_for_pool_estimate()` from *any* OFFER on the
+  segment (task 4's passive/owned split means this runs for a stranger's OFFER too — an address
+  someone else was offered is still proof the scope contains it); else the first OFFER's subnet
+  wholesale (option 1, `source="observed"`). `size=None` when nothing is known —
   **never fabricate a denominator**; every surface (status, StatusTick, CLI line, web counter,
-  report) must show `source`/`detail` alongside the number. `POOL_HEADROOM_LOW` is a separate,
-  independent finding raised when the *pre-test* ARP baseline already shows ≥80% utilization.
+  report) must show `source`/`detail` alongside the number. `observed_span` exists because a real
+  DHCP scope is usually a *slice* of its subnet (`.100`–`.200` in a /24, say) — the subnet-mask
+  estimate overestimates, which used to make `pool_headroom_remaining` the reflexive explanation
+  for any non-result. It needs `_POOL_SPAN_MIN_SAMPLES` (8) distinct addresses before it's used,
+  so a two-offer run can't be mistaken for a tiny pool, and it is **explicitly excluded** from
+  `POOL_HEADROOM_LOW`'s utilization check (below) — it's a lower bound, so utilization against it
+  reads artificially high and would manufacture the finding. `POOL_HEADROOM_LOW` is a separate,
+  independent finding raised when the *pre-test* ARP baseline already shows ≥80% utilization
+  against a `scope` or `observed` (never `observed_span`) denominator.
 
 ## 5e. Lease journal + `release-previous`
 `restore()` only releases leases the *currently running* engine object acquired, from memory —
@@ -612,6 +641,15 @@ See `CONTRIBUTING.md` for the commands. Two things worth knowing at the design l
   should still passively learn from foreign traffic where safe (server identity, fingerprints,
   marking a tracked foreign DISCOVER as answered) — the risk is on the *send/mutate* side, not
   observation. See §5g's closing bullet for the two real bugs this pattern was written to prevent.
+  **The ownership gate protects measurement, not just sending (2.7.3).** `_handle_offer()` used
+  to bump `self.offers`/`_offers_seen_any`/`_last_offer_ts` — the counters `offer_silence` (§5c)
+  reads to decide the pool has gone quiet — *before* checking `ours`, so any foreign OFFER on the
+  promiscuous BPF (another client's routine DHCP churn, a second scope on the segment) reset the
+  exhaustion clock and made `offer_silence` effectively unreachable on a busy segment. It is now
+  split into a passive half (server registry, the pool-size estimate, marking a tracked foreign
+  DISCOVER answered — all facts about the network, safe from anyone's packet) and an owned half
+  (the exhaustion counters and the REQUEST leg), with the ownership check between them. Any new
+  per-packet counter that feeds a halt signal or a verdict belongs in the owned half.
 - **JSON serialization**: always route event/report dicts through `jsonable()` — a raw `IPVersion`
   enum will crash `json.dumps`. Regression test exists.
 - **Ethernet source MAC** defaults to the per-client random MAC (`spoof_ethernet_src=True`) so

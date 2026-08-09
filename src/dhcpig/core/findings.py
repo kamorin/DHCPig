@@ -91,17 +91,6 @@ _CATALOG: dict[str, dict] = {
         "severity": "info",
         "recommendation": "",
     },
-    "SERVER_STOPPED_SERVING_TEST_CLIENTS": {
-        "title": ("Server stopped answering the test clients while still serving a new client"),
-        "verdict": INFO,
-        "severity": "medium",
-        "recommendation": (
-            "Consistent with DHCP rate-limiting, offer-table saturation "
-            "or anti-starvation protection rather than pool exhaustion. "
-            "A NAK burst just before offers ceased points at the server "
-            "re-offering already-pending addresses."
-        ),
-    },
     "DRY_RUN_SUMMARY": {
         "title": "Dry run: reconnaissance only, nothing sent that would take a lease",
         "verdict": INFO,
