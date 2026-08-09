@@ -17,6 +17,14 @@ is only what differs about doing that work from inside an agent session or a san
 - Git worktrees: if you're working from a checkout under `.git/worktrees` or similar (some tools
   create one per session/branch), treat it as the working copy for that session — it's a real
   checkout, not a sandbox mount, so ordinary git and file operations behave normally there.
+- This repo commonly has several such worktrees checked out at once (`git worktree list`).
+  `master` itself is normally checked out in the **primary** worktree (the repo's root clone),
+  not in any of the per-session ones — you can't `git checkout master` from inside a feature
+  worktree while it's checked out elsewhere. To land a feature branch on `master`: from the
+  feature worktree, `git fetch origin` and `git rebase master` (safe to do freely as long as
+  `git ls-remote --heads origin <branch>` shows the branch was never pushed — rebasing a branch
+  someone else might have pulled is a different, riskier thing); then, from wherever `master` is
+  actually checked out, `git merge --ff-only <branch>` and `git push origin master`.
 
 ## Running tests/lint
 This package requires **Python 3.11+** (`requires-python` in `pyproject.toml`). If the interpreter
@@ -41,6 +49,14 @@ the full command set (`mypy src/dhcpig/core`, `make lint`/`make test`).
 - With a real Python 3.11+ available: `python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"`,
   then run with `sudo .venv/bin/dhcpig ...` (raw sockets need root; `sudo` resets `PATH`, so use the
   full `.venv/bin/...` path rather than relying on an activated venv).
+- A fresh sandbox's system `python3` commonly has neither `pytest`/`ruff` nor `scapy` installed —
+  `ModuleNotFoundError: No module named pytest` there doesn't mean the interpreter is too old (check
+  `python3 --version` against the 3.11+ floor first); it means create the venv above and run the
+  suite through `.venv/bin/python3 -m pytest`/`-m ruff` instead of the bare interpreter.
+- `tests/unit/test_release_previous.py::test_no_recovery_needed_when_a_new_client_already_gets_an_address`
+  has been observed failing on a clean, unmodified checkout (confirmed via `git stash`, unrelated to
+  any in-progress change) — before treating a failure there as a regression you introduced, check it
+  against `git stash`/an unmodified tree first.
 - The one integration test (`tests/integration/test_exhaust_live.py`, `make integration`) needs
   root + Linux (a veth pair + fake DHCP server) and is deselected by default (`-m "not integration"`
   in `pyproject.toml`) — it's not runnable in most sandboxes; verify it on a real, root-accessible
