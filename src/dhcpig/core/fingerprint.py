@@ -9,8 +9,8 @@ database. Fully offline, no API keys, no network calls.
 2. **option 60** (vendor class id), exact. Coarser — "MSFT 5.0" says Windows, not
    which Windows — so it scores below option 55, but it is still DHCP evidence from
    the host itself and sits far above a MAC lookup.
-3. **MAC OUI** alone (see `oui.py`) — no DHCP evidence at all, weak, but better than
-   a blank row for ARP-only neighbours.
+3. **MAC OUI** alone (`oui_lookup`, folded in below) — no DHCP evidence at all, weak,
+   but better than a blank row for ARP-only neighbours.
 
 The matching semantics (normalize the option-55 list, exact dict lookup, flag ambiguous
 multi-candidate fingerprints) mirror `data/satori-merge.py`'s `identify()` so a lookup
@@ -24,7 +24,6 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from importlib import resources
 
-from . import oui
 from .models import HostFingerprint
 from .packets import dhcp_option
 
@@ -201,7 +200,7 @@ def resolve(sig: Signature, role: str = "client") -> HostFingerprint:
         fp = lookup(sig, role)
         if fp is not None:
             if not fp.vendor:  # fill in the hardware vendor the DHCP data didn't carry
-                fp.vendor = oui.lookup(sig.mac)
+                fp.vendor = oui_lookup(sig.mac)
             return fp
     return from_mac(sig.mac, ip=sig.ip, role=role, raw_prl=sig.prl)
 
@@ -213,7 +212,7 @@ def from_mac(mac: str, ip: str = "", role: str = "client", raw_prl=None) -> Host
     OS/Device column. The hardware vendor is weak evidence — hence the low confidence — but
     it is far more useful than nothing.
     """
-    vendor = oui.lookup(mac)
+    vendor = oui_lookup(mac)
     return HostFingerprint(
         mac=mac,
         ip=ip,
@@ -226,3 +225,51 @@ def from_mac(mac: str, ip: str = "", role: str = "client", raw_prl=None) -> Host
         matched_via=f"oui:{mac[:8]}" if vendor else "unknown",
         raw_prl=list(raw_prl or []),
     )
+
+
+# --------------------------------------------------------------------------- MAC OUI -> vendor
+# Weakest signal (tier 3 in this module's docstring): who made the NIC, when there is no DHCP
+# evidence to fingerprint. Single offline source, no network/API: scapy's bundled Wireshark
+# `manuf` DB (~50k IEEE MA-L/MA-M/MA-S assignments). scapy is already our only runtime dependency.
+# Anything unresolved is checked for the locally-administered bit, which identifies
+# randomised/privacy MACs (modern phones, and DHCPig's own spoofed clients).
+
+LOCALLY_ADMINISTERED = "randomised/spoofed"
+
+
+def _normalize_mac(mac: str) -> str:
+    """'00:1A:2B:...' -> '001a2b...' (separators stripped, lowercased)."""
+    return mac.replace(":", "").replace("-", "").replace(".", "").lower()
+
+
+def _is_locally_administered(norm: str) -> bool:
+    try:
+        return bool(int(norm[:2], 16) & 0x02)
+    except (ValueError, IndexError):
+        return False
+
+
+@lru_cache(maxsize=8192)
+def oui_lookup(mac: str) -> str | None:
+    """Hardware vendor for a MAC, or None if genuinely unknown."""
+    if not mac:
+        return None
+    norm = _normalize_mac(mac)
+    if len(norm) < 6:
+        return None
+
+    try:
+        from scapy.all import conf
+
+        # scapy expects canonical colon-separated form, so feed it the normalised MAC
+        canonical = ":".join(norm[i : i + 2] for i in range(0, 12, 2))
+        found = conf.manufdb._get_manuf(canonical)
+        # scapy hands back the MAC itself when it has no match — that is not a vendor
+        if found and _normalize_mac(str(found)) != norm:
+            return str(found)
+    except Exception:
+        pass
+
+    if _is_locally_administered(norm):
+        return LOCALLY_ADMINISTERED
+    return None

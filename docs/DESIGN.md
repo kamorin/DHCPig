@@ -44,8 +44,7 @@ Both front ends drive the SAME `DhcpEngine` and never touch scapy directly.
 | `core/events.py` | `EventBus` (thread-safe), event dataclasses (including `ControlDetected`, `ForeignDiscover`, `ClientEvicted`), `to_dict()` + `jsonable()` (recursively converts enums/bytes/Path so JSON never breaks). `to_dict()` also attaches `finding.summary` (via `core/findings.finding_summary_lines()`) to every `FindingRaised` payload — §5a. |
 | `core/safety.py` | `ScopeGuard`, `RateLimiter` (token bucket — still wired through `_send()` for every mode; §5c for why exhaust and release no longer take `--rate`), `Cleanup` (tracks leases for restore). No authorization gate (§5). |
 | `core/sniffer.py` | thin `AsyncSniffer` wrapper. BPF is `port 67 or port 68`, both directions — needed to observe foreign DISCOVERs and DHCPDECLINEs (§5f, §8). |
-| `core/fingerprint.py` | `extract_signature()` + `resolve()`: exact option-55 match against `data/satori_dhcp_fingerprints.json`, then exact option-60 vendor class, else `from_mac()` OUI-only. `DB_VERSION`. |
-| `core/oui.py` | MAC → hardware vendor. scapy's bundled Wireshark/IEEE `manuf` DB (~50k) only; locally-administered MACs labelled as randomised. |
+| `core/fingerprint.py` | `extract_signature()` + `resolve()`: exact option-55 match against `data/satori_dhcp_fingerprints.json`, then exact option-60 vendor class, else `from_mac()` OUI-only. `DB_VERSION`. MAC → hardware vendor OUI lookup (`oui_lookup`, scapy's bundled Wireshark/IEEE `manuf` DB, ~50k entries; locally-administered MACs labelled as randomised) is folded in here as the weakest tier. |
 | `core/reporting.py` | `SessionRecorder` → JSON/CSV/HTML (`render()` / `export()`, dispatching on the format the CLI's `--report` file extension or web UI's Report tab asks for). Neighbors deduped by MAC. Tracks `final_status` from `SessionEnded` to surface the pool estimate in reports. `finding_summary_lines()`/`EVIDENCE_SKIP` live in `core/findings.py`, re-exported here for `cli/render.py` and existing tests. |
 | `core/netutils.py` | iface enumeration, `iface_network_cidr()` (scope auto-fill), `default_gateway()` (release-phase/eviction target exclusion via `_release_gateway()`), `link_is_up()` (carrier poll for `link_down` halt detection — `None` fail-open, §5c), IP math, `random_mac()`. `random_mac()`/`iface_network_cidr()` are monkeypatched by source path in tests (`dhcpig.core.netutils.*`) — `engine.py` calls them as `netutils.random_mac()` etc, never `from .netutils import random_mac`, or the patch silently stops working. Same reasoning applies to `scapy.all.get_if_hwaddr`/`scapy.all.srp`, which stay function-local imports in `engine.py` for the same reason. |
 | `core/journal.py` | Lease journal for recovery (§5e): append-only JSONL, `default_path()` (XDG state dir, never `/var/lib`), `record_ack`/`record_released`, `load_open_leases()` (never raises — crash-tolerant). Powers `Mode.RELEASE_PREVIOUS`. |
@@ -723,7 +722,7 @@ until that changes.
   matcher than the dict lookup in `core/fingerprint.py`; add them in both places together if
   wanted.
 - **Active-scan** fingerprints the DHCP *server* via the INFORM reply; ARP-only neighbours now
-  get MAC-vendor identification (`core/oui.py`), but never an OS — that needs DHCP evidence.
+  get MAC-vendor identification (`fingerprint.oui_lookup`), but never an OS — that needs DHCP evidence.
 - **Integration coverage** only exercises exhaust; add netns cases for release/active-scan, and
   ideally one that actually exercises re-acquisition + eviction end to end. `release-previous`
   also needs one, but it requires rewriting the `FakeDhcpServer` fixture in
