@@ -1,3 +1,17 @@
+dhcpig (2.7.3-1) UNRELEASED; urgency=medium
+
+  * New upstream release 2.7.3 (bumps 2.7.2-1 below, never uploaded).
+    Nine fixes to the exhaustion verdict path from a penetration-testing review
+    of exhaust: a finding that could never fire was deleted, the control
+    transaction now retransmits instead of trusting a single UDP round trip,
+    and other verdict-accuracy fixes -- see upstream's CHANGELOG.md for the
+    full list. A subsequent internal refactor folded core/oui.py into
+    core/fingerprint.py (no behaviour change, no new files).
+  * No packaging change needed: same console scripts, runtime dependency,
+    bundled data files and test layout as 2.7.2.
+
+ -- Kevin Amorin <kamorin@gmail.com>  Sun, 09 Aug 2026 12:00:00 -0400
+
 dhcpig (2.7.2-1) UNRELEASED; urgency=medium
 
   * New upstream release 2.7.2 (bumps 2.7.0-1 below, never uploaded).
