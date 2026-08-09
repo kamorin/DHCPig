@@ -14,8 +14,20 @@ Run the web UI
 [Releases](https://github.com/kamorin/DHCPig/releases/latest) and install it —
 puts `dhcpig` and `dhcpig-web` on `PATH`, no venv needed:
 
-    sudo apt install ./dhcpig_*.deb
+    curl -LO https://github.com/kamorin/DHCPig/releases/download/v2.7.2/dhcpig_2.7.2-1_all.deb
+    sudo apt install ./dhcpig_2.7.2-1_all.deb
     sudo dhcpig-web --open
+
+**Global install** (any Linux, Python 3.11+, no venv):
+
+    git clone https://github.com/kamorin/DHCPig && cd DHCPig
+    sudo pip install --break-system-packages .
+    sudo dhcpig-web --open
+
+Installs straight into the system Python as root, so `sudo dhcpig-web` finds the command with
+no `.venv/bin/` path juggling. `--break-system-packages` overrides Debian/Kali's PEP 668 guard
+against pip touching system packages — that guard exists to protect `apt`-managed packages, not
+because this install is unusual; the `.deb` or a venv avoid needing it at all.
 
 **From source** (any Linux, Python 3.11+):
 
@@ -25,8 +37,8 @@ puts `dhcpig` and `dhcpig-web` on `PATH`, no venv needed:
 
 Open the printed `http://127.0.0.1:8787/?token=...` URL. Three gotchas:
 
-* **Root is required either way** (raw sockets). From source, use the full `.venv/bin/` path
-  — `sudo` resets `PATH`.
+* **Root is required either way** (raw sockets). From source (venv), use the full `.venv/bin/`
+  path — `sudo` resets `PATH`.
 * **The `?token=` is mandatory.** Without it you get 401s and a blank page.
 * **Headless?** It binds loopback on purpose. Forward it, don't re-bind:
   `ssh -L 8787:127.0.0.1:8787 user@<vm-ip>`. Drop `--open`.
@@ -50,7 +62,7 @@ CLI
 | `--no-evict` | skip the ARP-conflict phase |
 | `--report FILE` | write a session report to `FILE` when the run ends; format follows `FILE`'s extension (`.json`/`.csv`/`.html`, default JSON) |
 | `--client-mac MAC` | `exhaust` only; use this MAC instead of a random one (repeatable — rotates through the list) |
-| `--request-option SPEC` | `exhaust` only; DHCP options to request, e.g. `12,14-19,23` (default: 0-79) |
+| `--request-option SPEC` | `exhaust`/`active-scan`; DHCP option-55 (parameter-request-list) content to send, e.g. `12,14-19,23` (default: the built-in macOS-order profile) |
 | `--no-spoof-eth-src` | `exhaust` only; use the real NIC MAC as the Ethernet source for every frame (Wi-Fi; APs drop frames whose source MAC isn't the associated station) |
 
 `-v0` prints results only; `-v3` adds packet-level debug. Full flag reference: `man dhcpig`
@@ -75,7 +87,7 @@ What each mode does
 **Post Exhaustion / Reset** (`release-previous`) — recovery
 * Replays the on-disk lease journal and hands back every address this tool took
 * Filtered to this interface, network and DHCP server; `--max-age` drops stale entries
-* Sends nothing at all if a new client can already get an address
+* Records whether the pool was already exhausted, but releases journalled leases either way
 * **Verdict:** is the pool usable again?
 
 **Find Neighbors** (`active-scan`) — read-only

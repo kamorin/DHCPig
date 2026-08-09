@@ -32,15 +32,25 @@ def _hostname() -> str:
 # --------------------------------------------------------------------------- builders
 
 
-def build_discover_v4(mac: str, xid: int, src_mac: str, requested_addr: str | None = None) -> Ether:
+def build_discover_v4(
+    mac: str,
+    xid: int,
+    src_mac: str,
+    requested_addr: str | None = None,
+    request_options: list[int] | None = None,
+) -> Ether:
     """`requested_addr` emits DHCP option 50 (RFC 2131 Table 5 permits it in a DISCOVER) --
     used by targeted re-acquisition (2.3) to ask the server for a specific, just-released
     address rather than whatever it would otherwise hand out. Servers generally honour it when
     the address is free; nothing here assumes they do -- the caller must still check the OFFER.
+
+    `request_options` overrides the option-55 (parameter-request-list) content; `None` keeps the
+    built-in `_MACOS_PRL`. The control transaction's own DISCOVER never passes this -- it must
+    stay a vanilla, unmodified client, because it's the baseline the verdict is measured against.
     """
     opts = [
         ("message-type", "discover"),
-        ("param_req_list", *_MACOS_PRL),
+        ("param_req_list", *(request_options or _MACOS_PRL)),
         ("max_dhcp_size", 1500),
         ("client_id", b"\x01" + mac2str(mac)),
         ("lease_time", 10000),
@@ -141,12 +151,18 @@ def build_release_v4(
     )
 
 
-def build_inform_v4(mac: str, ciaddr: str, xid: int, request_options=None) -> Ether:
+def build_inform_v4(
+    mac: str, ciaddr: str, xid: int, request_options: list[int] | None = None
+) -> Ether:
     """DHCP INFORM: sent by a host that already has an IP to actively pull config from the
-    server (used by active-scan to discover/fingerprint DHCP servers). Takes no lease."""
+    server (used by active-scan to discover/fingerprint DHCP servers). Takes no lease.
+
+    `request_options` overrides the option-55 content, same as `build_discover_v4()`; `None`
+    keeps the built-in `_MACOS_PRL`.
+    """
     opts = [
         ("message-type", "inform"),
-        ("param_req_list", *_MACOS_PRL),
+        ("param_req_list", *(request_options or _MACOS_PRL)),
         ("client_id", b"\x01" + mac2str(mac)),
         "end",
     ]

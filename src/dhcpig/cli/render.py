@@ -267,11 +267,11 @@ def status_summary(s: dict) -> str:
             return
         chunk = f"{label} {total} (+{delta} in {w:.0f}s"
         if rate and s.get(rate) is not None:
-            chunk += f", {s[rate]}/s"
+            chunk += f", {s[rate]}/min"
         parts.append(chunk + ")")
 
-    col("leases", "leases", "lease_pps")
-    col("discovers", "discovers", "discover_pps")
+    col("leases", "leases", "lease_ppm")
+    col("discovers", "discovers", "discover_ppm")
     col("offers", "offers")
     col("naks", "naks")
     col("releases", "releases")

@@ -83,7 +83,11 @@ class SessionConfig:
     # at Layer 2 (exercises port-security / DHCP snooping). Set False for Wi-Fi (APs drop
     # frames with foreign/multiple source MACs) — then only the BOOTP chaddr is randomized.
     spoof_ethernet_src: bool = True
-    request_options: list[int] = field(default_factory=lambda: list(range(80)))
+    # DHCP option 55 (parameter-request-list) content for the sending client, on exhaust and
+    # active-scan (`--request-option`, e.g. "12,14-19,23"). `None` uses the built-in macOS-order
+    # profile (`packets._MACOS_PRL`) -- never applied to the control transaction's own DISCOVER,
+    # which must stay a vanilla client since it's the baseline the verdict is measured against.
+    request_options: list[int] | None = None
     rate_limit_pps: int = 7  # the bound on how fast a run can consume a pool
     dry_run: bool = False
     # Hard "never touch a socket" switch, distinct from dry_run (2.3). dry_run now runs every
@@ -100,6 +104,13 @@ class SessionConfig:
     # real NIC MAC always runs before and after exhausting — it's what separates "the network
     # blocked us" (PASS) from "the test was broken" (INCONCLUSIVE), and a run without it can't
     # produce a trustworthy verdict. Don't re-add a `control` field without asking.
+    # How many times a control leg retransmits its DISCOVER/REQUEST before giving up (2.7.3).
+    # The verdict is derived from a single control leg's success/failure -- one lost UDP packet
+    # used to be able to flip DHCP_STARVATION_ATTAINED to a false FAIL, or
+    # NEW_CLIENT_BLOCKED_AT_BASELINE to a false PASS. Retried only on "nothing came back"; a NAK
+    # is a definite answer and stops immediately (§5a). Same mac/xid across attempts -- this is
+    # one logical transaction being retransmitted, per RFC 2131, not a new one each time.
+    control_attempts: int = 3
     # The pre-run ARP sweep is unconditional -- there is no `arp_sweep` field and no
     # --no-arp-scan flag. Every phase after it reads the inventory it builds (release targets,
     # re-acquisition, eviction, the NeighborSummary roll-call), so turning it off silently
@@ -279,6 +290,10 @@ class ControlOutcome:
     lease_time: int | None = None
     elapsed: float = 0.0
     reason: str = ""  # why it was skipped or failed
+    # how many DISCOVER attempts this transaction made (0 if skipped before ever sending one) --
+    # the verdict is derived from this leg's success/failure, so a report showing a FAIL or a
+    # "blocked at baseline" PASS must be able to say it wasn't just one lost packet (§5a).
+    attempts: int = 0
 
 
 # Finding verdicts. PASS = a defense demonstrably worked; FAIL = the network did not defend;
