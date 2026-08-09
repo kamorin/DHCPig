@@ -40,6 +40,31 @@ def test_discover_carries_option50_when_requested_addr_given():
     # message-type and client_id must both still be present -- option 50 is additive
 
 
+# ---------------------------------------------------------------- --request-option (2.7.3)
+def test_discover_uses_macos_prl_by_default():
+    pkt = packets.build_discover_v4("de:ad:00:00:00:10", 0x1001, "de:ad:00:00:00:10")
+    assert packets.dhcp_option(pkt[DHCP].options, "param_req_list") == packets._MACOS_PRL
+
+
+def test_discover_carries_the_given_request_options_when_provided():
+    pkt = packets.build_discover_v4(
+        "de:ad:00:00:00:11", 0x1002, "de:ad:00:00:00:11", request_options=[1, 3, 6]
+    )
+    assert packets.dhcp_option(pkt[DHCP].options, "param_req_list") == (1, 3, 6)
+
+
+def test_inform_uses_macos_prl_by_default():
+    pkt = packets.build_inform_v4("de:ad:00:00:00:12", "192.168.1.50", 0x1003)
+    assert packets.dhcp_option(pkt[DHCP].options, "param_req_list") == packets._MACOS_PRL
+
+
+def test_inform_carries_the_given_request_options_when_provided():
+    pkt = packets.build_inform_v4(
+        "de:ad:00:00:00:13", "192.168.1.50", 0x1004, request_options=[12, 15]
+    )
+    assert packets.dhcp_option(pkt[DHCP].options, "param_req_list") == (12, 15)
+
+
 # ---------------------------------------------------------------- packet_hostname (2.3)
 def test_packet_hostname_decodes_our_own_discover_and_request():
     """Our own DISCOVER/REQUEST always carry a random hostname (option 12) -- packet_hostname()

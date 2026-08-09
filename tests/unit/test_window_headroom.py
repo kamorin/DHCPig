@@ -71,6 +71,71 @@ def test_first_offer_wins_later_offers_do_not_override_it(monkeypatch):
     assert est.size == 1022
 
 
+# ---------------------------------------------------------------- observed_span (2.7.3)
+def test_observed_span_needs_at_least_eight_samples(monkeypatch):
+    """A handful of offers must not be mistaken for the whole pool -- below the sample
+    threshold, resolution falls back to the subnet-mask estimate."""
+    eng, _ = _engine(monkeypatch)
+    for i in range(7):
+        eng._note_offer_for_pool_estimate(f"192.168.4.{20 + i}", "255.255.252.0")  # a /22
+    est = eng._estimate_pool()
+    assert est.source == "observed"  # not yet observed_span
+    assert est.size == 1022
+
+
+def test_observed_span_is_a_measured_lower_bound_once_enough_samples_land(monkeypatch):
+    eng, _ = _engine(monkeypatch)
+    for ip in [
+        "192.168.4.20",
+        "192.168.4.25",
+        "192.168.4.30",
+        "192.168.4.35",
+        "192.168.4.40",
+        "192.168.4.45",
+        "192.168.4.50",
+        "192.168.4.60",  # 8th sample, hits the threshold
+    ]:
+        eng._note_offer_for_pool_estimate(ip, "255.255.252.0")  # a /22
+    est = eng._estimate_pool()
+    assert est.source == "observed_span"
+    assert est.is_estimate is True
+    assert est.size == 41  # .20 .. .60 inclusive
+    assert "192.168.4.20" in est.detail and "192.168.4.60" in est.detail
+
+
+def test_observed_span_ignores_addresses_outside_the_first_known_subnet(monkeypatch):
+    """A second scope on the segment must not widen the first scope's span."""
+    eng, _ = _engine(monkeypatch)
+    for i in range(8):
+        eng._note_offer_for_pool_estimate(f"192.168.4.{20 + i}", "255.255.252.0")  # a /22
+    eng._note_offer_for_pool_estimate("10.0.0.200", "255.255.255.0")  # different scope entirely
+    est = eng._estimate_pool()
+    assert est.source == "observed_span"
+    assert est.size == 8  # unwidened by the out-of-subnet address
+
+
+def test_explicit_scope_still_wins_over_an_observed_span(monkeypatch):
+    eng, _ = _engine(monkeypatch, scope_cidrs=["10.0.0.0/29"])  # size 6
+    for i in range(8):
+        eng._note_offer_for_pool_estimate(f"192.168.4.{20 + i}", "255.255.252.0")
+    est = eng._estimate_pool()
+    assert est.source == "scope"
+    assert est.size == 6
+
+
+def test_pool_headroom_low_not_raised_from_an_observed_span_lower_bound(monkeypatch):
+    """observed_span is a lower bound, not the real denominator -- utilization against it would
+    read artificially high and manufacture a finding the network doesn't deserve."""
+    eng, events = _engine(monkeypatch)
+    eng._started = time.time()
+    for i in range(8):
+        eng._note_offer_for_pool_estimate(f"192.168.4.{20 + i}", "255.255.252.0")  # span of 8
+    eng._baseline_neighbor_count = 8  # would read as 100% utilization of the span
+    eng._finalize_findings()
+    ids = [e.finding.id for e in events if isinstance(e, ev.FindingRaised)]
+    assert "POOL_HEADROOM_LOW" not in ids
+
+
 # ---------------------------------------------------------------- headroom
 def test_headroom_is_none_when_the_estimate_is_unknown(monkeypatch):
     eng, _ = _engine(monkeypatch)
