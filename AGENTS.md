@@ -66,93 +66,19 @@ the full command set (`mypy src/dhcpig/core`, `make lint`/`make test`).
   real wheel and confirms the fingerprint data file shipped inside it. Opening a PR against `master`
   triggers it automatically — no separate step needed.
 
-## Releasing to Debian (and thereby Kali)
+## Debian / Kali packaging
 
-Trigger: **"package this up for kali"**. Kali carries no fork of this package — its own packaging
-repo (`gitlab.com/kalilinux/packages/dhcpig`) is archived — so it imports straight from Debian. The
-whole job is therefore "get a new revision into Debian unstable"; Kali follows by itself (unstable
-→ testing after ~5 days → kali-rolling, so 1–3 weeks). **There is nothing to file with Kali, ever.**
+The Debian packaging is **not** in this repo. `packaging/debian/` here is stale and divergent from
+what Debian actually ships (wrong Maintainer, old debhelper/Standards, a `libpcap0.8` dependency
+Debian dropped) — don't build from it and don't sync it. The real packaging is the
+git-buildpackage repo at `salsa.debian.org/pkg-security-team/dhcpig`
+(`debian/master`, `upstream/latest`, `pristine-tar`).
 
-### The packaging is not in this repo
-It is **not** `packaging/debian/` here — that directory is stale and divergent (wrong Maintainer,
-old debhelper/Standards, a `libpcap0.8` dependency Debian dropped). Don't build from it and don't
-sync it. The real packaging is a git-buildpackage repo:
-
-- remote: `git@salsa.debian.org:pkg-security-team/dhcpig.git` (team-maintained; Kevin has salsa
-  Developer role, so routine pushes work directly — no fork or MR needed)
-- local clone: `~/Documents/code/dhcpig-debian/repo`
-- branches: `debian/master`, `upstream/latest`, `pristine-tar` (DEP-14 + pristine-tar, `3.0 (quilt)`)
-
-### The 10 steps
-
-**No Debian bug is needed.** #1143491 existed only because it was filed as a wishlist request for
-the 2.x rewrite. A routine version bump needs no BTS involvement at all — the changelog entry is
-just "New upstream release X.Y.Z." with no `Closes:`, and it goes straight to the team repo. Do not
-open a bug, and do not open a merge request either: direct push is correct for routine bumps.
-
-Preconditions: the version is **tagged and pushed on GitHub** (`vX.Y.Z`) — `debian/watch` finds
-GitHub tags via uscan — and **Docker is running**, because `gbp`, `uscan` and `dch` don't exist on
-macOS and the toolchain runs in a `debian:sid` container.
-
-| # | Step | Who |
-|---|------|-----|
-| 1 | Tag and push `vX.Y.Z` on GitHub | you |
-| 2 | Confirm Docker is running | you |
-| 3 | `~/Documents/code/dhcpig-debian/release.sh X.Y.Z` | agent |
-| 4 | `cd ~/Documents/code/dhcpig-debian/repo && git show HEAD` — review the changelog entry | agent |
-| 5 | `git push origin debian/master upstream/latest pristine-tar` | agent |
-| 6 | Confirm the salsa pipeline goes green on the pushed branch | agent |
-| 7 | Ask a DD to upload — salsa comment, or `#debian-security` on OFTC | you |
-| 8 | DD signs and `dput`s to unstable | DD |
-| 9 | Migrates to Debian testing (~5 days, urgency=medium, if no RC bug or autopkgtest regression) | automatic |
-| 10 | Kali imports from testing into kali-rolling | automatic |
-
-Steps 3–6 are the whole agent job. Step 7 is a one-line request. Steps 8–10 need nothing from you.
-
-`release.sh` builds a tooling image on first run (~90s, cached after), then inside it: uscan finds
-the tag, `gbp import-orig --uscan` imports to `upstream/latest`, commits pristine-tar data and
-merges to `debian/master`, `dch` adds the changelog entry, then it builds, runs lintian, removes
-build artefacts and commits.
-
-Note a GitLab MR merges **one** branch only. If a merge request is ever used instead of a direct
-push, `upstream/latest` and `pristine-tar` must still be pushed separately or the team repo cannot
-regenerate the orig tarball.
-
-### Then ask a DD to upload — the one step no agent can do
-Kevin is not a DD or DM and cannot upload to the archive. Salsa "Developer" is a GitLab role and
-has nothing to do with archive upload rights: uploads are GPG-signed and verified against the
-Debian keyring. A Debian Developer must sign and `dput`. Ask on the salsa repo or in
-`#debian-security` (OFTC); Alexandre Detiste (`@detiste-guest`) did the 2.7.3 upload and is the
-natural person to ask. A bug closes only when dak accepts the upload — `Closes:` never fires on a
-git merge.
-
-### Rules that keep this a one-command job
-- **Never create `debian/patches/`.** The package has no quilt patches, which is exactly why an
-  upstream bump is a single `gbp import-orig`. A patch has to be refreshed on every future release.
-  If Debian needs an upstream file changed, fix it upstream and cut a release instead.
-- **Don't reintroduce `Repacksuffix`/`Dversionmangle` in `debian/watch`** — nothing is excluded
-  from the tarball and no `+dfsg` revision was ever uploaded.
-- **Keep the team Maintainer** (`Debian Security Tools <team+pkg-security@tracker.debian.org>`) and
-  the existing Uploaders. Putting Kevin there reads as a package hijack.
-- **Direct-push routine version bumps only.** Anything that changes packaging should go via a
-  merge request.
-- For a **sponsored upload the contributor's name correctly stays in the changelog trailer**; the
-  sponsor's key signs the `.changes`. Don't tell a sponsor to change it.
-
-### Known false positives — don't chase these
-Salsa CI's merge-request test summary reports two failing lintian tags on every run:
-`source-nmu-has-incorrect-version-number` and `debian-news-entry-has-unknown-version`. Both are
-artefacts of salsa-ci rebuilding as `X.Y.Z-1+salsaci+<date>+1`, which trips the NMU check and
-desynchronises `debian/NEWS` from the mangled changelog. A real build is lintian-clean at
-`--display-info --pedantic`, and the `lintian` job itself passes — only the test-report widget is red.
-
-### Upstream fixes that would shrink the Debian side
-Each currently forces `debian/` to carry a workaround:
-- `packaging/dhcpig-web.desktop` uses `Categories=09-sniffing-spoofing`, a Kali-only category that
-  fails `desktop-file-validate`; Debian ships a corrected copy because of it.
-- No upstream `dhcpig-web.1` exists, so Debian supplies one — even though `dhcpig.1` already
-  cross-references it.
-- `packaging/dhcpig.1` still declares `.TH ... "dhcpig 2.5.0"`.
+Kali carries no fork; it imports from Debian testing automatically, so there is nothing to file
+with Kali. Two upstream fixes would let Debian drop workarounds it currently carries:
+`packaging/dhcpig-web.desktop` uses `Categories=09-sniffing-spoofing` (Kali-only, fails
+`desktop-file-validate`), and there is no upstream `dhcpig-web.1` even though `dhcpig.1`
+cross-references it.
 
 ## Docs in this repo
 - `docs/DESIGN.md` — the only design document; everything load-bearing from earlier planning docs
