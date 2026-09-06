@@ -152,7 +152,9 @@ def test_report_download_csv(server):
     assert r.status == 200
     assert r.getheader("Content-Type") == "text/csv"
     assert "attachment" in (r.getheader("Content-Disposition") or "")
-    assert body.splitlines()[0] == "kind,mac,ip,server_id,os,device,vendor,confidence"
+    lines = body.splitlines()
+    assert lines[0] == "time,id,verdict,severity,attck,title,summary"
+    assert "kind,mac,ip,server_id,os,device,vendor,confidence" in lines
     _req(addr, "POST", "/api/session/stop", token="TESTTOKEN", body={}, origin=o)
 
 

@@ -234,9 +234,9 @@ def test_report_path_extension_selects_the_written_format(tmp_path, monkeypatch)
         interface="lo", mode=Mode.RELEASE_NEIGHBORS, offline=True, report_path=csv_path
     )
     assert cli._run_session(cfg) == cli.EXIT_OK
-    assert csv_path.read_text().splitlines()[0] == (
-        "kind,mac,ip,server_id,os,device,vendor,confidence"
-    )
+    csv_lines = csv_path.read_text().splitlines()
+    assert csv_lines[0] == "time,id,verdict,severity,attck,title,summary"
+    assert "kind,mac,ip,server_id,os,device,vendor,confidence" in csv_lines
 
     html_path = tmp_path / "run.html"
     cfg = SessionConfig(
@@ -278,3 +278,61 @@ def test_exhaust_accepts_scope_so_copy_as_cli_round_trips():
     assert "--scope 192.168.4.0/22" in cmd
     args = cli.build_parser().parse_args(shlex.split(cmd)[1:])  # must not SystemExit
     assert cli.build_config(args).scope_cidrs == ["192.168.4.0/22"]
+
+
+class _StubEngine:
+    """Minimal stand-in for DhcpEngine, exposing only what _run_session() touches.
+
+    --fail-on is pure exit-code logic over the findings a run ended with, so these state the
+    findings directly rather than contriving a live run that happens to raise them.
+    """
+
+    def __init__(self, findings):
+        self.findings = findings
+        self.state = engine_mod.DONE
+        self.discovers, self.servers, self._threads = [], [], []
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
+
+    def status(self):
+        return dict.fromkeys(("leases", "servers", "naks", "releases", "arp_conflicts"), 0)
+
+
+def _rc_for(monkeypatch, verdicts, fail_on):
+    from dhcpig.core.models import Finding
+
+    findings = [Finding(id="X", title="t", verdict=v, severity="high") for v in verdicts]
+    monkeypatch.setattr(cli, "DhcpEngine", lambda cfg, bus: _StubEngine(findings))
+    cfg = SessionConfig(interface="lo", mode=Mode.RELEASE_NEIGHBORS, offline=True)
+    return cli._run_session(cfg, fail_on=fail_on)
+
+
+def test_fail_on_defaults_to_never_so_a_fail_finding_still_exits_zero(monkeypatch):
+    """Exit 0 has always meant "the run worked", and every existing caller reads it that way.
+    Carrying the verdict in the exit status is opt-in, never the default."""
+    assert _rc_for(monkeypatch, ["FAIL"], "never") == cli.EXIT_OK
+
+
+def test_fail_on_fail_exits_one_so_a_scoring_script_can_branch(monkeypatch):
+    assert _rc_for(monkeypatch, ["INFO", "FAIL"], "fail") == cli.EXIT_FINDING
+    assert _rc_for(monkeypatch, ["INFO", "PASS"], "fail") == cli.EXIT_OK
+
+
+def test_fail_on_inconclusive_is_the_wider_threshold(monkeypatch):
+    """An inconclusive run is a result a lab wants to catch -- usually a broken baseline, which
+    means the segment was never actually tested. --fail-on fail deliberately lets it pass."""
+    assert _rc_for(monkeypatch, ["INCONCLUSIVE"], "inconclusive") == cli.EXIT_FINDING
+    assert _rc_for(monkeypatch, ["INCONCLUSIVE"], "fail") == cli.EXIT_OK
+    assert _rc_for(monkeypatch, ["FAIL"], "inconclusive") == cli.EXIT_FINDING
+
+
+def test_fail_on_parses_on_every_mode_and_defaults_to_never():
+    for cmd in ("exhaust", "scan", "active-scan", "release", "release-previous"):
+        assert cli.build_parser().parse_args([cmd, "eth1"]).fail_on == "never"
+    assert cli.build_parser().parse_args(["exhaust", "eth1", "--fail-on", "fail"]).fail_on == "fail"
+    with pytest.raises(SystemExit):  # not a free-form string
+        cli.build_parser().parse_args(["exhaust", "eth1", "--fail-on", "high"])

@@ -1,7 +1,7 @@
 """dhcpig command-line interface (V1.0).
 
 Subcommands: exhaust | scan | active-scan | release | release-previous | restore | ifaces | report
-Exit codes: 0 ok · 2 bad args · 3 no DHCP server · 130 interrupted
+Exit codes: 0 ok · 1 --fail-on threshold met · 2 bad args · 3 no DHCP server · 130 interrupted
 """
 
 from __future__ import annotations
@@ -27,6 +27,13 @@ from ..core.reporting import SessionRecorder
 from .render import Renderer
 
 EXIT_OK, EXIT_BADARGS, EXIT_NOSERVER, EXIT_INTERRUPT = 0, 2, 3, 130
+# Opt-in only (--fail-on): by default the exit status says whether the *run* worked, which is
+# what every existing caller reads it as. A lab or CI scoring script asks for the verdict.
+EXIT_FINDING = 1
+
+# Worst-first ordering over Finding.verdict, shared by the "top finding" line and --fail-on.
+_VERDICT_RANK = {"FAIL": 3, "INCONCLUSIVE": 2, "PASS": 1, "INFO": 0}
+_FAIL_ON_RANK = {"fail": _VERDICT_RANK["FAIL"], "inconclusive": _VERDICT_RANK["INCONCLUSIVE"]}
 
 _MODE_BY_CMD = {
     "exhaust": Mode.EXHAUST,
@@ -68,6 +75,14 @@ def build_parser() -> argparse.ArgumentParser:
             default=5.0,
             metavar="SEC",
             help="periodic status line with running stats (default 5s; 0 disables)",
+        )
+        sp.add_argument(
+            "--fail-on",
+            choices=tuple(_FAIL_ON_RANK) + ("never",),
+            default="never",
+            help="exit 1 when a finding at this verdict or worse was raised, so a lab/CI "
+            "scoring script can branch on the result (default: never -- exit status reflects "
+            "only whether the run itself worked)",
         )
 
     ex = sub.add_parser(
@@ -301,7 +316,7 @@ def _cmd_report(path: str) -> int:
     return EXIT_OK
 
 
-def _run_session(cfg: SessionConfig) -> int:
+def _run_session(cfg: SessionConfig, fail_on: str = "never") -> int:
     bus = EventBus()
     recorder = SessionRecorder(cfg)
     renderer = Renderer(verbosity=cfg.verbosity)
@@ -357,10 +372,20 @@ def _run_session(cfg: SessionConfig) -> int:
         f"releases={st['releases']} arp_conflicts={st['arp_conflicts']}"
     )
     if engine.findings:
-        worst = {"FAIL": 3, "INCONCLUSIVE": 2, "PASS": 1, "INFO": 0}
-        top = max(engine.findings, key=lambda f: worst.get(f.verdict, 0))
+        top = max(engine.findings, key=lambda f: _VERDICT_RANK.get(f.verdict, 0))
         print(f"[==] verdict: {top.verdict} — {top.title}")
         print(f"[==] {len(engine.findings)} finding(s); see the report for full evidence")
+        # Only ever *adds* a non-zero status to an otherwise-clean run: a run that already
+        # failed to execute (bad args, no server, interrupted) keeps its own code, which says
+        # something more useful than "a finding was raised".
+        threshold = _FAIL_ON_RANK.get(fail_on)
+        if (
+            rc == EXIT_OK
+            and threshold is not None
+            and _VERDICT_RANK.get(top.verdict, 0) >= threshold
+        ):
+            rc = EXIT_FINDING
+            print(f"[==] exiting {EXIT_FINDING}: --fail-on {fail_on}")
     return rc
 
 
@@ -377,7 +402,7 @@ def main(argv: list[str] | None = None) -> int:
         print("[--] restore complete")
         return EXIT_OK
     cfg = build_config(args)
-    return _run_session(cfg)
+    return _run_session(cfg, fail_on=getattr(args, "fail_on", "never"))
 
 
 if __name__ == "__main__":  # pragma: no cover
