@@ -1,0 +1,68 @@
+.TH DHCPIG-WEB 1 "2026-08-22" "dhcpig 2.7.3" "User Commands"
+.SH NAME
+dhcpig\-web \- local web user interface for dhcpig
+.SH SYNOPSIS
+.B dhcpig-web
+.RI [ options ]
+.SH DESCRIPTION
+.B dhcpig-web
+starts a small HTTP server presenting a local web interface to
+.BR dhcpig (1):
+a dashboard for launching scans and exhaustion runs, watching traffic, and
+reviewing session reports.
+.PP
+The server uses only the Python standard library. It binds to the loopback
+interface by default and prints a URL containing a randomly generated session
+token; that token is required to reach the interface.
+.PP
+Because the underlying tool sends raw frames,
+.B dhcpig-web
+must run as root. The shipped desktop entry launches it through
+.BR pkexec (1).
+.SH OPTIONS
+.TP
+.BI \-\-bind " ADDRESS"
+Bind to
+.IR ADDRESS .
+Defaults to
+.BR 127.0.0.1 .
+See
+.B SECURITY
+below before changing this.
+.TP
+.BI \-\-port " PORT"
+Listen on
+.IR PORT .
+Defaults to
+.BR 8787 .
+.TP
+.B \-\-open
+Open a browser at the tokenized URL once the server is listening. This is the
+default.
+.TP
+.B \-\-no\-open
+Do not open a browser automatically; print the URL only.
+.TP
+.B \-h ", " \-\-help
+Show a usage summary and exit.
+.SH SECURITY
+The web interface is the control plane for a tool that disrupts a local
+network. Binding it to anything other than a loopback address exposes that
+control plane to every host which can reach the address, guarded only by the
+session token. To reach the interface from another machine, forward a local
+port over SSH instead:
+.PP
+.RS
+.B ssh \-L 8787:127.0.0.1:8787 host
+.RE
+.PP
+A warning is printed when a non-loopback bind address is used.
+.SH EXIT STATUS
+.TP
+.B 0
+The server shut down normally.
+.SH SEE ALSO
+.BR dhcpig (1),
+.BR pkexec (1)
+.SH AUTHOR
+Kevin Amorin.

@@ -1,17 +1,20 @@
 # Packaging
 
-## Debian / Kali `.deb`
+## Debian / Kali
 
-The `debian/` files build a `.deb` that installs the `dhcpig` and `dhcpig-web` console scripts
-plus the desktop launcher under **Applications → 09 Sniffing/Spoofing**.
+**The Debian packaging is not in this repo.** It lives in the Debian Security Tools team's
+git-buildpackage repository:
 
-```bash
-sudo apt install devscripts debhelper dh-python python3-hatchling python3-scapy
-dpkg-buildpackage -us -uc -b
-sudo apt install ../dhcpig_2.0.0_all.deb
-```
+    https://salsa.debian.org/pkg-security-team/dhcpig
 
-Runtime deps are only `python3`, `python3-scapy`, `libpcap0.8` — the web UI is pure stdlib.
+Kali carries no fork of its own — it imports the package from Debian testing — so there is
+nothing separate to file or maintain for Kali.
+
+The `debian/` directory beside this file is a stale leftover that has diverged from what Debian
+actually ships. Don't build from it and don't sync it upstream; use the salsa repository above.
+
+Runtime dependencies of the built package are `python3` and `python3-scapy`. The web UI is pure
+standard library and adds none.
 
 ## PyPI / pipx
 
@@ -19,8 +22,15 @@ Runtime deps are only `python3`, `python3-scapy`, `libpcap0.8` — the web UI is
 pipx install "dhcpig"          # CLI + web UI (web has no extra deps)
 ```
 
+## Manual pages
+
+`dhcpig.1` and `dhcpig-web.1` are shipped here and installed by the Debian package.
+
 ## Desktop launcher
 
-`dhcpig-web.desktop` runs `pkexec dhcpig-web --open` (root is required for raw sockets) and
-appears in the Kali menu under Sniffing/Spoofing. The server stays loopback-bound and prints
-a tokenized URL; the launcher opens the browser to it.
+`dhcpig-web.desktop` runs `pkexec dhcpig-web --open`, since root is required for raw sockets, and
+appears in the Kali menu under Sniffing/Spoofing. The server stays loopback-bound and prints a
+tokenized URL; the launcher opens a browser to it.
+
+Note the `Categories=09-sniffing-spoofing` value is Kali-specific and is not valid under the
+freedesktop menu specification, so Debian ships a corrected copy of this file.

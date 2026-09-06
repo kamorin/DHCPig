@@ -1,4 +1,4 @@
-.TH DHCPIG 1 "2026-08-01" "dhcpig 2.5.0" "User Commands"
+.TH DHCPIG 1 "2026-08-22" "dhcpig 2.7.3" "User Commands"
 .SH NAME
 dhcpig \- DHCP exhaustion / network-hardening validation tool (whitehat)
 .SH SYNOPSIS
@@ -57,7 +57,7 @@ fingerprint the DHCP server(s). Non-destructive, but
 .B DESTRUCTIVE.
 DHCPRELEASE every in-scope, ARP-discovered neighbour's lease, re-acquire
 the freed addresses by name (DHCP option 50), then contest ownership of
-what it took with forged ARP conflicts (RFC 5227 \(sc2.4). The pool itself
+what it took with forged ARP conflicts (RFC 5227 section 2.4). The pool itself
 is left intact, so most hosts can immediately get a new address; the
 verdict is whether any host lost its address and failed to get a new one.
 .TP
@@ -159,7 +159,7 @@ has nothing to recover with if this run is interrupted.
 .TP
 .B \-\-no\-evict
 Skip the ARP-conflict eviction phase against re-acquired addresses
-(default: run it). See RFC 5227 \(sc2.4.
+(default: run it). See RFC 5227 section 2.4.
 .TP
 .B \-\-no\-race\-freed
 Skip firing a targeted DISCOVER the moment a live foreign DHCPNAK or
