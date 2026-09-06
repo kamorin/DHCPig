@@ -234,9 +234,10 @@ def test_report_path_extension_selects_the_written_format(tmp_path, monkeypatch)
         interface="lo", mode=Mode.RELEASE_NEIGHBORS, offline=True, report_path=csv_path
     )
     assert cli._run_session(cfg) == cli.EXIT_OK
-    csv_lines = csv_path.read_text().splitlines()
-    assert csv_lines[0] == "time,id,verdict,severity,attck,title,summary"
-    assert "kind,mac,ip,server_id,os,device,vendor,confidence" in csv_lines
+    assert csv_path.read_text().splitlines()[0] == (
+        "section,time,id,verdict,severity,attck,title,summary,"
+        "kind,mac,ip,server_id,os,device,vendor,confidence"
+    )
 
     html_path = tmp_path / "run.html"
     cfg = SessionConfig(

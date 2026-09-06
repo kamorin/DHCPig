@@ -102,8 +102,10 @@ when the run ends. Format is chosen from
 extension
 .RI ( .json / .csv / .html ;
 anything else falls back to JSON).
-The CSV export is two sections in one file \- the findings, then a blank
-line, then the host inventory.
+The CSV export carries the run's findings and the host inventory, one row
+each, discriminated by a leading
+.I section
+column.
 .TP
 .BI \-v ", " \-\-verbosity " N"
 Output detail, 0\(en3 (default 2). 0 prints results only (findings and the

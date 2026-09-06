@@ -19,6 +19,10 @@ def test_build_carries_the_mapping_onto_the_finding():
     assert build("CLIENTS_EVICTED_FROM_ADDRESSES", {}).attck == ["T1557.002"]  # forged ARP
     assert build("DHCP_STARVATION_ATTAINED", {}).attck == ["T1498"]  # pool drained
     assert build("NEIGHBOR_LEASES_RELEASED", {}).attck == ["T1557.003"]  # spoken for elsewhere
+    # The mapping says which technique a finding ASSESSES, not that it succeeded -- so the PASS
+    # finding carries the same id as the FAIL one. Deliberate and easy to mistake for a bug:
+    # dropping it would leave the report able to express only failures. See findings.ATTCK.
+    assert build("DHCP_STARVATION_NOT_ATTAINED", {}).attck == ["T1498"]  # PASS, same technique
 
 
 def test_findings_that_describe_no_adversary_behaviour_are_unmapped():

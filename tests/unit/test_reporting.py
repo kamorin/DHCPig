@@ -1,4 +1,5 @@
 import json
+import time
 
 from dhcpig import __version__
 from dhcpig.core import events as ev
@@ -83,14 +84,16 @@ def _recorder_with_data():
 
 
 def test_render_csv():
-    """Two sections: findings first, then the inventory. The findings half used to be missing
-    entirely, so a CSV export dropped every verdict the run existed to produce."""
+    """Findings and inventory under one header, tagged by `section`. The findings half used to be
+    missing entirely, so a CSV export dropped every verdict the run existed to produce."""
     text, ctype = _recorder_with_data().render("csv")
     assert ctype == "text/csv"
     lines = text.strip().splitlines()
-    assert lines[0] == "time,id,verdict,severity,attck,title,summary"
-    assert "kind,mac,ip,server_id,os,device,vendor,confidence" in lines
-    assert any(row.startswith("lease,de:ad:00:00:00:01,10.0.0.5") for row in lines)
+    assert lines[0] == (
+        "section,time,id,verdict,severity,attck,title,summary,"
+        "kind,mac,ip,server_id,os,device,vendor,confidence"
+    )
+    assert any(",lease,de:ad:00:00:00:01,10.0.0.5" in row for row in lines[1:])
 
 
 def test_render_html():
@@ -106,13 +109,31 @@ def test_render_bad_format():
         _recorder_with_data().render("pdf")
 
 
-def test_report_carries_iso_timestamps_alongside_the_epochs():
-    """The epochs stay (existing consumers read them); the strings are for the human lining a
-    run up against switch/DHCP-server logs, who should not convert a float by hand."""
-    data = SessionRecorder(SessionConfig(interface="eth1")).to_dict()
-    assert data["started_at_iso"].endswith("+00:00")  # UTC, not an ambiguous local time
-    assert data["ended_at_iso"] >= data["started_at_iso"]
-    assert isinstance(data["started_at"], float) and isinstance(data["ended_at"], float)
+def test_report_timestamps_belong_to_the_run_not_the_render():
+    """Three things at once, because they are one behaviour: the epochs keep their existing
+    consumers and gain UTC strings for the human correlating against switch/DHCP logs; a
+    finding is stamped when raised and stays stamped through rendering; and `ended_at` comes
+    from SessionEnded, so the web UI rendering a report on download cannot restate the run's
+    end as the download time. Falls back to "now" only for a run that never ended."""
+    rec = SessionRecorder(SessionConfig(interface="eth1"))
+
+    assert rec.ended is None  # mid-run / killed run: "now" is the honest answer
+    assert rec.to_dict()["ended_at"] >= rec.started
+
+    f = build("DHCP_NAK_OBSERVED", {})
+    f.ts = 1_000_000_000.0  # 2001-09-09, unmistakably not the render time
+    rec.handle(ev.FindingRaised(finding=f))
+    rec.handle(ev.SessionEnded(report={}))
+
+    first = rec.to_dict()
+    assert first["started_at_iso"].endswith("+00:00")  # UTC, not an ambiguous local time
+    assert isinstance(first["started_at"], float) and isinstance(first["ended_at"], float)
+    assert first["findings"][0]["ts"] == 1_000_000_000.0
+    assert "2001-09-09" in rec.render("csv")[0] and "2001-09-09" in rec.render("html")[0]
+
+    time.sleep(0.05)
+    later = rec.to_dict()
+    assert (first["ended_at"], first["ended_at_iso"]) == (later["ended_at"], later["ended_at_iso"])
 
 
 def _recorder_with_a_finding():
@@ -121,12 +142,11 @@ def _recorder_with_a_finding():
     return rec
 
 
-def test_csv_findings_section_carries_time_verdict_and_attck():
+def test_csv_finding_rows_carry_time_verdict_and_attck():
     lines = _recorder_with_a_finding().render("csv")[0].splitlines()
-    assert lines[0] == "time,id,verdict,severity,attck,title,summary"
-    row = next(ln for ln in lines if ln.startswith("20"))  # the ISO timestamp leads the row
+    row = next(ln for ln in lines if ln.startswith("finding,"))
     assert "CLIENTS_EVICTED_FROM_ADDRESSES,FAIL,high,T1557.002" in row
-    assert "+00:00" in row
+    assert "+00:00" in row  # the ISO timestamp, not a bare epoch float
 
 
 def test_html_finding_shows_when_it_was_concluded_and_which_technique_it_evidences():
@@ -135,12 +155,19 @@ def test_html_finding_shows_when_it_was_concluded_and_which_technique_it_evidenc
     assert "Run window (UTC)" in text
 
 
-def test_finding_timestamp_is_stamped_when_raised_not_when_rendered():
-    """A report is written once at the end, minutes after a finding was actually true --
-    rendering must not be able to restate when it happened."""
-    import time
+def test_csv_is_parseable_by_a_strict_reader():
+    """Findings and inventory share one header, discriminated by `section`. The earlier
+    two-stacked-headers form did not fail a csv.DictReader -- it silently shifted every
+    inventory row left, putting a MAC under `id` and an IP under `verdict`."""
+    import csv
+    import io
 
-    f = build("DHCP_NAK_OBSERVED", {})
-    time.sleep(0.01)
-    data = SessionRecorder(SessionConfig(interface="eth1")).to_dict()
-    assert f.ts < data["ended_at"]
+    rec = _recorder_with_data()  # one lease
+    rec.handle(ev.FindingRaised(finding=build("CLIENTS_EVICTED_FROM_ADDRESSES", {"evicted": 2})))
+    rows = list(csv.DictReader(io.StringIO(rec.render("csv")[0])))
+    assert [r["section"] for r in rows] == ["finding", "inventory"]
+    finding, inventory = rows
+    assert finding["id"] == "CLIENTS_EVICTED_FROM_ADDRESSES" and finding["verdict"] == "FAIL"
+    assert not finding["mac"]  # a finding's cells never bleed into the inventory columns
+    assert inventory["kind"] == "lease" and inventory["mac"] == "de:ad:00:00:00:01"
+    assert not inventory["verdict"]  # ... and vice versa: no IP masquerading as a verdict

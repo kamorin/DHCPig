@@ -327,8 +327,9 @@ class Finding:
     severity: str  # info | low | medium | high
     evidence: dict = field(default_factory=dict)
     recommendation: str = ""
-    # MITRE ATT&CK technique ids this finding evidences; `findings.ATTCK` maps id -> name.
-    # Empty for findings that describe no adversary behaviour (controls, recovery, dry runs).
+    # MITRE ATT&CK technique ids this finding assesses -- not a claim the technique succeeded;
+    # a PASS finding carries the technique it tested for. Read with `verdict`. See findings.ATTCK.
+    # Empty for findings that assess no technique (controls, recovery, dry runs).
     attck: list[str] = field(default_factory=list)
     # Wall-clock time the conclusion was reached, so a run can be lined up against the
     # defender's logs. Stamped at construction (findings.build()), not at report-render time --

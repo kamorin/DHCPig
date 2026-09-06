@@ -61,6 +61,11 @@ class SessionRecorder:
         self.exhausted = False
         self.exhaustion_confirmed = False
         self.final_status: dict = {}
+        # When the run actually ended, taken from SessionEnded (engine.py emits it last, right
+        # after state = DONE). None until then, and to_dict() falls back to "now" -- but it must
+        # not *prefer* now: the web UI renders a report on download, so a report fetched half an
+        # hour after the run would otherwise claim a half-hour-longer run window.
+        self.ended: float | None = None
 
     def handle(self, event: ev.Event) -> None:
         if isinstance(event, ev.ServerDiscovered):
@@ -85,6 +90,7 @@ class SessionRecorder:
                 self.exhaustion_confirmed = True
         elif isinstance(event, ev.SessionEnded):
             self.final_status = event.report
+            self.ended = time.time()
 
     def _config_redacted(self) -> dict:
         d = asdict(self.cfg)
@@ -97,7 +103,7 @@ class SessionRecorder:
     def to_dict(self) -> dict:
         # jsonable() converts any nested enums/bytes so the web /api/report path (plain
         # json.dumps) and the file export both work.
-        ended = time.time()
+        ended = self.ended if self.ended is not None else time.time()
         return ev.jsonable(
             {
                 "tool": "dhcpig",
@@ -222,26 +228,32 @@ def _flat_rows(data: dict) -> list[dict]:
 
 _FINDING_COLS = ["time", "id", "verdict", "severity", "attck", "title", "summary"]
 _INVENTORY_COLS = ["kind", "mac", "ip", "server_id", "os", "device", "vendor", "confidence"]
+# One header over the union of both, discriminated by `section`. Two stacked headers (findings,
+# blank line, inventory) read fine in a spreadsheet but are a trap for every other consumer:
+# csv.DictReader doesn't fail on the second header, it silently shifts every inventory row left
+# -- a MAC lands in `id`, an IP in `verdict` -- and hands back plausible garbage. Empty cells are
+# a much cheaper price than a report someone believes and shouldn't.
+_CSV_COLS = ["section", *_FINDING_COLS, *_INVENTORY_COLS]
 
 
 def _to_csv(data: dict) -> str:
-    """Two sections in one file -- findings first, then the inventory, separated by a blank line.
+    """Findings then inventory, one row each, `section` saying which.
 
-    The findings section is why anyone opens the export: this used to emit the inventory alone,
-    so exporting a run to CSV for a spreadsheet silently dropped every verdict the run existed to
-    produce. The two have no columns in common, hence two headers rather than one padded schema.
-    Spreadsheets import this as written; a strict reader should split on the blank line and parse
-    each half. Findings lead so the verdicts are visible without scrolling past the hosts.
+    The findings half is why anyone opens the export: this used to emit the inventory alone, so
+    exporting a run to CSV for a spreadsheet silently dropped every verdict the run existed to
+    produce. Findings lead so the verdicts are visible without scrolling past the hosts; filter
+    or pivot on `section` to get one kind back on its own.
     """
     import csv
     import io
 
     buf = io.StringIO()
-    w = csv.DictWriter(buf, fieldnames=_FINDING_COLS, lineterminator="\r\n")
+    w = csv.DictWriter(buf, fieldnames=_CSV_COLS, extrasaction="ignore")
     w.writeheader()
     for f in data.get("findings", []):
         w.writerow(
             {
+                "section": "finding",
                 "time": _iso(f.get("ts")),
                 "id": f.get("id", ""),
                 "verdict": f.get("verdict", ""),
@@ -253,11 +265,8 @@ def _to_csv(data: dict) -> str:
                 "summary": " | ".join(finding_summary_lines(f)),
             }
         )
-    buf.write("\r\n")
-    w = csv.DictWriter(buf, fieldnames=_INVENTORY_COLS, lineterminator="\r\n")
-    w.writeheader()
     for row in _flat_rows(data):
-        w.writerow({c: row.get(c, "") for c in _INVENTORY_COLS})
+        w.writerow({"section": "inventory", **row})
     return buf.getvalue()
 
 

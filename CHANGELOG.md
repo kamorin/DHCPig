@@ -21,15 +21,22 @@ report is handed to someone else and the run's result has to be machine-readable
   mode including the read-only scans, so no one static technique is true of it. A test asserts
   every id in the catalogue is a known technique, so a typo fails CI instead of reaching a report.
 - **The CSV export no longer drops the findings.** It emitted the host inventory alone, so
-  exporting a run for a spreadsheet silently lost every verdict the run existed to produce. It is
-  now two sections in one file — findings (`time,id,verdict,severity,attck,title,summary`), a
-  blank line, then the inventory as before. Findings lead so the verdicts are visible without
-  scrolling past the hosts.
+  exporting a run for a spreadsheet silently lost every verdict the run existed to produce. Both
+  now share one header, discriminated by a leading `section` column
+  (`section,time,id,verdict,severity,attck,title,summary,kind,mac,...`), findings first. One
+  header rather than two stacked ones because two did not fail a strict reader — `csv.DictReader`
+  shifted every inventory row left, putting a MAC under `id` and an IP under `verdict`, and
+  handed back plausible garbage.
 - **Timestamps for correlating a run against the defender's logs.** Each `Finding` is stamped
   with `ts` when it is raised, not when the report is rendered (the report is written once at the
   end, minutes later), and the report header gains `started_at_iso`/`ended_at_iso` alongside the
   existing epoch floats — UTC, because the operator's timezone is not knowable by whoever reads
   the report. Shown per finding in the HTML report and in the CSV's `time` column.
+- **`ended_at` is now the instant the run ended, read from `SessionEnded`, rather than the moment
+  `to_dict()` happened to be called.** The web UI renders a report on download, so the reported
+  run window used to keep growing for as long as nobody downloaded it. Still falls back to "now"
+  for a run that never emitted `SessionEnded` (mid-run, or killed), which is the honest answer
+  there.
 
 ## 2.7.3 — 2026-08-09
 
