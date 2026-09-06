@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased
+
+Four small changes aimed at using DHCPig in a lab exercise or a scripted engagement, where the
+report is handed to someone else and the run's result has to be machine-readable.
+
+- **`--fail-on {fail,inconclusive,never}` carries the verdict in the exit status.** A run that
+  drove a segment to starvation exited `0`, same as one that found nothing, so no scoring script
+  could branch on the outcome. `--fail-on fail` now exits `1` when a `FAIL` finding was raised
+  (`inconclusive` widens that to a broken baseline, which means the segment was never really
+  tested). Default is `never`: exit `0` keeps meaning "the run worked", which is what every
+  existing caller reads it as, and a run that failed to execute keeps its own code (`2`/`3`/`130`)
+  rather than being overwritten.
+- **Findings carry a MITRE ATT&CK technique id.** `Finding.attck`, populated from the catalogue
+  in `core/findings.py` and rendered in the JSON, CSV and HTML reports: `T1498` for the
+  pool-drain findings, `T1557.003` for everything that speaks DHCP for another device (forged
+  RELEASE, option-50 re-acquisition), `T1557.002` for the forged-ARP eviction chain, `T1018` for
+  the neighbour inventory. Controls, recovery and dry-run findings stay unmapped — they describe
+  the tool reporting on itself, not a technique — as does `RUN_SUMMARY`, which is raised by every
+  mode including the read-only scans, so no one static technique is true of it. A test asserts
+  every id in the catalogue is a known technique, so a typo fails CI instead of reaching a report.
+- **The CSV export no longer drops the findings.** It emitted the host inventory alone, so
+  exporting a run for a spreadsheet silently lost every verdict the run existed to produce. Both
+  now share one header, discriminated by a leading `section` column
+  (`section,time,id,verdict,severity,attck,title,summary,kind,mac,...`), findings first. One
+  header rather than two stacked ones because two did not fail a strict reader — `csv.DictReader`
+  shifted every inventory row left, putting a MAC under `id` and an IP under `verdict`, and
+  handed back plausible garbage.
+- **Timestamps for correlating a run against the defender's logs.** Each `Finding` is stamped
+  with `ts` when it is raised, not when the report is rendered (the report is written once at the
+  end, minutes later), and the report header gains `started_at_iso`/`ended_at_iso` alongside the
+  existing epoch floats — UTC, because the operator's timezone is not knowable by whoever reads
+  the report. Shown per finding in the HTML report and in the CSV's `time` column.
+- **`ended_at` is now the instant the run ended, read from `SessionEnded`, rather than the moment
+  `to_dict()` happened to be called.** The web UI renders a report on download, so the reported
+  run window used to keep growing for as long as nobody downloaded it. Still falls back to "now"
+  for a run that never emitted `SessionEnded` (mid-run, or killed), which is the honest answer
+  there.
+
 ## 2.7.3 — 2026-08-09
 
 Nine fixes to the exhaustion verdict path, from a penetration-testing review of `exhaust`. Each

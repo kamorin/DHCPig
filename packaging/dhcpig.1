@@ -102,6 +102,10 @@ when the run ends. Format is chosen from
 extension
 .RI ( .json / .csv / .html ;
 anything else falls back to JSON).
+The CSV export carries the run's findings and the host inventory, one row
+each, discriminated by a leading
+.I section
+column.
 .TP
 .BI \-v ", " \-\-verbosity " N"
 Output detail, 0\(en3 (default 2). 0 prints results only (findings and the
@@ -113,6 +117,20 @@ Emit a periodic status line with running totals every
 .I SEC
 seconds (default 5; 0 disables it). Shown only at
 .BR \-v3 .
+.TP
+.BI \-\-fail\-on " LEVEL"
+Exit
+.B 1
+when a finding at
+.I LEVEL
+or worse was raised:
+.BR fail ,
+.BR inconclusive ,
+or
+.B never
+(the default). Lets a lab exercise or CI job branch on the verdict. With
+.BR never ,
+the exit status reflects only whether the run itself worked.
 .SS exhaust only
 .TP
 .BI \-\-request\-option " SPEC"
@@ -226,6 +244,11 @@ times as cheap insurance against a dropped frame (default 2).
 .TP
 .B 0
 Success.
+.TP
+.B 1
+The
+.B \-\-fail\-on
+threshold was met. Never returned without that flag.
 .TP
 .B 2
 Bad arguments / configuration error (e.g.

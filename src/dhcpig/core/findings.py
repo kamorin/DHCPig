@@ -16,6 +16,31 @@ from __future__ import annotations
 
 from .models import FAIL, INCONCLUSIVE, INFO, PASS, Finding
 
+# MITRE ATT&CK techniques, id -> name, so every renderer prints the same wording and a typo'd id
+# in the catalogue fails a test instead of reaching a report. Two families cover it: the
+# pool-drain findings are a denial of service, and everything that speaks for another device
+# (forged RELEASE, option-50 re-acquisition, forged ARP) is adversary-in-the-middle.
+#
+# **A finding is tagged with the technique it ASSESSES, not with a claim that the technique
+# worked** -- so `DHCP_STARVATION_NOT_ATTAINED` (PASS) carries T1498 exactly as
+# `DHCP_STARVATION_ATTAINED` (FAIL) does. That is deliberate, and load-bearing: the point of the
+# mapping is a report row saying "we attempted T1498, here is what the network did", and a
+# defender mapping their coverage needs the technique that was tested and held just as much as
+# the one that succeeded. Dropping it from the PASS findings would make the report able to
+# express only failures. Always read the `attck` column with `verdict` beside it -- every
+# renderer emits the two together, and `test_findings_attck.py` pins that pairing so this is not
+# quietly "corrected" later.
+#
+# Findings that assess no technique at all stay unmapped: controls, recovery and dry runs are the
+# tool reporting on itself. So is RUN_SUMMARY -- raised by every mode including the read-only
+# scans, so no one static technique is true of it.
+ATTCK: dict[str, str] = {
+    "T1018": "Remote System Discovery",
+    "T1498": "Network Denial of Service",
+    "T1557.002": "Adversary-in-the-Middle: ARP Cache Poisoning",
+    "T1557.003": "Adversary-in-the-Middle: DHCP Spoofing",
+}
+
 _CATALOG: dict[str, dict] = {
     "RUN_SUMMARY": {
         # recommendation is always overridden per call -- see run_summary_recommendation()
@@ -27,6 +52,7 @@ _CATALOG: dict[str, dict] = {
         "recommendation": "",
     },
     "NEIGHBORS_OBSERVED": {
+        "attck": ["T1018"],
         # title is overridden per call (includes the host count) -- kept here anyway so the
         # catalogue stays the complete list of finding ids.
         "title": "N host(s) were on this segment, and what happened to each",
@@ -74,6 +100,7 @@ _CATALOG: dict[str, dict] = {
         ),
     },
     "DHCP_STARVATION_ATTAINED": {
+        "attck": ["T1498"],
         "title": "A new client was denied an address while spoofed leases were held",
         "verdict": FAIL,
         "severity": "high",
@@ -84,6 +111,7 @@ _CATALOG: dict[str, dict] = {
         ),
     },
     "DHCP_STARVATION_NOT_ATTAINED": {
+        "attck": ["T1498"],
         # recommendation is always overridden per call -- see
         # starvation_not_attained_recommendation() below.
         "title": "A new client could still obtain an address after the run",
@@ -111,6 +139,7 @@ _CATALOG: dict[str, dict] = {
         ),
     },
     "MULTIPLE_DHCP_SERVERS": {
+        "attck": ["T1557.003"],
         "title": "More than one DHCP server answered on this segment",
         "verdict": FAIL,
         "severity": "high",
@@ -120,6 +149,7 @@ _CATALOG: dict[str, dict] = {
         ),
     },
     "FOREIGN_DISCOVERS_UNANSWERED": {
+        "attck": ["T1498"],
         "title": "Other hosts' DHCPDISCOVERs went unanswered during this run",
         "verdict": FAIL,
         "severity": "high",
@@ -131,6 +161,7 @@ _CATALOG: dict[str, dict] = {
         ),
     },
     "FOREIGN_DISCOVERS_ANSWERED": {
+        "attck": ["T1498"],
         "title": "Other hosts' DHCPDISCOVERs were all answered during this run",
         "verdict": INFO,
         "severity": "info",
@@ -140,6 +171,7 @@ _CATALOG: dict[str, dict] = {
         ),
     },
     "CLIENTS_EVICTED_FROM_ADDRESSES": {
+        "attck": ["T1557.002"],
         "title": "ARP-conflict eviction forced clients off their addresses",
         "verdict": FAIL,
         "severity": "high",
@@ -156,6 +188,7 @@ _CATALOG: dict[str, dict] = {
     # disjoint sets of hosts, so a run that evicts two targets and leaves a third sitting on a
     # binding we now own has two separate things to report, not one to choose between.
     "CLIENTS_HOLDING_STOLEN_LEASES": {
+        "attck": ["T1557.003"],
         "title": "Targets held addresses the server had already reassigned to us",
         "verdict": FAIL,
         "severity": "high",
@@ -171,6 +204,7 @@ _CATALOG: dict[str, dict] = {
         ),
     },
     "CLIENTS_DEFENDED_ADDRESSES": {
+        "attck": ["T1557.002"],
         "title": "Targets reacted to the ARP conflict but were not denied service",
         "verdict": INCONCLUSIVE,
         "severity": "medium",
@@ -185,6 +219,7 @@ _CATALOG: dict[str, dict] = {
         ),
     },
     "ARP_CONFLICTS_UNANSWERED": {
+        "attck": ["T1557.002"],
         "title": "ARP-conflict frames drew no reaction from any target",
         "verdict": INCONCLUSIVE,
         "severity": "medium",
@@ -195,6 +230,7 @@ _CATALOG: dict[str, dict] = {
         ),
     },
     "RACED_FREED_ADDRESSES": {
+        "attck": ["T1557.003"],
         "title": "Raced to re-acquire addresses as soon as they were observed freed",
         "verdict": INFO,
         "severity": "info",
@@ -209,6 +245,7 @@ _CATALOG: dict[str, dict] = {
         ),
     },
     "NEIGHBOR_LEASES_RELEASED": {
+        "attck": ["T1557.003"],
         # recommendation is always overridden per call -- see
         # neighbor_leases_released_recommendation() below.
         "title": "Sent DHCPRELEASE for ARP-discovered neighbors, then re-acquired them",
@@ -291,7 +328,16 @@ def build(
         severity=entry["severity"],
         evidence=evidence,
         recommendation=(recommendation if recommendation is not None else entry["recommendation"]),
+        attck=list(entry.get("attck", ())),
     )
+
+
+def attck_labels(ids) -> list[str]:
+    """`["T1557.003"]` -> `["T1557.003 Adversary-in-the-Middle: DHCP Spoofing"]`, for display.
+
+    An id absent from `ATTCK` renders bare rather than raising -- a report is not the place to
+    discover a typo. `test_findings_attck` is; it asserts every id in the catalogue is known."""
+    return [f"{i} {ATTCK[i]}" if i in ATTCK else str(i) for i in ids or ()]
 
 
 def run_summary_recommendation(mode: str) -> str:

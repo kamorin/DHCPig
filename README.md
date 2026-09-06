@@ -60,7 +60,8 @@ CLI
 | `--scope CIDR` | bound the targets (repeatable); defaults to the interface's own network |
 | `--rate N` | pps, default 7 — not on `exhaust`, which self-paces |
 | `--no-evict` | skip the ARP-conflict phase |
-| `--report FILE` | write a session report to `FILE` when the run ends; format follows `FILE`'s extension (`.json`/`.csv`/`.html`, default JSON) |
+| `--report FILE` | write a session report to `FILE` when the run ends; format follows `FILE`'s extension (`.json`/`.csv`/`.html`, default JSON). CSV carries the findings and the host inventory, one row each, tagged by a `section` column |
+| `--fail-on LEVEL` | exit `1` when a finding at `fail` or `inconclusive` (or worse) was raised, so a lab/CI scoring script can branch on the verdict; default `never` |
 | `--client-mac MAC` | `exhaust` only; use this MAC instead of a random one (repeatable — rotates through the list) |
 | `--request-option SPEC` | `exhaust`/`active-scan`; DHCP option-55 (parameter-request-list) content to send, e.g. `12,14-19,23` (default: the built-in macOS-order profile) |
 | `--no-spoof-eth-src` | `exhaust` only; use the real NIC MAC as the Ethernet source for every frame (Wi-Fi; APs drop frames whose source MAC isn't the associated station) |
@@ -104,6 +105,17 @@ Reading a run
 Everything lands in the event log, worst first: findings, then one line per host, then an
 `OUTCOME` roll-up. `Verbosity 0` (web) or `-v0` (CLI) hides the packet traffic. The JSON export
 is the complete record — the log is a summary.
+
+Every finding carries a UTC timestamp and, where one applies, the MITRE ATT&CK technique it
+evidences (`T1498` network denial of service, `T1557.002`/`T1557.003` ARP and DHCP
+adversary-in-the-middle) — so a run lines up against the defender's logs and drops into a
+report template without re-deriving either by hand. Scripting a lab exercise:
+
+    sudo dhcpig exhaust eth0 --report run.json --fail-on fail
+    [ $? -eq 1 ] && echo "segment is vulnerable"
+
+Test for `1` specifically, not for "non-zero": `2`, `3` and `130` mean the run never completed,
+which is the opposite of a result.
 
 Undoing a run
 -------------

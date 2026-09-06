@@ -5,14 +5,31 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import asdict
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 
 from .. import __version__
 from . import events as ev
-from .findings import EVIDENCE_SKIP, finding_summary_lines  # noqa: F401 -- re-exported below
+from .findings import (  # noqa: F401 -- EVIDENCE_SKIP re-exported below
+    EVIDENCE_SKIP,
+    attck_labels,
+    finding_summary_lines,
+)
 from .fingerprint import DB_VERSION
 from .models import SessionConfig
+
+
+def _iso(ts: float | None) -> str:
+    """Epoch seconds -> UTC ISO-8601. Empty for a missing/zero timestamp.
+
+    UTC rather than local time, and alongside the raw epoch rather than replacing it: the point
+    of the string is pasting it into someone else's log search, where the operator's timezone is
+    not knowable and an ambiguous local timestamp is worse than none.
+    """
+    if not ts:
+        return ""
+    return datetime.fromtimestamp(ts, tz=UTC).isoformat(timespec="seconds")
 
 
 def _json_default(o):
@@ -44,6 +61,11 @@ class SessionRecorder:
         self.exhausted = False
         self.exhaustion_confirmed = False
         self.final_status: dict = {}
+        # When the run actually ended, taken from SessionEnded (engine.py emits it last, right
+        # after state = DONE). None until then, and to_dict() falls back to "now" -- but it must
+        # not *prefer* now: the web UI renders a report on download, so a report fetched half an
+        # hour after the run would otherwise claim a half-hour-longer run window.
+        self.ended: float | None = None
 
     def handle(self, event: ev.Event) -> None:
         if isinstance(event, ev.ServerDiscovered):
@@ -68,6 +90,7 @@ class SessionRecorder:
                 self.exhaustion_confirmed = True
         elif isinstance(event, ev.SessionEnded):
             self.final_status = event.report
+            self.ended = time.time()
 
     def _config_redacted(self) -> dict:
         d = asdict(self.cfg)
@@ -80,6 +103,7 @@ class SessionRecorder:
     def to_dict(self) -> dict:
         # jsonable() converts any nested enums/bytes so the web /api/report path (plain
         # json.dumps) and the file export both work.
+        ended = self.ended if self.ended is not None else time.time()
         return ev.jsonable(
             {
                 "tool": "dhcpig",
@@ -87,7 +111,13 @@ class SessionRecorder:
                 "interface": self.cfg.interface,
                 "mode": self.cfg.mode.value,
                 "started_at": self.started,
-                "ended_at": time.time(),
+                "ended_at": ended,
+                # Same two instants as strings. Every consumer that had the epochs still has
+                # them; these are for the human correlating the run against switch/DHCP logs,
+                # who should not have to convert a float by hand. Per-finding times live on
+                # each finding's own `ts` (models.Finding).
+                "started_at_iso": _iso(self.started),
+                "ended_at_iso": _iso(ended),
                 "config": self._config_redacted(),
                 "scope_cidrs": self.cfg.scope_cidrs,
                 "fingerprint_db": DB_VERSION,
@@ -196,16 +226,47 @@ def _flat_rows(data: dict) -> list[dict]:
     return rows
 
 
+_FINDING_COLS = ["time", "id", "verdict", "severity", "attck", "title", "summary"]
+_INVENTORY_COLS = ["kind", "mac", "ip", "server_id", "os", "device", "vendor", "confidence"]
+# One header over the union of both, discriminated by `section`. Two stacked headers (findings,
+# blank line, inventory) read fine in a spreadsheet but are a trap for every other consumer:
+# csv.DictReader doesn't fail on the second header, it silently shifts every inventory row left
+# -- a MAC lands in `id`, an IP in `verdict` -- and hands back plausible garbage. Empty cells are
+# a much cheaper price than a report someone believes and shouldn't.
+_CSV_COLS = ["section", *_FINDING_COLS, *_INVENTORY_COLS]
+
+
 def _to_csv(data: dict) -> str:
+    """Findings then inventory, one row each, `section` saying which.
+
+    The findings half is why anyone opens the export: this used to emit the inventory alone, so
+    exporting a run to CSV for a spreadsheet silently dropped every verdict the run existed to
+    produce. Findings lead so the verdicts are visible without scrolling past the hosts; filter
+    or pivot on `section` to get one kind back on its own.
+    """
     import csv
     import io
 
-    cols = ["kind", "mac", "ip", "server_id", "os", "device", "vendor", "confidence"]
     buf = io.StringIO()
-    w = csv.DictWriter(buf, fieldnames=cols)
+    w = csv.DictWriter(buf, fieldnames=_CSV_COLS, extrasaction="ignore")
     w.writeheader()
+    for f in data.get("findings", []):
+        w.writerow(
+            {
+                "section": "finding",
+                "time": _iso(f.get("ts")),
+                "id": f.get("id", ""),
+                "verdict": f.get("verdict", ""),
+                "severity": f.get("severity", ""),
+                "attck": " ".join(f.get("attck") or []),
+                "title": f.get("title", ""),
+                # The same summary the log and the HTML report show, flattened onto one cell --
+                # the full evidence stays in the JSON export, which is what it is for.
+                "summary": " | ".join(finding_summary_lines(f)),
+            }
+        )
     for row in _flat_rows(data):
-        w.writerow({c: row.get(c, "") for c in cols})
+        w.writerow({"section": "inventory", **row})
     return buf.getvalue()
 
 
@@ -227,6 +288,11 @@ def _findings_html(data: dict) -> str:
     for f in findings:
         verdict = str(f.get("verdict", ""))
         body = "".join(f'<div class="ev">{escape(line)}</div>' for line in finding_summary_lines(f))
+        # When it was concluded, and which adversary technique it evidences -- the two things a
+        # reader needs to line this up against a defender's logs and their own reporting.
+        meta = " · ".join(x for x in (_iso(f.get("ts")), *attck_labels(f.get("attck"))) if x)
+        if meta:
+            body += f'<div class="meta">{escape(meta)}</div>'
         out.append(
             f'<div class="finding"><span class="v" style="background:'
             f'{colors.get(verdict, "#555")}">{escape(verdict)}</span> '
@@ -300,7 +366,8 @@ font-size:13px;text-align:left}}th{{background:#f2f2f2}}
 .finding .v{{color:#fff;padding:1px 7px;border-radius:3px;font-size:11px;font-weight:700}}
 .finding code{{color:#666;font-size:11px}}
 .finding .ev{{font-size:12px;color:#444;margin-top:4px;font-family:ui-monospace,monospace}}
-.finding .rec{{font-size:12px;color:#666;margin-top:4px}}</style></head><body>
+.finding .rec{{font-size:12px;color:#666;margin-top:4px}}
+.finding .meta{{font-size:11px;color:#777;margin-top:4px}}</style></head><body>
 <h1>DHCPig report</h1>
 <p><b>Interface:</b> {escape(str(data.get("interface")))} &nbsp;
 <b>Mode:</b> {escape(str(data.get("mode")))} &nbsp;
@@ -308,6 +375,9 @@ font-size:13px;text-align:left}}th{{background:#f2f2f2}}
 (confirmed: {escape(str(data.get("pool_exhaustion_confirmed")))}) &nbsp;
 <b>Scope:</b> {escape(str(data.get("scope_cidrs")))} &nbsp;
 <b>Fingerprint DB:</b> {escape(str(data.get("fingerprint_db")))}</p>
+<p style="font-size:12px;color:#666"><b>Run window (UTC):</b>
+{escape(str(data.get("started_at_iso", "")))} &rarr;
+{escape(str(data.get("ended_at_iso", "")))}</p>
 {_pool_estimate_line(data)}
 <h2>Findings</h2>
 {_findings_html(data)}
