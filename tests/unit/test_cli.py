@@ -282,11 +282,8 @@ def test_exhaust_accepts_scope_so_copy_as_cli_round_trips():
 
 
 class _StubEngine:
-    """Minimal stand-in for DhcpEngine, exposing only what _run_session() touches.
-
-    --fail-on is pure exit-code logic over the findings a run ended with, so these state the
-    findings directly rather than contriving a live run that happens to raise them.
-    """
+    """Stand-in exposing only what _run_session() touches. --fail-on is exit-code logic over
+    the findings a run ended with, so the tests state those directly."""
 
     def __init__(self, findings):
         self.findings = findings
@@ -313,8 +310,7 @@ def _rc_for(monkeypatch, verdicts, fail_on):
 
 
 def test_fail_on_defaults_to_never_so_a_fail_finding_still_exits_zero(monkeypatch):
-    """Exit 0 has always meant "the run worked", and every existing caller reads it that way.
-    Carrying the verdict in the exit status is opt-in, never the default."""
+    """Exit 0 has always meant "the run worked"; carrying the verdict is opt-in."""
     assert _rc_for(monkeypatch, ["FAIL"], "never") == cli.EXIT_OK
 
 
@@ -324,8 +320,8 @@ def test_fail_on_fail_exits_one_so_a_scoring_script_can_branch(monkeypatch):
 
 
 def test_fail_on_inconclusive_is_the_wider_threshold(monkeypatch):
-    """An inconclusive run is a result a lab wants to catch -- usually a broken baseline, which
-    means the segment was never actually tested. --fail-on fail deliberately lets it pass."""
+    """Usually a broken baseline, meaning the segment was never really tested. --fail-on fail
+    deliberately lets it pass."""
     assert _rc_for(monkeypatch, ["INCONCLUSIVE"], "inconclusive") == cli.EXIT_FINDING
     assert _rc_for(monkeypatch, ["INCONCLUSIVE"], "fail") == cli.EXIT_OK
     assert _rc_for(monkeypatch, ["FAIL"], "inconclusive") == cli.EXIT_FINDING

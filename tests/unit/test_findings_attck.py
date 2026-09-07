@@ -1,10 +1,5 @@
-"""MITRE ATT&CK mapping on the finding catalogue.
-
-The mapping exists so a report drops straight into someone else's reporting template without a
-human re-deriving "which technique was that". Its whole value is being right, so the integrity
-check below (every id in the catalogue is a known technique) is the point of this file -- a
-typo'd id would otherwise reach a report and be believed.
-"""
+"""MITRE ATT&CK mapping on the finding catalogue. Its value is being right, so the integrity
+check (every catalogued id is a known technique) is the point of the file."""
 
 from dhcpig.core.findings import _CATALOG, ATTCK, attck_labels, build
 
@@ -19,16 +14,13 @@ def test_build_carries_the_mapping_onto_the_finding():
     assert build("CLIENTS_EVICTED_FROM_ADDRESSES", {}).attck == ["T1557.002"]  # forged ARP
     assert build("DHCP_STARVATION_ATTAINED", {}).attck == ["T1498"]  # pool drained
     assert build("NEIGHBOR_LEASES_RELEASED", {}).attck == ["T1557.003"]  # spoken for elsewhere
-    # The mapping says which technique a finding ASSESSES, not that it succeeded -- so the PASS
-    # finding carries the same id as the FAIL one. Deliberate and easy to mistake for a bug:
-    # dropping it would leave the report able to express only failures. See findings.ATTCK.
-    assert build("DHCP_STARVATION_NOT_ATTAINED", {}).attck == ["T1498"]  # PASS, same technique
+    # Assessed, not achieved: the PASS finding carries the same id as the FAIL. See ATTCK.
+    assert build("DHCP_STARVATION_NOT_ATTAINED", {}).attck == ["T1498"]
 
 
 def test_findings_that_describe_no_adversary_behaviour_are_unmapped():
-    """Controls, recovery and dry runs are the tool reporting on itself, not a technique.
-    RUN_SUMMARY is unmapped for a different reason: it is raised by every mode including the
-    read-only scans, so no single static technique is true of it."""
+    """Controls, recovery and dry runs report on the tool itself. RUN_SUMMARY is raised by
+    every mode including the read-only scans, so no one static technique is true of it."""
     for fid in ("RUN_SUMMARY", "CONTROL_BASELINE_FAILED", "POOL_RECOVERED", "DRY_RUN_SUMMARY"):
         assert build(fid, {}).attck == []
 

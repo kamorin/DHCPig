@@ -102,8 +102,8 @@ when the run ends. Format is chosen from
 extension
 .RI ( .json / .csv / .html ;
 anything else falls back to JSON).
-The CSV export carries the run's findings and the host inventory, one row
-each, discriminated by a leading
+The CSV export carries findings and host inventory, one row each,
+discriminated by a leading
 .I section
 column.
 .TP
@@ -128,9 +128,8 @@ or worse was raised:
 .BR inconclusive ,
 or
 .B never
-(the default). Lets a lab exercise or CI job branch on the verdict. With
-.BR never ,
-the exit status reflects only whether the run itself worked.
+(the default, under which the exit status reflects only whether the run
+itself worked).
 .SS exhaust only
 .TP
 .BI \-\-request\-option " SPEC"

@@ -84,8 +84,7 @@ def _recorder_with_data():
 
 
 def test_render_csv():
-    """Findings and inventory under one header, tagged by `section`. The findings half used to be
-    missing entirely, so a CSV export dropped every verdict the run existed to produce."""
+    """One header, tagged by `section`. The findings half used to be missing entirely."""
     text, ctype = _recorder_with_data().render("csv")
     assert ctype == "text/csv"
     lines = text.strip().splitlines()
@@ -110,11 +109,9 @@ def test_render_bad_format():
 
 
 def test_report_timestamps_belong_to_the_run_not_the_render():
-    """Three things at once, because they are one behaviour: the epochs keep their existing
-    consumers and gain UTC strings for the human correlating against switch/DHCP logs; a
-    finding is stamped when raised and stays stamped through rendering; and `ended_at` comes
-    from SessionEnded, so the web UI rendering a report on download cannot restate the run's
-    end as the download time. Falls back to "now" only for a run that never ended."""
+    """One behaviour, three parts: epochs gain UTC strings; a finding stays stamped with its
+    raise time through rendering; `ended_at` comes from SessionEnded, so rendering on download
+    can't restate the run's end. Falls back to "now" only for a run that never ended."""
     rec = SessionRecorder(SessionConfig(interface="eth1"))
 
     assert rec.ended is None  # mid-run / killed run: "now" is the honest answer
@@ -156,8 +153,7 @@ def test_html_finding_shows_when_it_was_concluded_and_which_technique_it_evidenc
 
 
 def test_csv_is_parseable_by_a_strict_reader():
-    """Findings and inventory share one header, discriminated by `section`. The earlier
-    two-stacked-headers form did not fail a csv.DictReader -- it silently shifted every
+    """The earlier two-stacked-headers form didn't fail a csv.DictReader -- it shifted each
     inventory row left, putting a MAC under `id` and an IP under `verdict`."""
     import csv
     import io
@@ -168,6 +164,6 @@ def test_csv_is_parseable_by_a_strict_reader():
     assert [r["section"] for r in rows] == ["finding", "inventory"]
     finding, inventory = rows
     assert finding["id"] == "CLIENTS_EVICTED_FROM_ADDRESSES" and finding["verdict"] == "FAIL"
-    assert not finding["mac"]  # a finding's cells never bleed into the inventory columns
+    assert not finding["mac"]  # cells never bleed between the two row kinds
     assert inventory["kind"] == "lease" and inventory["mac"] == "de:ad:00:00:00:01"
-    assert not inventory["verdict"]  # ... and vice versa: no IP masquerading as a verdict
+    assert not inventory["verdict"]

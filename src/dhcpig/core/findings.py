@@ -16,24 +16,13 @@ from __future__ import annotations
 
 from .models import FAIL, INCONCLUSIVE, INFO, PASS, Finding
 
-# MITRE ATT&CK techniques, id -> name, so every renderer prints the same wording and a typo'd id
-# in the catalogue fails a test instead of reaching a report. Two families cover it: the
-# pool-drain findings are a denial of service, and everything that speaks for another device
-# (forged RELEASE, option-50 re-acquisition, forged ARP) is adversary-in-the-middle.
+# MITRE ATT&CK techniques, id -> name, so every renderer prints the same wording.
 #
-# **A finding is tagged with the technique it ASSESSES, not with a claim that the technique
-# worked** -- so `DHCP_STARVATION_NOT_ATTAINED` (PASS) carries T1498 exactly as
-# `DHCP_STARVATION_ATTAINED` (FAIL) does. That is deliberate, and load-bearing: the point of the
-# mapping is a report row saying "we attempted T1498, here is what the network did", and a
-# defender mapping their coverage needs the technique that was tested and held just as much as
-# the one that succeeded. Dropping it from the PASS findings would make the report able to
-# express only failures. Always read the `attck` column with `verdict` beside it -- every
-# renderer emits the two together, and `test_findings_attck.py` pins that pairing so this is not
-# quietly "corrected" later.
-#
-# Findings that assess no technique at all stay unmapped: controls, recovery and dry runs are the
-# tool reporting on itself. So is RUN_SUMMARY -- raised by every mode including the read-only
-# scans, so no one static technique is true of it.
+# A finding carries the technique it ASSESSES, not a claim the technique worked: the PASS
+# `DHCP_STARVATION_NOT_ATTAINED` maps to T1498 just as the FAIL does, so the report can say
+# "attempted, and held". Read `attck` with `verdict`; test_findings_attck.py pins the pair.
+# Findings that assess no technique stay unmapped (controls, recovery, dry runs, and
+# RUN_SUMMARY -- raised by every mode, including the read-only scans).
 ATTCK: dict[str, str] = {
     "T1018": "Remote System Discovery",
     "T1498": "Network Denial of Service",
@@ -335,8 +324,7 @@ def build(
 def attck_labels(ids) -> list[str]:
     """`["T1557.003"]` -> `["T1557.003 Adversary-in-the-Middle: DHCP Spoofing"]`, for display.
 
-    An id absent from `ATTCK` renders bare rather than raising -- a report is not the place to
-    discover a typo. `test_findings_attck` is; it asserts every id in the catalogue is known."""
+    An unknown id renders bare rather than raising; test_findings_attck.py catches typos."""
     return [f"{i} {ATTCK[i]}" if i in ATTCK else str(i) for i in ids or ()]
 
 

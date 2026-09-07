@@ -27,8 +27,7 @@ from ..core.reporting import SessionRecorder
 from .render import Renderer
 
 EXIT_OK, EXIT_BADARGS, EXIT_NOSERVER, EXIT_INTERRUPT = 0, 2, 3, 130
-# Opt-in only (--fail-on): by default the exit status says whether the *run* worked, which is
-# what every existing caller reads it as. A lab or CI scoring script asks for the verdict.
+# --fail-on only: by default the exit status says whether the *run* worked, not what it found.
 EXIT_FINDING = 1
 
 # Worst-first ordering over Finding.verdict, shared by the "top finding" line and --fail-on.
@@ -375,9 +374,7 @@ def _run_session(cfg: SessionConfig, fail_on: str = "never") -> int:
         top = max(engine.findings, key=lambda f: _VERDICT_RANK.get(f.verdict, 0))
         print(f"[==] verdict: {top.verdict} — {top.title}")
         print(f"[==] {len(engine.findings)} finding(s); see the report for full evidence")
-        # Only ever *adds* a non-zero status to an otherwise-clean run: a run that already
-        # failed to execute (bad args, no server, interrupted) keeps its own code, which says
-        # something more useful than "a finding was raised".
+        # Only ever adds a code to an otherwise-clean run: 2/3/130 say something more useful.
         threshold = _FAIL_ON_RANK.get(fail_on)
         if (
             rc == EXIT_OK

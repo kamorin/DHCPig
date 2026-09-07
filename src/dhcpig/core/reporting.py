@@ -21,12 +21,8 @@ from .models import SessionConfig
 
 
 def _iso(ts: float | None) -> str:
-    """Epoch seconds -> UTC ISO-8601. Empty for a missing/zero timestamp.
-
-    UTC rather than local time, and alongside the raw epoch rather than replacing it: the point
-    of the string is pasting it into someone else's log search, where the operator's timezone is
-    not knowable and an ambiguous local timestamp is worse than none.
-    """
+    """Epoch seconds -> UTC ISO-8601, "" for none. UTC because whoever reads the report cannot
+    know the operator's timezone; alongside the epochs, not replacing them."""
     if not ts:
         return ""
     return datetime.fromtimestamp(ts, tz=UTC).isoformat(timespec="seconds")
@@ -61,10 +57,8 @@ class SessionRecorder:
         self.exhausted = False
         self.exhaustion_confirmed = False
         self.final_status: dict = {}
-        # When the run actually ended, taken from SessionEnded (engine.py emits it last, right
-        # after state = DONE). None until then, and to_dict() falls back to "now" -- but it must
-        # not *prefer* now: the web UI renders a report on download, so a report fetched half an
-        # hour after the run would otherwise claim a half-hour-longer run window.
+        # Set from SessionEnded (emitted last by the engine). to_dict() falls back to "now" but
+        # must not prefer it: the web UI renders on download, which would inflate the run window.
         self.ended: float | None = None
 
     def handle(self, event: ev.Event) -> None:
@@ -112,10 +106,7 @@ class SessionRecorder:
                 "mode": self.cfg.mode.value,
                 "started_at": self.started,
                 "ended_at": ended,
-                # Same two instants as strings. Every consumer that had the epochs still has
-                # them; these are for the human correlating the run against switch/DHCP logs,
-                # who should not have to convert a float by hand. Per-finding times live on
-                # each finding's own `ts` (models.Finding).
+                # The same instants as strings; the epochs stay for existing consumers.
                 "started_at_iso": _iso(self.started),
                 "ended_at_iso": _iso(ended),
                 "config": self._config_redacted(),
@@ -228,21 +219,17 @@ def _flat_rows(data: dict) -> list[dict]:
 
 _FINDING_COLS = ["time", "id", "verdict", "severity", "attck", "title", "summary"]
 _INVENTORY_COLS = ["kind", "mac", "ip", "server_id", "os", "device", "vendor", "confidence"]
-# One header over the union of both, discriminated by `section`. Two stacked headers (findings,
-# blank line, inventory) read fine in a spreadsheet but are a trap for every other consumer:
-# csv.DictReader doesn't fail on the second header, it silently shifts every inventory row left
-# -- a MAC lands in `id`, an IP in `verdict` -- and hands back plausible garbage. Empty cells are
-# a much cheaper price than a report someone believes and shouldn't.
+# One header over the union, discriminated by `section`. Two stacked headers suit a spreadsheet
+# but trap every other reader: csv.DictReader doesn't fail on the second one, it shifts each
+# inventory row left -- MAC under `id`, IP under `verdict` -- and returns plausible garbage.
 _CSV_COLS = ["section", *_FINDING_COLS, *_INVENTORY_COLS]
 
 
 def _to_csv(data: dict) -> str:
     """Findings then inventory, one row each, `section` saying which.
 
-    The findings half is why anyone opens the export: this used to emit the inventory alone, so
-    exporting a run to CSV for a spreadsheet silently dropped every verdict the run existed to
-    produce. Findings lead so the verdicts are visible without scrolling past the hosts; filter
-    or pivot on `section` to get one kind back on its own.
+    This used to emit the inventory alone, so a CSV export dropped every verdict the run
+    produced. Findings lead; filter on `section` to get one kind back on its own.
     """
     import csv
     import io
@@ -260,8 +247,7 @@ def _to_csv(data: dict) -> str:
                 "severity": f.get("severity", ""),
                 "attck": " ".join(f.get("attck") or []),
                 "title": f.get("title", ""),
-                # The same summary the log and the HTML report show, flattened onto one cell --
-                # the full evidence stays in the JSON export, which is what it is for.
+                # As shown in the log and HTML; full evidence stays in the JSON export.
                 "summary": " | ".join(finding_summary_lines(f)),
             }
         )
@@ -288,8 +274,7 @@ def _findings_html(data: dict) -> str:
     for f in findings:
         verdict = str(f.get("verdict", ""))
         body = "".join(f'<div class="ev">{escape(line)}</div>' for line in finding_summary_lines(f))
-        # When it was concluded, and which adversary technique it evidences -- the two things a
-        # reader needs to line this up against a defender's logs and their own reporting.
+        # When it was concluded, and the technique it assesses.
         meta = " · ".join(x for x in (_iso(f.get("ts")), *attck_labels(f.get("attck"))) if x)
         if meta:
             body += f'<div class="meta">{escape(meta)}</div>'
