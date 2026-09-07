@@ -1,7 +1,9 @@
 import json
+import time
 
 from dhcpig import __version__
 from dhcpig.core import events as ev
+from dhcpig.core.findings import build
 from dhcpig.core.models import HostFingerprint, IPVersion, Lease, Neighbor, SessionConfig
 from dhcpig.core.reporting import SessionRecorder
 
@@ -82,17 +84,33 @@ def _recorder_with_data():
 
 
 def test_render_csv():
-    text, ctype = _recorder_with_data().render("csv")
+    """One header tagged by `section`; the findings half used to be missing entirely. Parsed
+    with a strict reader because the earlier two-stacked-headers form didn't fail one -- it
+    shifted each inventory row left, putting a MAC under `id` and an IP under `verdict`."""
+    import csv
+    import io
+
+    rec = _recorder_with_data()  # one lease
+    rec.handle(ev.FindingRaised(finding=build("CLIENTS_EVICTED_FROM_ADDRESSES", {"evicted": 2})))
+    text, ctype = rec.render("csv")
     assert ctype == "text/csv"
-    lines = text.strip().splitlines()
-    assert lines[0] == "kind,mac,ip,server_id,os,device,vendor,confidence"
-    assert any(row.startswith("lease,de:ad:00:00:00:01,10.0.0.5") for row in lines[1:])
+    finding, inventory = list(csv.DictReader(io.StringIO(text)))
+    assert (finding["section"], inventory["section"]) == ("finding", "inventory")
+    assert finding["id"] == "CLIENTS_EVICTED_FROM_ADDRESSES" and finding["verdict"] == "FAIL"
+    assert finding["attck"] == "T1557.002" and finding["time"].endswith("+00:00")
+    assert not finding["mac"]  # cells never bleed between the two row kinds
+    assert inventory["kind"] == "lease" and inventory["mac"] == "de:ad:00:00:00:01"
+    assert not inventory["verdict"]
 
 
 def test_render_html():
-    text, ctype = _recorder_with_data().render("html")
+    rec = _recorder_with_data()
+    rec.handle(ev.FindingRaised(finding=build("CLIENTS_EVICTED_FROM_ADDRESSES", {"evicted": 2})))
+    text, ctype = rec.render("html")
     assert ctype == "text/html"
     assert "<table>" in text and "10.0.0.5" in text and "DHCPig report" in text
+    assert "T1557.002 Adversary-in-the-Middle: ARP Cache Poisoning" in text
+    assert "Run window (UTC)" in text
 
 
 def test_render_bad_format():
@@ -100,3 +118,28 @@ def test_render_bad_format():
 
     with pytest.raises(ValueError):
         _recorder_with_data().render("pdf")
+
+
+def test_report_timestamps_belong_to_the_run_not_the_render():
+    """One behaviour, three parts: epochs gain UTC strings; a finding stays stamped with its
+    raise time through rendering; `ended_at` comes from SessionEnded, so rendering on download
+    can't restate the run's end. Falls back to "now" only for a run that never ended."""
+    rec = SessionRecorder(SessionConfig(interface="eth1"))
+
+    assert rec.ended is None  # mid-run / killed run: "now" is the honest answer
+    assert rec.to_dict()["ended_at"] >= rec.started
+
+    f = build("DHCP_NAK_OBSERVED", {})
+    f.ts = 1_000_000_000.0  # 2001-09-09, unmistakably not the render time
+    rec.handle(ev.FindingRaised(finding=f))
+    rec.handle(ev.SessionEnded(report={}))
+
+    first = rec.to_dict()
+    assert first["started_at_iso"].endswith("+00:00")  # UTC, not an ambiguous local time
+    assert isinstance(first["started_at"], float) and isinstance(first["ended_at"], float)
+    assert first["findings"][0]["ts"] == 1_000_000_000.0
+    assert "2001-09-09" in rec.render("csv")[0] and "2001-09-09" in rec.render("html")[0]
+
+    time.sleep(0.05)
+    later = rec.to_dict()
+    assert (first["ended_at"], first["ended_at_iso"]) == (later["ended_at"], later["ended_at_iso"])

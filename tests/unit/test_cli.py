@@ -235,6 +235,7 @@ def test_report_path_extension_selects_the_written_format(tmp_path, monkeypatch)
     )
     assert cli._run_session(cfg) == cli.EXIT_OK
     assert csv_path.read_text().splitlines()[0] == (
+        "section,time,id,verdict,severity,attck,title,summary,"
         "kind,mac,ip,server_id,os,device,vendor,confidence"
     )
 
@@ -278,3 +279,47 @@ def test_exhaust_accepts_scope_so_copy_as_cli_round_trips():
     assert "--scope 192.168.4.0/22" in cmd
     args = cli.build_parser().parse_args(shlex.split(cmd)[1:])  # must not SystemExit
     assert cli.build_config(args).scope_cidrs == ["192.168.4.0/22"]
+
+
+class _StubEngine:
+    """Stand-in exposing only what _run_session() touches. --fail-on is exit-code logic over
+    the findings a run ended with, so the tests state those directly."""
+
+    def __init__(self, findings):
+        self.findings = findings
+        self.state = engine_mod.DONE
+        self.discovers, self.servers, self._threads = [], [], []
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
+
+    def status(self):
+        return dict.fromkeys(("leases", "servers", "naks", "releases", "arp_conflicts"), 0)
+
+
+def _rc_for(monkeypatch, verdicts, fail_on):
+    from dhcpig.core.models import Finding
+
+    findings = [Finding(id="X", title="t", verdict=v, severity="high") for v in verdicts]
+    monkeypatch.setattr(cli, "DhcpEngine", lambda cfg, bus: _StubEngine(findings))
+    cfg = SessionConfig(interface="lo", mode=Mode.RELEASE_NEIGHBORS, offline=True)
+    return cli._run_session(cfg, fail_on=fail_on)
+
+
+def test_fail_on_threshold(monkeypatch):
+    """Exit 0 has always meant "the run worked", so carrying the verdict is opt-in. Only ever
+    adds a code to an otherwise-clean run. `inconclusive` is the wider threshold: usually a
+    broken baseline, meaning the segment was never really tested, which `fail` lets pass."""
+    assert _rc_for(monkeypatch, ["FAIL"], "never") == cli.EXIT_OK
+    assert _rc_for(monkeypatch, ["INFO", "FAIL"], "fail") == cli.EXIT_FINDING
+    assert _rc_for(monkeypatch, ["INFO", "PASS"], "fail") == cli.EXIT_OK
+    assert _rc_for(monkeypatch, ["INCONCLUSIVE"], "fail") == cli.EXIT_OK
+    assert _rc_for(monkeypatch, ["INCONCLUSIVE"], "inconclusive") == cli.EXIT_FINDING
+
+    for cmd in ("exhaust", "scan", "active-scan", "release", "release-previous"):
+        assert cli.build_parser().parse_args([cmd, "eth1"]).fail_on == "never"
+    with pytest.raises(SystemExit):  # not a free-form string
+        cli.build_parser().parse_args(["exhaust", "eth1", "--fail-on", "high"])

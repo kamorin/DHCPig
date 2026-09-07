@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -326,3 +327,8 @@ class Finding:
     severity: str  # info | low | medium | high
     evidence: dict = field(default_factory=dict)
     recommendation: str = ""
+    # Techniques this finding assesses, not a claim they succeeded -- see findings.ATTCK.
+    attck: list[str] = field(default_factory=list)
+    # When the conclusion was reached, for lining a run up against the defender's logs. Stamped
+    # at construction, not at render time: the report is written once, minutes later.
+    ts: float = field(default_factory=time.time)

@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+Four changes for running DHCPig as a lab exercise or scripted engagement, where the report goes
+to someone else and the result has to be machine-readable.
+
+- **`--fail-on {fail,inconclusive,never}`** exits `1` when a finding at that verdict or worse was
+  raised, so a scoring script can branch on the outcome. Default `never` keeps exit `0` meaning
+  "the run worked"; a run that failed to execute keeps its own code (`2`/`3`/`130`).
+- **Findings carry a MITRE ATT&CK id** (`Finding.attck`, in all three report formats): `T1498`
+  for the pool-drain findings, `T1557.003` for speaking DHCP for another device, `T1557.002` for
+  the forged-ARP eviction chain, `T1018` for the neighbour inventory. It marks the technique a
+  finding *assesses*, so PASS findings carry one too. Controls, recovery, dry runs and
+  `RUN_SUMMARY` stay unmapped. A test rejects unknown ids.
+- **The CSV export no longer drops the findings.** It emitted the host inventory alone, losing
+  every verdict the run produced. Both now share one header discriminated by a leading `section`
+  column, findings first — one header rather than two, because two stacked headers don't fail a
+  `csv.DictReader`, they shift each inventory row left and return plausible garbage.
+- **Timestamps for log correlation.** Each `Finding` is stamped when raised, not when rendered;
+  the report header gains UTC `started_at_iso`/`ended_at_iso` beside the epoch floats. `ended_at`
+  now comes from `SessionEnded` rather than the render call, which had the web UI's
+  render-on-download inflating the reported run window.
+
 ## 2.7.3 — 2026-08-09
 
 Nine fixes to the exhaustion verdict path, from a penetration-testing review of `exhaust`. Each
