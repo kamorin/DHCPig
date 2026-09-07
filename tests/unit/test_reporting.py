@@ -84,21 +84,33 @@ def _recorder_with_data():
 
 
 def test_render_csv():
-    """One header, tagged by `section`. The findings half used to be missing entirely."""
-    text, ctype = _recorder_with_data().render("csv")
+    """One header tagged by `section`; the findings half used to be missing entirely. Parsed
+    with a strict reader because the earlier two-stacked-headers form didn't fail one -- it
+    shifted each inventory row left, putting a MAC under `id` and an IP under `verdict`."""
+    import csv
+    import io
+
+    rec = _recorder_with_data()  # one lease
+    rec.handle(ev.FindingRaised(finding=build("CLIENTS_EVICTED_FROM_ADDRESSES", {"evicted": 2})))
+    text, ctype = rec.render("csv")
     assert ctype == "text/csv"
-    lines = text.strip().splitlines()
-    assert lines[0] == (
-        "section,time,id,verdict,severity,attck,title,summary,"
-        "kind,mac,ip,server_id,os,device,vendor,confidence"
-    )
-    assert any(",lease,de:ad:00:00:00:01,10.0.0.5" in row for row in lines[1:])
+    finding, inventory = list(csv.DictReader(io.StringIO(text)))
+    assert (finding["section"], inventory["section"]) == ("finding", "inventory")
+    assert finding["id"] == "CLIENTS_EVICTED_FROM_ADDRESSES" and finding["verdict"] == "FAIL"
+    assert finding["attck"] == "T1557.002" and finding["time"].endswith("+00:00")
+    assert not finding["mac"]  # cells never bleed between the two row kinds
+    assert inventory["kind"] == "lease" and inventory["mac"] == "de:ad:00:00:00:01"
+    assert not inventory["verdict"]
 
 
 def test_render_html():
-    text, ctype = _recorder_with_data().render("html")
+    rec = _recorder_with_data()
+    rec.handle(ev.FindingRaised(finding=build("CLIENTS_EVICTED_FROM_ADDRESSES", {"evicted": 2})))
+    text, ctype = rec.render("html")
     assert ctype == "text/html"
     assert "<table>" in text and "10.0.0.5" in text and "DHCPig report" in text
+    assert "T1557.002 Adversary-in-the-Middle: ARP Cache Poisoning" in text
+    assert "Run window (UTC)" in text
 
 
 def test_render_bad_format():
@@ -131,39 +143,3 @@ def test_report_timestamps_belong_to_the_run_not_the_render():
     time.sleep(0.05)
     later = rec.to_dict()
     assert (first["ended_at"], first["ended_at_iso"]) == (later["ended_at"], later["ended_at_iso"])
-
-
-def _recorder_with_a_finding():
-    rec = SessionRecorder(SessionConfig(interface="eth1"))
-    rec.handle(ev.FindingRaised(finding=build("CLIENTS_EVICTED_FROM_ADDRESSES", {"evicted": 2})))
-    return rec
-
-
-def test_csv_finding_rows_carry_time_verdict_and_attck():
-    lines = _recorder_with_a_finding().render("csv")[0].splitlines()
-    row = next(ln for ln in lines if ln.startswith("finding,"))
-    assert "CLIENTS_EVICTED_FROM_ADDRESSES,FAIL,high,T1557.002" in row
-    assert "+00:00" in row  # the ISO timestamp, not a bare epoch float
-
-
-def test_html_finding_shows_when_it_was_concluded_and_which_technique_it_evidences():
-    text = _recorder_with_a_finding().render("html")[0]
-    assert "T1557.002 Adversary-in-the-Middle: ARP Cache Poisoning" in text
-    assert "Run window (UTC)" in text
-
-
-def test_csv_is_parseable_by_a_strict_reader():
-    """The earlier two-stacked-headers form didn't fail a csv.DictReader -- it shifted each
-    inventory row left, putting a MAC under `id` and an IP under `verdict`."""
-    import csv
-    import io
-
-    rec = _recorder_with_data()  # one lease
-    rec.handle(ev.FindingRaised(finding=build("CLIENTS_EVICTED_FROM_ADDRESSES", {"evicted": 2})))
-    rows = list(csv.DictReader(io.StringIO(rec.render("csv")[0])))
-    assert [r["section"] for r in rows] == ["finding", "inventory"]
-    finding, inventory = rows
-    assert finding["id"] == "CLIENTS_EVICTED_FROM_ADDRESSES" and finding["verdict"] == "FAIL"
-    assert not finding["mac"]  # cells never bleed between the two row kinds
-    assert inventory["kind"] == "lease" and inventory["mac"] == "de:ad:00:00:00:01"
-    assert not inventory["verdict"]

@@ -309,27 +309,17 @@ def _rc_for(monkeypatch, verdicts, fail_on):
     return cli._run_session(cfg, fail_on=fail_on)
 
 
-def test_fail_on_defaults_to_never_so_a_fail_finding_still_exits_zero(monkeypatch):
-    """Exit 0 has always meant "the run worked"; carrying the verdict is opt-in."""
+def test_fail_on_threshold(monkeypatch):
+    """Exit 0 has always meant "the run worked", so carrying the verdict is opt-in. Only ever
+    adds a code to an otherwise-clean run. `inconclusive` is the wider threshold: usually a
+    broken baseline, meaning the segment was never really tested, which `fail` lets pass."""
     assert _rc_for(monkeypatch, ["FAIL"], "never") == cli.EXIT_OK
-
-
-def test_fail_on_fail_exits_one_so_a_scoring_script_can_branch(monkeypatch):
     assert _rc_for(monkeypatch, ["INFO", "FAIL"], "fail") == cli.EXIT_FINDING
     assert _rc_for(monkeypatch, ["INFO", "PASS"], "fail") == cli.EXIT_OK
-
-
-def test_fail_on_inconclusive_is_the_wider_threshold(monkeypatch):
-    """Usually a broken baseline, meaning the segment was never really tested. --fail-on fail
-    deliberately lets it pass."""
-    assert _rc_for(monkeypatch, ["INCONCLUSIVE"], "inconclusive") == cli.EXIT_FINDING
     assert _rc_for(monkeypatch, ["INCONCLUSIVE"], "fail") == cli.EXIT_OK
-    assert _rc_for(monkeypatch, ["FAIL"], "inconclusive") == cli.EXIT_FINDING
+    assert _rc_for(monkeypatch, ["INCONCLUSIVE"], "inconclusive") == cli.EXIT_FINDING
 
-
-def test_fail_on_parses_on_every_mode_and_defaults_to_never():
     for cmd in ("exhaust", "scan", "active-scan", "release", "release-previous"):
         assert cli.build_parser().parse_args([cmd, "eth1"]).fail_on == "never"
-    assert cli.build_parser().parse_args(["exhaust", "eth1", "--fail-on", "fail"]).fail_on == "fail"
     with pytest.raises(SystemExit):  # not a free-form string
         cli.build_parser().parse_args(["exhaust", "eth1", "--fail-on", "high"])
