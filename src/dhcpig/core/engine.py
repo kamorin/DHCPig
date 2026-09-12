@@ -11,6 +11,7 @@ import itertools
 import random
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -1965,6 +1966,21 @@ class DhcpEngine:
                 )
 
     # ---------------------------------------------------------------- run loops
+    def _start_sniffer(self, handler: Callable[[Any], None], label: str = "") -> None:
+        """Open this run's capture socket. One sniffer per engine -- every mode assigns
+        `self._sniffer`, and `stop()` is the only thing that closes it."""
+        self._sniffer = DhcpSniffer(self.cfg.interface, self.cfg.ip_version, handler)
+        self._sniffer.start()
+        self._debug(f"{label}sniffer started on {self.cfg.interface} (filter: dhcp/arp/icmp)")
+
+    def _spawn(self, target: Callable[[], None], name: str) -> None:
+        """Start a worker and register it as work-in-progress. Registering only after
+        `start()` keeps `stop()`'s join loop from ever waiting on a thread that never ran.
+        The name is what shows up in tracebacks and thread dumps."""
+        t = threading.Thread(target=target, name=name, daemon=True)
+        t.start()
+        self._threads.append(t)
+
     def _run_exhaust(self) -> None:
         # offline is the hard "no sockets at all" switch (tests, no-root preview) -- no sniffer
         # (no OFFERs would arrive), so skip straight to the sender. dry-run alone still runs the
@@ -1974,14 +1990,10 @@ class DhcpEngine:
             self._debug("offline: sniffer disabled, prelude skipped (no packets sent or received)")
             self._start_senders()
             return
-        self._sniffer = DhcpSniffer(self.cfg.interface, self.cfg.ip_version, self._on_dhcp)
-        self._sniffer.start()
-        self._debug(f"sniffer started on {self.cfg.interface} (filter: dhcp/arp/icmp)")
+        self._start_sniffer(self._on_dhcp)
         # Prelude (inventory + controls) runs off-thread so start() returns immediately and
         # the UI streams progress instead of blocking the HTTP request for ~10s.
-        t = threading.Thread(target=self._exhaust_prelude, daemon=True)
-        t.start()
-        self._threads.append(t)
+        self._spawn(self._exhaust_prelude, "dhcpig-prelude")
 
     def _exhaust_prelude(self) -> None:
         """Baseline the segment, release what's there, re-acquire it, then hand off to senders.
@@ -2295,9 +2307,7 @@ class DhcpEngine:
 
     def _start_senders(self) -> None:
         # single sender: --rate is the pacing control, so extra threads only fought the limiter
-        t = threading.Thread(target=self._exhaust_sender, daemon=True)
-        t.start()
-        self._threads.append(t)
+        self._spawn(self._exhaust_sender, "dhcpig-sender")
 
     def _exhaust_sender(self) -> None:
         """Bounded pipeline: at most `self._window` DISCOVER/REQUEST transactions in flight.
@@ -2675,8 +2685,7 @@ class DhcpEngine:
 
     def _run_scan(self) -> None:
         # read-only: sniff + fingerprint. No DHCP REQUEST/RELEASE, no ARP conflict.
-        self._sniffer = DhcpSniffer(self.cfg.interface, self.cfg.ip_version, self._on_scan)
-        self._sniffer.start()
+        self._start_sniffer(self._on_scan)
 
     def _on_scan(self, pkt) -> None:
         try:
@@ -2701,12 +2710,8 @@ class DhcpEngine:
         # offline, not dry_run (2.3) -- active-scan sends nothing destructive in the first place,
         # so dry_run has nothing to suppress here; only offline should skip the sniffer/sends.
         if not self.cfg.offline:
-            self._sniffer = DhcpSniffer(self.cfg.interface, self.cfg.ip_version, self._on_scan)
-            self._sniffer.start()
-            self._debug(f"active-scan sniffer started on {self.cfg.interface}")
-        t = threading.Thread(target=self._active_scan_worker, daemon=True)
-        t.start()
-        self._threads.append(t)
+            self._start_sniffer(self._on_scan, "active-scan: ")
+        self._spawn(self._active_scan_worker, "dhcpig-active-scan")
 
     def _active_scan_worker(self) -> None:
         neighbors, _ = self._discover_neighbors()  # benign ARP who-has across scope
@@ -2740,12 +2745,8 @@ class DhcpEngine:
         if self.cfg.offline:
             self._debug("offline: sniffer disabled (no packets sent or received)")
         else:
-            self._sniffer = DhcpSniffer(self.cfg.interface, self.cfg.ip_version, self._on_dhcp)
-            self._sniffer.start()
-            self._debug(f"sniffer started on {self.cfg.interface} (filter: dhcp/arp/icmp)")
-        t = threading.Thread(target=self._release_worker, daemon=True)
-        t.start()
-        self._threads.append(t)
+            self._start_sniffer(self._on_dhcp)
+        self._spawn(self._release_worker, "dhcpig-release")
 
     def _release_worker(self) -> None:
         """New chain (2.3, Phase 5): ARP inventory -> control/self -> release -> re-acquisition
@@ -2768,12 +2769,8 @@ class DhcpEngine:
         # Gated on offline, not dry_run (2.3): the control transaction now probes for real under
         # dry_run alone, and a probe with no sniffer running to catch the reply always times out.
         if not self.cfg.offline:
-            self._sniffer = DhcpSniffer(self.cfg.interface, self.cfg.ip_version, self._on_dhcp)
-            self._sniffer.start()
-            self._debug(f"release-previous: sniffer started on {self.cfg.interface}")
-        t = threading.Thread(target=self._release_previous_worker, daemon=True)
-        t.start()
-        self._threads.append(t)
+            self._start_sniffer(self._on_dhcp, "release-previous: ")
+        self._spawn(self._release_previous_worker, "dhcpig-release-previous")
 
     def _release_selected(self, entries: list) -> int:
         """Group by (server_ip, server_mac) so each batch unicasts to the right server --
