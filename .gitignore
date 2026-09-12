@@ -20,6 +20,9 @@ htmlcov/
 # OS
 .DS_Store
 
+# personal Claude Code settings (permission grants etc.) - not shared with other contributors
+.claude/settings.local.json
+
 # reports produced by runs
 *.report.json
 run.json
